@@ -130,5 +130,6 @@ public sealed class BotConfigViewModel
     public string HumanHandoffText { get; set; } = string.Empty;
     public string ClosingText { get; set; } = string.Empty;
     public string FallbackText { get; set; } = string.Empty;
+    public int MessagePoolingSeconds { get; set; } = 15;
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
 }

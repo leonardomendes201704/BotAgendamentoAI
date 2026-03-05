@@ -73,6 +73,7 @@ Regras:
         var nowUtc = DateTimeOffset.UtcNow;
         var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, _timeZone);
         var botText = await _repository.GetBotTextConfig(incoming.TenantId);
+        var userTextForState = GetUserTextForState(incoming);
 
         var state = await _repository.GetState(incoming.TenantId, incoming.FromPhone)
                     ?? CreateInitialState(incoming, nowUtc);
@@ -84,17 +85,20 @@ Regras:
         var history = SanitizeAndTrimHistory(rawHistory, ShortMemoryLimit);
         var returningAfter24h = IsReturningAfter24h(slots.LastSeenAtUtc, rawHistory, nowUtc);
 
-        slots = _stateManager.ApplyUserMessage(slots, incoming.Text, nowUtc);
+        slots = _stateManager.ApplyUserMessage(slots, userTextForState, nowUtc);
 
-        await _repository.AddMessage(new ConversationMessage
+        if (!incoming.UserMessageAlreadyPersisted)
         {
-            TenantId = incoming.TenantId,
-            Phone = incoming.FromPhone,
-            Direction = "in",
-            Role = "user",
-            Content = incoming.Text,
-            CreatedAtUtc = nowUtc
-        });
+            await _repository.AddMessage(new ConversationMessage
+            {
+                TenantId = incoming.TenantId,
+                Phone = incoming.FromPhone,
+                Direction = "in",
+                Role = "user",
+                Content = incoming.Text,
+                CreatedAtUtc = nowUtc
+            });
+        }
 
         var menuHandled = await TryHandleMenuFlowAsync(
             incoming,
@@ -106,7 +110,7 @@ Regras:
         if (menuHandled.Handled)
         {
             await PersistAssistantOutput(incoming, menuHandled.Response, null);
-            summary = _stateManager.BuildSummary(summary, slots, incoming.Text, menuHandled.Response);
+            summary = _stateManager.BuildSummary(summary, slots, userTextForState, menuHandled.Response);
             await PersistState(incoming, slots, summary);
             return menuHandled.Response;
         }
@@ -125,7 +129,10 @@ Regras:
             TryAddHistoryMessage(messages, item);
         }
 
-        messages.Add(new UserChatMessage(incoming.Text));
+        if (!incoming.UserMessageAlreadyPersisted)
+        {
+            messages.Add(new UserChatMessage(incoming.Text));
+        }
 
         var options = BuildOptions();
 
@@ -140,7 +147,7 @@ Regras:
             {
                 var failure = "Desculpe, houve um erro temporario. Pode tentar novamente em instantes?";
                 await PersistAssistantOutput(incoming, failure, null);
-                await PersistState(incoming, slots, _stateManager.BuildSummary(summary, slots, incoming.Text, failure));
+                await PersistState(incoming, slots, _stateManager.BuildSummary(summary, slots, userTextForState, failure));
                 Console.WriteLine($"[erro-openai] {ex.Message}");
                 return failure;
             }
@@ -194,14 +201,14 @@ Regras:
 
             await PersistAssistantOutput(incoming, assistantText, null);
 
-            summary = _stateManager.BuildSummary(summary, slots, incoming.Text, assistantText);
+            summary = _stateManager.BuildSummary(summary, slots, userTextForState, assistantText);
             await PersistState(incoming, slots, summary);
             return assistantText;
         }
 
         var fallback = "Desculpe, nao consegui concluir agora. Pode repetir o pedido com servico, data/hora e endereco?";
         await PersistAssistantOutput(incoming, fallback, null);
-        await PersistState(incoming, slots, _stateManager.BuildSummary(summary, slots, incoming.Text, fallback));
+        await PersistState(incoming, slots, _stateManager.BuildSummary(summary, slots, userTextForState, fallback));
         return fallback;
     }
 
@@ -1237,5 +1244,18 @@ When menu flow is active, keep language aligned to these texts.
         slots.BookingOptions = new List<BookingMenuOption>();
         slots.SelectedBookingId = null;
         slots.SelectedBookingLabel = null;
+    }
+
+    private static string GetUserTextForState(IncomingMessage incoming)
+    {
+        if (incoming.BatchedUserMessages.Count == 0)
+        {
+            return incoming.Text;
+        }
+
+        return string.Join("\n",
+            incoming.BatchedUserMessages
+                .Where(message => !string.IsNullOrWhiteSpace(message))
+                .Select(message => message.Trim()));
     }
 }

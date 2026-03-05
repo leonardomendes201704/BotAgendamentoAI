@@ -46,6 +46,12 @@
         <textarea asp-for="FallbackText" class="form-control" rows="2"></textarea>
     </div>
 
+    <div class="mb-3">
+        <label class="form-label">Janela de pooling (segundos)</label>
+        <input asp-for="MessagePoolingSeconds" type="number" class="form-control" min="0" max="120" />
+        <small class="text-muted">0 = responde imediatamente. Exemplo recomendado: 15 segundos.</small>
+    </div>
+
     <div>
         <button type="submit" class="btn btn-primary">Salvar</button>
     </div>

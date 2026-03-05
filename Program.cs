@@ -44,15 +44,34 @@ public static class Program
         Console.WriteLine("  /tenant <id>      troca tenant (padrao: A)");
         Console.WriteLine("  /from <phone>     troca telefone (padrao: 5511999999999)");
         Console.WriteLine("  /history          mostra qtd de mensagens persistidas");
+        Console.WriteLine("  /pool             mostra janela atual de pooling (segundos)");
         Console.WriteLine("  /help             ajuda");
         Console.WriteLine("  /exit             sair");
 
         var tenant = "A";
         var from = "5511999999999";
+        var consoleSync = new object();
+
+        await using var dispatcher = new MessagePoolingDispatcher(
+            repository,
+            bot,
+            result =>
+            {
+                lock (consoleSync)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine($"[{result.TenantId} | {result.Phone}] Bot: {result.BotText}");
+                    Console.Write($"\n[{tenant} | {from}] Voce: ");
+                }
+            });
 
         while (true)
         {
-            Console.Write($"\n[{tenant} | {from}] Voce: ");
+            lock (consoleSync)
+            {
+                Console.Write($"\n[{tenant} | {from}] Voce: ");
+            }
+
             var line = Console.ReadLine();
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -102,19 +121,28 @@ public static class Program
                 continue;
             }
 
-            var incoming = new IncomingMessage(tenant, from, line);
+            if (line.StartsWith("/pool", StringComparison.OrdinalIgnoreCase))
+            {
+                var config = await repository.GetBotTextConfig(tenant);
+                Console.WriteLine($"Pooling atual: {config.MessagePoolingSeconds}s (tenant {tenant})");
+                continue;
+            }
 
             try
             {
-                var answer = await bot.HandleAsync(incoming);
-                Console.WriteLine($"Bot: {answer}");
+                var poolingSeconds = await dispatcher.EnqueueAsync(tenant, from, line);
+                if (poolingSeconds > 0)
+                {
+                    Console.WriteLine($"[pool] mensagem recebida, aguardando ate {poolingSeconds}s para consolidar contexto.");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Erro: {ex.Message}");
+                Console.WriteLine($"Erro ao enfileirar mensagem: {ex.Message}");
             }
         }
 
+        await dispatcher.FlushAllAsync();
         Console.WriteLine("Encerrado.");
     }
 
@@ -140,5 +168,7 @@ public static class Program
         Console.WriteLine("  11704150");
         Console.WriteLine("  136 apto 34");
         Console.WriteLine("  2 (Consultar) / 3 (Cancelar) / 4 (Alterar) por numero da lista");
+        Console.WriteLine("Pooling:");
+        Console.WriteLine("  mensagens enviadas em sequencia curta sao agrupadas (janela configuravel no Admin)");
     }
 }

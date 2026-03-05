@@ -287,6 +287,8 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
             {
                 config.FallbackText = messages.FallbackText.Trim();
             }
+
+            config.MessagePoolingSeconds = ClampPoolingSeconds(messages?.MessagePoolingSeconds);
         }
         catch
         {
@@ -343,5 +345,9 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
         public string HumanHandoffText { get; set; } = string.Empty;
         public string ClosingText { get; set; } = string.Empty;
         public string FallbackText { get; set; } = string.Empty;
+        public int? MessagePoolingSeconds { get; set; }
     }
+
+    private static int ClampPoolingSeconds(int? value)
+        => Math.Clamp(value ?? 15, 0, 120);
 }

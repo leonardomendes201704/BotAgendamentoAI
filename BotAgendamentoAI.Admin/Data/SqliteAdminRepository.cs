@@ -787,7 +787,8 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
                 GreetingText = messages.GreetingText,
                 HumanHandoffText = messages.HumanHandoffText,
                 ClosingText = messages.ClosingText,
-                FallbackText = messages.FallbackText
+                FallbackText = messages.FallbackText,
+                MessagePoolingSeconds = ClampPoolingSeconds(messages.MessagePoolingSeconds)
             };
         }
 
@@ -806,7 +807,8 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
             GreetingText = input.GreetingText?.Trim() ?? string.Empty,
             HumanHandoffText = input.HumanHandoffText?.Trim() ?? string.Empty,
             ClosingText = input.ClosingText?.Trim() ?? string.Empty,
-            FallbackText = input.FallbackText?.Trim() ?? string.Empty
+            FallbackText = input.FallbackText?.Trim() ?? string.Empty,
+            MessagePoolingSeconds = ClampPoolingSeconds(input.MessagePoolingSeconds)
         };
 
         await using var connection = CreateConnection();
@@ -848,7 +850,8 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
             GreetingText = "Como posso ajudar voce hoje?",
             HumanHandoffText = "Vou te direcionar para um atendente humano.",
             ClosingText = "Atendimento encerrado. Envie MENU para iniciar novamente.",
-            FallbackText = "Nao entendi. Escolha uma opcao do menu."
+            FallbackText = "Nao entendi. Escolha uma opcao do menu.",
+            MessagePoolingSeconds = 15
         };
     }
 
@@ -879,6 +882,9 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
             return new MessagesConfigStorage();
         }
     }
+
+    private static int ClampPoolingSeconds(int? value)
+        => Math.Clamp(value ?? 15, 0, 120);
 
     private static string BuildSafeCategoryName(string rawName)
     {
@@ -1074,5 +1080,6 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
         public string HumanHandoffText { get; set; } = string.Empty;
         public string ClosingText { get; set; } = string.Empty;
         public string FallbackText { get; set; } = string.Empty;
+        public int? MessagePoolingSeconds { get; set; }
     }
 }

@@ -6,7 +6,11 @@ public record IncomingMessage(
     string TenantId,
     string FromPhone,
     string Text
-);
+)
+{
+    public bool UserMessageAlreadyPersisted { get; init; }
+    public IReadOnlyList<string> BatchedUserMessages { get; init; } = Array.Empty<string>();
+}
 
 public record Booking(
     string Id,
@@ -64,6 +68,7 @@ public sealed class BotTextConfig
     public string HumanHandoffText { get; set; } = "Vou te direcionar para um atendente humano.";
     public string ClosingText { get; set; } = "Atendimento encerrado. Envie MENU para iniciar novamente.";
     public string FallbackText { get; set; } = "Nao entendi. Escolha uma opcao do menu.";
+    public int MessagePoolingSeconds { get; set; } = 15;
 
     public static BotTextConfig CreateDefault(string tenantId)
     {
