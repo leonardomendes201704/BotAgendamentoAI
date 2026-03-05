@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -13,6 +14,7 @@ public sealed class SqliteAdminRepository : IAdminRepository
     private readonly string _dbPath;
     private readonly string _connectionString;
     private readonly ILogger<SqliteAdminRepository> _logger;
+    private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
 
     private const string AdminSchemaSql = """
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -72,6 +74,21 @@ ON bookings(tenant_id, customer_phone, start_local);
 
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant_start
 ON bookings(tenant_id, start_local);
+
+CREATE TABLE IF NOT EXISTS booking_geocode_cache (
+  booking_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  address TEXT NOT NULL,
+  latitude REAL NULL,
+  longitude REAL NULL,
+  status TEXT NOT NULL,
+  error_message TEXT NULL,
+  geocoded_at_utc TEXT NOT NULL,
+  retry_after_utc TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_booking_geocode_cache_tenant_status
+ON booking_geocode_cache(tenant_id, status, retry_after_utc);
 
 CREATE TABLE IF NOT EXISTS service_catalog (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,6 +255,7 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
 
         var recentConversations = await GetConversationThreadsAsync(tenant, 20);
         var recentBookings = await GetBookingsAsync(tenant, 20);
+        var mapPins = await GetDashboardMapPinsAsync(tenant, null, 300);
 
         var conversionRate = totalIncomingConversations == 0
             ? 0m
@@ -256,8 +274,128 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             ConvertedPhones = convertedPhones,
             ConversionRatePercent = conversionRate,
             RecentConversations = recentConversations,
-            RecentBookings = recentBookings
+            RecentBookings = recentBookings,
+            MapPins = mapPins
         };
+    }
+
+    public async Task<IReadOnlyList<DashboardMapPinItem>> GetDashboardMapPinsAsync(string tenantId, DateTimeOffset? sinceUtc, int limit)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var safeLimit = Math.Clamp(limit, 1, 1000);
+        var nowUtc = DateTimeOffset.UtcNow;
+        var rows = new List<DashboardMapRow>();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            SELECT
+              b.id,
+              b.tenant_id,
+              b.service_category,
+              b.service_title,
+              b.customer_phone,
+              b.address,
+              b.start_local,
+              b.created_at_utc,
+              g.latitude,
+              g.longitude,
+              g.status,
+              g.retry_after_utc
+            FROM bookings b
+            LEFT JOIN booking_geocode_cache g ON g.booking_id = b.id
+            WHERE b.tenant_id = @tenant_id
+              AND (@since_utc IS NULL OR b.created_at_utc >= @since_utc)
+            ORDER BY b.created_at_utc DESC
+            LIMIT @limit;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@since_utc", sinceUtc.HasValue ? ToUtcText(sinceUtc.Value) : (object)DBNull.Value);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                rows.Add(new DashboardMapRow
+                {
+                    BookingId = reader.GetString(0),
+                    TenantId = reader.GetString(1),
+                    ServiceCategory = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    ServiceTitle = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                    CustomerPhone = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                    Address = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                    StartLocal = ParseLocalDateTime(reader.IsDBNull(6) ? string.Empty : reader.GetString(6)),
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(7) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(7)),
+                    Latitude = reader.IsDBNull(8) ? null : reader.GetDouble(8),
+                    Longitude = reader.IsDBNull(9) ? null : reader.GetDouble(9),
+                    GeocodeStatus = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                    RetryAfterUtc = TryParseNullableUtc(reader.IsDBNull(11) ? null : reader.GetString(11))
+                });
+            }
+        }
+
+        var geocodeAttempts = 0;
+        const int maxGeocodeAttemptsPerRequest = 6;
+
+        foreach (var row in rows)
+        {
+            if (row.Latitude.HasValue && row.Longitude.HasValue)
+            {
+                continue;
+            }
+
+            if (string.Equals(row.GeocodeStatus, "failed", StringComparison.OrdinalIgnoreCase) &&
+                row.RetryAfterUtc.HasValue &&
+                row.RetryAfterUtc.Value > nowUtc)
+            {
+                continue;
+            }
+
+            if (geocodeAttempts >= maxGeocodeAttemptsPerRequest)
+            {
+                break;
+            }
+
+            geocodeAttempts++;
+            var geocodeResult = await TryGeocodeAddressAsync(row.Address);
+            if (geocodeResult.Success && geocodeResult.Latitude.HasValue && geocodeResult.Longitude.HasValue)
+            {
+                row.Latitude = geocodeResult.Latitude;
+                row.Longitude = geocodeResult.Longitude;
+                row.GeocodeStatus = "ok";
+                row.RetryAfterUtc = null;
+            }
+            else
+            {
+                row.GeocodeStatus = "failed";
+                row.RetryAfterUtc = nowUtc.AddMinutes(20);
+            }
+
+            await UpsertGeocodeCacheAsync(connection, row, geocodeResult.ErrorMessage);
+        }
+
+        var output = rows
+            .Where(row => row.Latitude.HasValue && row.Longitude.HasValue)
+            .Select(row => new DashboardMapPinItem
+            {
+                BookingId = row.BookingId,
+                TenantId = row.TenantId,
+                ServiceCategory = row.ServiceCategory,
+                ServiceTitle = row.ServiceTitle,
+                CustomerPhone = row.CustomerPhone,
+                Address = row.Address,
+                StartLocal = row.StartLocal,
+                CreatedAtUtc = row.CreatedAtUtc,
+                Latitude = row.Latitude ?? 0d,
+                Longitude = row.Longitude ?? 0d
+            })
+            .ToList();
+
+        return output;
     }
 
     public async Task<IReadOnlyList<ConversationThreadSummary>> GetConversationThreadsAsync(string tenantId, int limit)
@@ -965,6 +1103,108 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
     private static int ClampTelegramPollingSeconds(int value)
         => Math.Clamp(value, 5, 50);
 
+    private static async Task<GeocodeResult> TryGeocodeAddressAsync(string address)
+    {
+        var safeAddress = (address ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(safeAddress))
+        {
+            return GeocodeResult.Fail("Endereco vazio.");
+        }
+
+        var query = Uri.EscapeDataString($"{safeAddress}, Brasil");
+        var endpoint = $"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&q={query}";
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync(endpoint);
+            if (!response.IsSuccessStatusCode)
+            {
+                return GeocodeResult.Fail($"HTTP {(int)response.StatusCode}");
+            }
+
+            var payload = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(payload);
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            {
+                return GeocodeResult.Fail("Nenhum resultado.");
+            }
+
+            var first = document.RootElement[0];
+            var latText = first.TryGetProperty("lat", out var latProp) ? latProp.GetString() : null;
+            var lonText = first.TryGetProperty("lon", out var lonProp) ? lonProp.GetString() : null;
+
+            if (!double.TryParse(latText, NumberStyles.Float, CultureInfo.InvariantCulture, out var lat) ||
+                !double.TryParse(lonText, NumberStyles.Float, CultureInfo.InvariantCulture, out var lon))
+            {
+                return GeocodeResult.Fail("Lat/lon invalidos.");
+            }
+
+            return GeocodeResult.Ok(lat, lon);
+        }
+        catch (Exception ex)
+        {
+            return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task UpsertGeocodeCacheAsync(SqliteConnection connection, DashboardMapRow row, string? errorMessage)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO booking_geocode_cache
+            (booking_id, tenant_id, address, latitude, longitude, status, error_message, geocoded_at_utc, retry_after_utc)
+            VALUES
+            (@booking_id, @tenant_id, @address, @latitude, @longitude, @status, @error_message, @geocoded_at_utc, @retry_after_utc)
+            ON CONFLICT(booking_id) DO UPDATE SET
+                tenant_id = excluded.tenant_id,
+                address = excluded.address,
+                latitude = excluded.latitude,
+                longitude = excluded.longitude,
+                status = excluded.status,
+                error_message = excluded.error_message,
+                geocoded_at_utc = excluded.geocoded_at_utc,
+                retry_after_utc = excluded.retry_after_utc;
+            """;
+        command.Parameters.AddWithValue("@booking_id", row.BookingId);
+        command.Parameters.AddWithValue("@tenant_id", row.TenantId);
+        command.Parameters.AddWithValue("@address", row.Address);
+        command.Parameters.AddWithValue("@latitude", row.Latitude.HasValue ? row.Latitude.Value : (object)DBNull.Value);
+        command.Parameters.AddWithValue("@longitude", row.Longitude.HasValue ? row.Longitude.Value : (object)DBNull.Value);
+        command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(row.GeocodeStatus) ? "failed" : row.GeocodeStatus);
+        command.Parameters.AddWithValue("@error_message", string.IsNullOrWhiteSpace(errorMessage) ? (object)DBNull.Value : errorMessage);
+        command.Parameters.AddWithValue("@geocoded_at_utc", ToUtcText(DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("@retry_after_utc", row.RetryAfterUtc.HasValue ? ToUtcText(row.RetryAfterUtc.Value) : (object)DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static DateTimeOffset? TryParseNullableUtc(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static HttpClient BuildGeocodeHttpClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(12)
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("BotAgendamentoAI.Admin/1.0 (+dashboard-map)");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        return client;
+    }
+
     private static string BuildSafeCategoryName(string rawName)
     {
         var trimmed = (rawName ?? string.Empty).Trim();
@@ -1170,5 +1410,48 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
         public bool IsActive { get; set; }
         public int PollingTimeoutSeconds { get; set; }
         public long LastUpdateId { get; set; }
+    }
+
+    private sealed class DashboardMapRow
+    {
+        public string BookingId { get; set; } = string.Empty;
+        public string TenantId { get; set; } = "A";
+        public string ServiceCategory { get; set; } = string.Empty;
+        public string ServiceTitle { get; set; } = string.Empty;
+        public string CustomerPhone { get; set; } = string.Empty;
+        public string Address { get; set; } = string.Empty;
+        public DateTime StartLocal { get; set; }
+        public DateTimeOffset CreatedAtUtc { get; set; }
+        public double? Latitude { get; set; }
+        public double? Longitude { get; set; }
+        public string GeocodeStatus { get; set; } = string.Empty;
+        public DateTimeOffset? RetryAfterUtc { get; set; }
+    }
+
+    private sealed class GeocodeResult
+    {
+        public bool Success { get; private set; }
+        public double? Latitude { get; private set; }
+        public double? Longitude { get; private set; }
+        public string? ErrorMessage { get; private set; }
+
+        public static GeocodeResult Ok(double latitude, double longitude)
+        {
+            return new GeocodeResult
+            {
+                Success = true,
+                Latitude = latitude,
+                Longitude = longitude
+            };
+        }
+
+        public static GeocodeResult Fail(string? errorMessage)
+        {
+            return new GeocodeResult
+            {
+                Success = false,
+                ErrorMessage = errorMessage
+            };
+        }
     }
 }

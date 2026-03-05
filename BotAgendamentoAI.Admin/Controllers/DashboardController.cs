@@ -19,4 +19,28 @@ public sealed class DashboardController : Controller
         model.Tenants = await _repository.GetTenantIdsAsync();
         return View(model);
     }
+
+    [HttpGet]
+    public async Task<IActionResult> MapPins(string tenant = "A", string? sinceUtc = null, int limit = 300)
+    {
+        DateTimeOffset? parsedSince = null;
+        if (!string.IsNullOrWhiteSpace(sinceUtc) &&
+            DateTimeOffset.TryParse(
+                sinceUtc,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            parsedSince = parsed;
+        }
+
+        var pins = await _repository.GetDashboardMapPinsAsync(tenant, parsedSince, limit);
+        return Json(new
+        {
+            tenantId = tenant,
+            nowUtc = DateTimeOffset.UtcNow,
+            count = pins.Count,
+            pins
+        });
+    }
 }

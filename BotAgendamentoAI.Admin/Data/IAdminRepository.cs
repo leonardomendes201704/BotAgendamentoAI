@@ -7,6 +7,7 @@ public interface IAdminRepository
     Task InitializeAsync();
     Task<IReadOnlyList<string>> GetTenantIdsAsync();
     Task<DashboardViewModel> GetDashboardAsync(string tenantId, int days);
+    Task<IReadOnlyList<DashboardMapPinItem>> GetDashboardMapPinsAsync(string tenantId, DateTimeOffset? sinceUtc, int limit);
     Task<IReadOnlyList<ConversationThreadSummary>> GetConversationThreadsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ConversationMessageItem>> GetConversationMessagesAsync(string tenantId, string phone, int limit);
     Task<IReadOnlyList<BookingListItem>> GetBookingsAsync(string tenantId, int limit);

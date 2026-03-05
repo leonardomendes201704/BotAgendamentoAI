@@ -19,7 +19,22 @@ public sealed class DashboardViewModel
     public decimal ConversionRatePercent { get; set; }
     public IReadOnlyList<ConversationThreadSummary> RecentConversations { get; set; } = Array.Empty<ConversationThreadSummary>();
     public IReadOnlyList<BookingListItem> RecentBookings { get; set; } = Array.Empty<BookingListItem>();
+    public IReadOnlyList<DashboardMapPinItem> MapPins { get; set; } = Array.Empty<DashboardMapPinItem>();
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
+}
+
+public sealed class DashboardMapPinItem
+{
+    public string BookingId { get; set; } = string.Empty;
+    public string TenantId { get; set; } = "A";
+    public string ServiceCategory { get; set; } = string.Empty;
+    public string ServiceTitle { get; set; } = string.Empty;
+    public string CustomerPhone { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
+    public DateTime StartLocal { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public double Latitude { get; set; }
+    public double Longitude { get; set; }
 }
 
 public sealed class ConversationThreadSummary

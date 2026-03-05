@@ -2,6 +2,23 @@
 @{
     ViewData["Title"] = "Dashboard";
 }
+@using System.Text.Json
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+<style>
+    #bookingsMap {
+        height: 440px;
+        border-radius: 10px;
+    }
+
+    .map-meta {
+        font-size: 0.875rem;
+        color: #5f6b7a;
+    }
+</style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="h3 m-0">Dashboard</h1>
@@ -74,6 +91,16 @@
                 </p>
             </div>
         </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Mapa de agendamentos</strong>
+        <span id="mapStatus" class="map-meta">Carregando mapa...</span>
+    </div>
+    <div class="card-body">
+        <div id="bookingsMap"></div>
     </div>
 </div>
 
@@ -151,3 +178,179 @@
         </div>
     </div>
 </div>
+
+@section Scripts {
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script>
+        (() => {
+            const initialPins = @Html.Raw(JsonSerializer.Serialize(Model.MapPins));
+            const tenantId = '@Model.TenantId';
+            const endpoint = '@Url.Action("MapPins", "Dashboard")';
+            const statusEl = document.getElementById('mapStatus');
+
+            const map = L.map('bookingsMap', {
+                zoomControl: true,
+                attributionControl: true
+            });
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            const clusterGroup = L.markerClusterGroup({
+                showCoverageOnHover: false,
+                spiderfyOnMaxZoom: true,
+                zoomToBoundsOnClick: true,
+                maxClusterRadius: 45
+            });
+            map.addLayer(clusterGroup);
+
+            const markersById = new Map();
+            let latestCreatedAtUtc = null;
+            let pollTimer = null;
+
+            function toPin(raw) {
+                return {
+                    bookingId: raw.bookingId ?? raw.BookingId,
+                    serviceCategory: raw.serviceCategory ?? raw.ServiceCategory ?? '',
+                    serviceTitle: raw.serviceTitle ?? raw.ServiceTitle ?? '',
+                    customerPhone: raw.customerPhone ?? raw.CustomerPhone ?? '',
+                    address: raw.address ?? raw.Address ?? '',
+                    startLocal: raw.startLocal ?? raw.StartLocal ?? '',
+                    createdAtUtc: raw.createdAtUtc ?? raw.CreatedAtUtc ?? null,
+                    latitude: raw.latitude ?? raw.Latitude,
+                    longitude: raw.longitude ?? raw.Longitude
+                };
+            }
+
+            function escapeHtml(value) {
+                return (value ?? '')
+                    .toString()
+                    .replaceAll('&', '&amp;')
+                    .replaceAll('<', '&lt;')
+                    .replaceAll('>', '&gt;')
+                    .replaceAll('"', '&quot;')
+                    .replaceAll("'", '&#39;');
+            }
+
+            function addPin(rawPin) {
+                const pin = toPin(rawPin);
+                if (!pin.bookingId || markersById.has(pin.bookingId)) {
+                    return false;
+                }
+
+                const lat = Number(pin.latitude);
+                const lng = Number(pin.longitude);
+                if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                    return false;
+                }
+
+                const popup = `
+                    <div style="min-width: 220px">
+                        <strong>${escapeHtml(pin.serviceCategory)}</strong><br/>
+                        ${escapeHtml(pin.serviceTitle)}<br/>
+                        <small>${escapeHtml(pin.address)}</small><br/>
+                        <small>Telefone: ${escapeHtml(pin.customerPhone)}</small>
+                    </div>
+                `;
+
+                const marker = L.marker([lat, lng], { title: pin.serviceTitle || pin.serviceCategory });
+                marker.bindPopup(popup);
+                clusterGroup.addLayer(marker);
+                markersById.set(pin.bookingId, marker);
+
+                if (pin.createdAtUtc) {
+                    if (!latestCreatedAtUtc || pin.createdAtUtc > latestCreatedAtUtc) {
+                        latestCreatedAtUtc = pin.createdAtUtc;
+                    }
+                }
+
+                return true;
+            }
+
+            function fitMapToAllPins(force) {
+                const total = clusterGroup.getLayers().length;
+                if (total === 0) {
+                    map.setView([-14.235, -51.9253], 4);
+                    return;
+                }
+
+                if (!force) {
+                    return;
+                }
+
+                const bounds = clusterGroup.getBounds();
+                if (bounds && bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [28, 28], maxZoom: 16 });
+                }
+            }
+
+            function updateStatus(extra) {
+                const total = markersById.size;
+                const now = new Date().toLocaleTimeString();
+                statusEl.textContent = `Pins: ${total} | Atualizado: ${now}${extra ? ` | ${extra}` : ''}`;
+            }
+
+            async function pollPins() {
+                try {
+                    const query = new URLSearchParams({
+                        tenant: tenantId,
+                        limit: '300'
+                    });
+
+                    if (latestCreatedAtUtc) {
+                        query.set('sinceUtc', latestCreatedAtUtc);
+                    }
+
+                    const response = await fetch(`${endpoint}?${query.toString()}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' },
+                        cache: 'no-store'
+                    });
+
+                    if (!response.ok) {
+                        updateStatus(`falha HTTP ${response.status}`);
+                        return;
+                    }
+
+                    const payload = await response.json();
+                    const pins = Array.isArray(payload.pins) ? payload.pins : [];
+
+                    let added = 0;
+                    for (const pin of pins) {
+                        if (addPin(pin)) {
+                            added++;
+                        }
+                    }
+
+                    if (added > 0) {
+                        fitMapToAllPins(true);
+                    }
+
+                    updateStatus(added > 0 ? `+${added} novo(s)` : null);
+                } catch {
+                    updateStatus('erro de atualizacao');
+                }
+            }
+
+            let initialAdded = 0;
+            for (const pin of initialPins) {
+                if (addPin(pin)) {
+                    initialAdded++;
+                }
+            }
+
+            fitMapToAllPins(true);
+            updateStatus(initialAdded > 0 ? `${initialAdded} carregado(s)` : 'sem coordenadas geocodificadas ainda');
+
+            pollTimer = window.setInterval(pollPins, 5000);
+            window.addEventListener('beforeunload', () => {
+                if (pollTimer) {
+                    window.clearInterval(pollTimer);
+                }
+            });
+        })();
+    </script>
+}
