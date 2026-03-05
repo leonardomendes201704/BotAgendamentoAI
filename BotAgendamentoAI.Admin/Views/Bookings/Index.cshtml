@@ -1,0 +1,54 @@
+@model BotAgendamentoAI.Admin.Models.BookingsPageViewModel
+@{
+    ViewData["Title"] = "Agendamentos";
+    var limit = (int?)ViewData["Limit"] ?? 200;
+    var tenants = ViewData["Tenants"] as IReadOnlyList<string> ?? Array.Empty<string>();
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Agendamentos</h1>
+    <form method="get" class="d-flex gap-2 align-items-center">
+        <label class="form-label m-0">Tenant</label>
+        <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+            @foreach (var item in tenants)
+            {
+                <option value="@item" selected="@(item == Model.TenantId)">@item</option>
+            }
+        </select>
+        <label class="form-label m-0">Limite</label>
+        <input type="number" min="1" max="1000" name="limit" value="@limit" class="form-control form-control-sm" style="width: 100px" />
+        <button class="btn btn-sm btn-primary" type="submit">Aplicar</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover m-0">
+            <thead>
+                <tr>
+                    <th>Categoria</th>
+                    <th>Servico</th>
+                    <th>Cliente</th>
+                    <th>Telefone</th>
+                    <th>Inicio</th>
+                    <th>Duracao</th>
+                    <th>Tecnico</th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var item in Model.Bookings)
+            {
+                <tr>
+                    <td>@item.ServiceCategory</td>
+                    <td>@item.ServiceTitle</td>
+                    <td>@item.CustomerName</td>
+                    <td>@item.CustomerPhone</td>
+                    <td>@item.StartLocal.ToString("dd/MM/yyyy HH:mm")</td>
+                    <td>@item.DurationMinutes min</td>
+                    <td>@item.TechnicianName</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

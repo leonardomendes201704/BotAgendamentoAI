@@ -1,0 +1,52 @@
+@model BotAgendamentoAI.Admin.Models.BotConfigViewModel
+@{
+    ViewData["Title"] = "Menu e mensagens";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Menu e mensagens</h1>
+    <form method="get" class="d-flex gap-2 align-items-center">
+        <label class="form-label m-0">Tenant</label>
+        <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+            @foreach (var tenant in Model.Tenants)
+            {
+                <option value="@tenant" selected="@(tenant == Model.TenantId)">@tenant</option>
+            }
+        </select>
+        <button class="btn btn-sm btn-primary" type="submit">Carregar</button>
+    </form>
+</div>
+
+<form method="post" class="card card-body">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="TenantId" />
+
+    <div class="mb-3">
+        <label class="form-label">Menu principal</label>
+        <textarea asp-for="MainMenuText" class="form-control" rows="8"></textarea>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Mensagem de saudacao</label>
+        <textarea asp-for="GreetingText" class="form-control" rows="2"></textarea>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Mensagem de atendente humano</label>
+        <textarea asp-for="HumanHandoffText" class="form-control" rows="2"></textarea>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Mensagem de encerramento</label>
+        <textarea asp-for="ClosingText" class="form-control" rows="2"></textarea>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Mensagem fallback</label>
+        <textarea asp-for="FallbackText" class="form-control" rows="2"></textarea>
+    </div>
+
+    <div>
+        <button type="submit" class="btn btn-primary">Salvar</button>
+    </div>
+</form>

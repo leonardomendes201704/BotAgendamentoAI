@@ -1,0 +1,41 @@
+@model BotAgendamentoAI.Admin.Models.ConversationDetailsViewModel
+@{
+    ViewData["Title"] = "Detalhes da conversa";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 m-0">Conversa @Model.Phone</h1>
+    <a class="btn btn-sm btn-outline-secondary" asp-action="Index" asp-route-tenant="@Model.TenantId">Voltar</a>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-striped m-0">
+            <thead>
+                <tr>
+                    <th style="width: 170px;">Data UTC</th>
+                    <th style="width: 130px;">Role</th>
+                    <th style="width: 120px;">Direction</th>
+                    <th>Conteudo</th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var message in Model.Messages)
+            {
+                <tr>
+                    <td>@message.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td>
+                        @message.Role
+                        @if (!string.IsNullOrWhiteSpace(message.ToolName))
+                        {
+                            <span class="text-muted">(@message.ToolName)</span>
+                        }
+                    </td>
+                    <td>@message.Direction</td>
+                    <td><pre class="m-0" style="white-space: pre-wrap;">@message.Content</pre></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

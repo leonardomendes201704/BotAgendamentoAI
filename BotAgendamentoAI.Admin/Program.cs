@@ -1,0 +1,37 @@
+using BotAgendamentoAI.Admin.Data;
+using BotAgendamentoAI.Admin.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
+builder.Services.AddSingleton<IAdminRepository, SqliteAdminRepository>();
+builder.Services.AddControllersWithViews();
+
+var app = builder.Build();
+
+await using (var scope = app.Services.CreateAsyncScope())
+{
+    var repository = scope.ServiceProvider.GetRequiredService<IAdminRepository>();
+    await repository.InitializeAsync();
+}
+
+// Configure the HTTP request pipeline.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Home/Error");
+    // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+
+app.UseRouting();
+
+app.UseAuthorization();
+
+app.MapControllerRoute(
+    name: "default",
+    pattern: "{controller=Dashboard}/{action=Index}/{id?}");
+
+app.Run();

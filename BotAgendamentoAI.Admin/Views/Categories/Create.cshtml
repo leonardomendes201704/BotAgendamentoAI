@@ -1,0 +1,27 @@
+@model BotAgendamentoAI.Admin.Models.CategoryEditViewModel
+@{
+    ViewData["Title"] = "Nova categoria";
+}
+
+<h1 class="h3 mb-3">Nova categoria</h1>
+
+<form asp-action="Create" method="post" class="card card-body">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="TenantId" />
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-2"></div>
+
+    <div class="mb-3">
+        <label asp-for="TenantId" class="form-label">Tenant</label>
+        <input asp-for="TenantId" class="form-control" readonly />
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="Name" class="form-label">Nome</label>
+        <input asp-for="Name" class="form-control" />
+    </div>
+
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary">Salvar</button>
+        <a asp-action="Index" asp-route-tenant="@Model.TenantId" class="btn btn-outline-secondary">Cancelar</a>
+    </div>
+</form>

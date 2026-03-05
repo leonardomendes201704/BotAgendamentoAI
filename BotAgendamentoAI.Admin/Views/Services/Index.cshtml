@@ -1,0 +1,57 @@
+@model BotAgendamentoAI.Admin.Models.ServicesPageViewModel
+@{
+    ViewData["Title"] = "Servicos";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Servicos</h1>
+    <div class="d-flex gap-2">
+        <form method="get" class="d-flex gap-2 align-items-center">
+            <label class="form-label m-0">Tenant</label>
+            <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+                @foreach (var tenant in Model.Tenants)
+                {
+                    <option value="@tenant" selected="@(tenant == Model.TenantId)">@tenant</option>
+                }
+            </select>
+            <button class="btn btn-sm btn-primary" type="submit">Aplicar</button>
+        </form>
+        <a class="btn btn-sm btn-success" asp-action="Create" asp-route-tenant="@Model.TenantId">Novo servico</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover m-0">
+            <thead>
+                <tr>
+                    <th>Titulo</th>
+                    <th>Categoria</th>
+                    <th>Duracao</th>
+                    <th>Ativo</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var item in Model.Services)
+            {
+                <tr>
+                    <td>@item.Title</td>
+                    <td>@item.CategoryName</td>
+                    <td>@item.DefaultDurationMinutes min</td>
+                    <td>@(item.IsActive ? "Sim" : "Nao")</td>
+                    <td class="text-end">
+                        <a class="btn btn-sm btn-outline-primary" asp-action="Edit" asp-route-tenant="@Model.TenantId" asp-route-id="@item.Id">Editar</a>
+                        <form asp-action="Delete" method="post" class="d-inline">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="tenant" value="@Model.TenantId" />
+                            <input type="hidden" name="id" value="@item.Id" />
+                            <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

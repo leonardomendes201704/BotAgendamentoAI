@@ -1,0 +1,51 @@
+@model IReadOnlyList<BotAgendamentoAI.Admin.Models.ConversationThreadSummary>
+@{
+    ViewData["Title"] = "Conversas";
+    var tenant = (string?)ViewData["Tenant"] ?? "A";
+    var limit = (int?)ViewData["Limit"] ?? 100;
+    var tenants = ViewData["Tenants"] as IReadOnlyList<string> ?? Array.Empty<string>();
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Conversas</h1>
+    <form method="get" class="d-flex gap-2 align-items-center">
+        <label class="form-label m-0">Tenant</label>
+        <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+            @foreach (var item in tenants)
+            {
+                <option value="@item" selected="@(item == tenant)">@item</option>
+            }
+        </select>
+        <label class="form-label m-0">Limite</label>
+        <input type="number" min="1" max="500" name="limit" value="@limit" class="form-control form-control-sm" style="width: 90px" />
+        <button class="btn btn-sm btn-primary" type="submit">Aplicar</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover m-0">
+            <thead>
+            <tr>
+                <th>Telefone</th>
+                <th>Ultima mensagem</th>
+                <th>Contexto</th>
+                <th>Data UTC</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var item in Model)
+            {
+                <tr>
+                    <td>
+                        <a asp-action="Details" asp-route-tenant="@tenant" asp-route-phone="@item.Phone">@item.Phone</a>
+                    </td>
+                    <td>@item.LastMessagePreview</td>
+                    <td>@(string.IsNullOrWhiteSpace(item.MenuContext) ? "-" : item.MenuContext)</td>
+                    <td>@item.LastMessageAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

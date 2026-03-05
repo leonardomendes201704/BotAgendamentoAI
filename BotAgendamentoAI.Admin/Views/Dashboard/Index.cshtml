@@ -1,0 +1,153 @@
+@model BotAgendamentoAI.Admin.Models.DashboardViewModel
+@{
+    ViewData["Title"] = "Dashboard";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Dashboard</h1>
+    <form method="get" class="d-flex gap-2 align-items-center">
+        <label class="form-label m-0">Tenant</label>
+        <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+            @foreach (var tenant in Model.Tenants)
+            {
+                <option value="@tenant" selected="@(tenant == Model.TenantId)">@tenant</option>
+            }
+        </select>
+        <label class="form-label m-0">Dias</label>
+        <input type="number" min="1" max="365" name="days" value="@Model.Days" class="form-control form-control-sm" style="width: 90px" />
+        <button class="btn btn-sm btn-primary" type="submit">Aplicar</button>
+    </form>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h6 text-muted">Conversas ativas</h2>
+                <div class="display-6">@Model.TotalIncomingConversations</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h6 text-muted">Mensagens</h2>
+                <div class="display-6">@Model.TotalMessages</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h6 text-muted">Agendamentos criados</h2>
+                <div class="display-6">@Model.CreatedBookings</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h6 text-muted">Taxa de conversao</h2>
+                <div class="display-6">@Model.ConversionRatePercent.ToString("0.##")%</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h6 text-muted">Atendente humano (fila aberta)</h2>
+                <div class="display-6">@Model.HumanHandoffOpen</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h6 text-muted">Periodo</h2>
+                <p class="mb-0">
+                    @Model.FromUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
+                    ate
+                    @Model.ToUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Ultimas conversas</strong>
+                <a asp-controller="Conversations" asp-action="Index" asp-route-tenant="@Model.TenantId">ver todas</a>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover m-0">
+                    <thead>
+                        <tr>
+                            <th>Telefone</th>
+                            <th>Ultima msg</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var item in Model.RecentConversations)
+                    {
+                        <tr>
+                            <td>
+                                <a asp-controller="Conversations" asp-action="Details" asp-route-tenant="@Model.TenantId" asp-route-phone="@item.Phone">@item.Phone</a>
+                            </td>
+                            <td>@item.LastMessagePreview</td>
+                            <td>
+                                @if (item.IsInHumanHandoff)
+                                {
+                                    <span class="badge bg-warning text-dark">humano</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">bot</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Ultimos agendamentos</strong>
+                <a asp-controller="Bookings" asp-action="Index" asp-route-tenant="@Model.TenantId">ver todos</a>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover m-0">
+                    <thead>
+                        <tr>
+                            <th>Categoria</th>
+                            <th>Servico</th>
+                            <th>Telefone</th>
+                            <th>Inicio</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var item in Model.RecentBookings)
+                    {
+                        <tr>
+                            <td>@item.ServiceCategory</td>
+                            <td>@item.ServiceTitle</td>
+                            <td>@item.CustomerPhone</td>
+                            <td>@item.StartLocal.ToString("dd/MM/yyyy HH:mm")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
