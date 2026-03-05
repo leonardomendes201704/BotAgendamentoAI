@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using BotAgendamentoAI.Domain;
 using Microsoft.Data.Sqlite;
 
@@ -7,6 +8,10 @@ namespace BotAgendamentoAI.Data;
 public sealed class ConversationRepository
 {
     private readonly string _connectionString;
+    private static readonly JsonSerializerOptions ConfigJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     private const string SchemaSql = """
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -32,6 +37,13 @@ CREATE TABLE IF NOT EXISTS conversation_state (
   slots_json TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL,
   PRIMARY KEY (tenant_id, phone)
+);
+
+CREATE TABLE IF NOT EXISTS tenant_bot_config (
+  tenant_id TEXT PRIMARY KEY,
+  menu_json TEXT NOT NULL,
+  messages_json TEXT NOT NULL,
+  updated_at_utc TEXT NOT NULL
 );
 """;
 
@@ -212,6 +224,78 @@ CREATE TABLE IF NOT EXISTS conversation_state (
         await command.ExecuteNonQueryAsync();
     }
 
+    public async Task<BotTextConfig> GetBotTextConfig(string tenantId)
+    {
+        var tenant = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT menu_json, messages_json
+            FROM tenant_bot_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            return BotTextConfig.CreateDefault(tenant);
+        }
+
+        var menuJson = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+        var messagesJson = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+
+        var config = BotTextConfig.CreateDefault(tenant);
+
+        try
+        {
+            var menu = JsonSerializer.Deserialize<MenuConfigStorage>(menuJson, ConfigJsonOptions);
+            if (!string.IsNullOrWhiteSpace(menu?.MainMenuText))
+            {
+                config.MainMenuText = menu.MainMenuText.Trim();
+            }
+        }
+        catch
+        {
+            // Keep default menu text.
+        }
+
+        try
+        {
+            var messages = JsonSerializer.Deserialize<MessagesConfigStorage>(messagesJson, ConfigJsonOptions);
+            if (!string.IsNullOrWhiteSpace(messages?.GreetingText))
+            {
+                config.GreetingText = messages.GreetingText.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(messages?.HumanHandoffText))
+            {
+                config.HumanHandoffText = messages.HumanHandoffText.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(messages?.ClosingText))
+            {
+                config.ClosingText = messages.ClosingText.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(messages?.FallbackText))
+            {
+                config.FallbackText = messages.FallbackText.Trim();
+            }
+        }
+        catch
+        {
+            // Keep default message texts.
+        }
+
+        return config;
+    }
+
     private SqliteConnection CreateConnection() => new(_connectionString);
 
     private static string ToUtcText(DateTimeOffset dateTimeOffset)
@@ -246,5 +330,18 @@ CREATE TABLE IF NOT EXISTS conversation_state (
             CreatedAtUtc = ParseUtc(reader.GetString(8)),
             MetadataJson = reader.IsDBNull(9) ? null : reader.GetString(9)
         };
+    }
+
+    private sealed class MenuConfigStorage
+    {
+        public string MainMenuText { get; set; } = string.Empty;
+    }
+
+    private sealed class MessagesConfigStorage
+    {
+        public string GreetingText { get; set; } = string.Empty;
+        public string HumanHandoffText { get; set; } = string.Empty;
+        public string ClosingText { get; set; } = string.Empty;
+        public string FallbackText { get; set; } = string.Empty;
     }
 }

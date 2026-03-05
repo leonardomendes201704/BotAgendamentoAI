@@ -20,8 +20,7 @@ public sealed class SecretaryBot
     private readonly TimeZoneInfo _timeZone;
     private readonly ChatClient _chat;
 
-    private const string MainMenuText = """
-Como posso ajudar? Escolha uma opcao:
+    private const string DefaultMainMenuBody = """
 1 - Agendar Servico
 2 - Consultar Agendamentos
 3 - Cancelar Agendamento
@@ -73,6 +72,7 @@ Regras:
     {
         var nowUtc = DateTimeOffset.UtcNow;
         var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, _timeZone);
+        var botText = await _repository.GetBotTextConfig(incoming.TenantId);
 
         var state = await _repository.GetState(incoming.TenantId, incoming.FromPhone)
                     ?? CreateInitialState(incoming, nowUtc);
@@ -100,7 +100,8 @@ Regras:
             incoming,
             slots,
             rawHistory.Count == 0,
-            nowUtc);
+            nowUtc,
+            botText);
 
         if (menuHandled.Handled)
         {
@@ -115,6 +116,7 @@ Regras:
             new SystemChatMessage(SystemPrompt),
             new SystemChatMessage(BuildDateTimeContext(nowLocal)),
             new SystemChatMessage(BuildCategoryContext(incoming.TenantId)),
+            new SystemChatMessage(BuildBotMessageContext(botText)),
             new SystemChatMessage(_stateManager.BuildStatePromptBlock(summary, slots, returningAfter24h))
         };
 
@@ -207,7 +209,8 @@ Regras:
         IncomingMessage incoming,
         ConversationSlots slots,
         bool isNewConversation,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        BotTextConfig botText)
     {
         var normalized = NormalizeText(incoming.Text);
         var menuContext = (slots.MenuContext ?? string.Empty).Trim().ToLowerInvariant();
@@ -219,10 +222,10 @@ Regras:
                 slots.MenuContext = "awaiting_menu_choice";
                 slots.Pending = null;
                 ClearBookingSelection(slots);
-                return (true, MainMenuText);
+                return (true, BuildMainMenuResponse(botText, includeGreeting: false));
             }
 
-            return (true, "Atendimento encerrado. Envie MENU para iniciar novamente.");
+            return (true, $"{ResolveClosingText(botText)}\nEnvie MENU para iniciar novamente.");
         }
 
         if (menuContext == "human_handoff")
@@ -232,30 +235,30 @@ Regras:
                 slots.MenuContext = "awaiting_menu_choice";
                 slots.Pending = null;
                 ClearBookingSelection(slots);
-                return (true, MainMenuText);
+                return (true, BuildMainMenuResponse(botText, includeGreeting: false));
             }
 
-            return (true, "Voce esta na fila de atendimento humano. Envie MENU para voltar ao bot.");
+            return (true, $"{ResolveHumanHandoffText(botText)}\nEnvie MENU para voltar ao bot.");
         }
 
         if (menuContext == "awaiting_cancel_selection")
         {
-            return await HandleCancelSelectionAsync(incoming, slots, normalized, nowUtc);
+            return await HandleCancelSelectionAsync(incoming, slots, normalized, nowUtc, botText);
         }
 
         if (menuContext == "awaiting_reschedule_selection")
         {
-            return HandleRescheduleSelection(slots, normalized);
+            return HandleRescheduleSelection(slots, normalized, botText);
         }
 
         if (menuContext == "awaiting_reschedule_datetime")
         {
-            return await HandleRescheduleDateTimeAsync(incoming, slots, normalized, nowUtc);
+            return await HandleRescheduleDateTimeAsync(incoming, slots, normalized, nowUtc, botText);
         }
 
         if (menuContext == "awaiting_menu_choice")
         {
-            return await HandleMenuChoiceAsync(incoming, slots, normalized, nowUtc);
+            return await HandleMenuChoiceAsync(incoming, slots, normalized, nowUtc, botText);
         }
 
         if (ShouldShowMainMenu(normalized, isNewConversation))
@@ -263,14 +266,14 @@ Regras:
             slots.MenuContext = "awaiting_menu_choice";
             slots.Pending = null;
             ClearBookingSelection(slots);
-            return (true, MainMenuText);
+            return (true, BuildMainMenuResponse(botText, includeGreeting: true));
         }
 
         var directNumericChoice = ParseNumberChoice(normalized, 1, 6);
         if (directNumericChoice.HasValue)
         {
             slots.MenuContext = "awaiting_menu_choice";
-            return await HandleMenuChoiceAsync(incoming, slots, normalized, nowUtc);
+            return await HandleMenuChoiceAsync(incoming, slots, normalized, nowUtc, botText);
         }
 
         var directIntentChoice = ParseMenuChoice(normalized, allowKeywordMapping: true);
@@ -279,7 +282,7 @@ Regras:
             !IsMenuIntent(normalized))
         {
             slots.MenuContext = "awaiting_menu_choice";
-            return await HandleMenuChoiceAsync(incoming, slots, normalized, nowUtc);
+            return await HandleMenuChoiceAsync(incoming, slots, normalized, nowUtc, botText);
         }
 
         return (false, string.Empty);
@@ -289,17 +292,18 @@ Regras:
         IncomingMessage incoming,
         ConversationSlots slots,
         string normalizedText,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        BotTextConfig botText)
     {
         if (IsMenuIntent(normalizedText) || IsGreetingIntent(normalizedText))
         {
-            return (true, MainMenuText);
+            return (true, BuildMainMenuResponse(botText, includeGreeting: false));
         }
 
         var choice = ParseMenuChoice(normalizedText, allowKeywordMapping: true);
         if (!choice.HasValue)
         {
-            return (true, $"Escolha uma opcao valida de 1 a 6.\n\n{MainMenuText}");
+            return (true, $"{ResolveFallbackText(botText)}\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
         }
 
         switch (choice.Value)
@@ -326,7 +330,7 @@ Regras:
                     slots.MenuContext = "awaiting_menu_choice";
                     slots.Pending = "bookings_listed";
                     ClearBookingSelection(slots);
-                    return (true, $"Voce nao possui agendamentos no momento.\n\n{MainMenuText}");
+                    return (true, $"Voce nao possui agendamentos no momento.\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
                 }
 
                 var options = BuildBookingOptions(bookings);
@@ -359,7 +363,7 @@ Regras:
                     slots.MenuContext = "awaiting_menu_choice";
                     slots.Pending = "bookings_listed";
                     ClearBookingSelection(slots);
-                    return (true, $"Voce nao possui agendamentos para cancelar.\n\n{MainMenuText}");
+                    return (true, $"Voce nao possui agendamentos para cancelar.\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
                 }
 
                 var options = BuildBookingOptions(bookings);
@@ -391,7 +395,7 @@ Regras:
                     slots.MenuContext = "awaiting_menu_choice";
                     slots.Pending = "bookings_listed";
                     ClearBookingSelection(slots);
-                    return (true, $"Voce nao possui agendamentos para alterar.\n\n{MainMenuText}");
+                    return (true, $"Voce nao possui agendamentos para alterar.\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
                 }
 
                 var options = BuildBookingOptions(bookings);
@@ -411,16 +415,16 @@ Regras:
                 slots.MenuContext = "human_handoff";
                 slots.Pending = "human_handoff";
                 ClearBookingSelection(slots);
-                return (true, "Certo. Vou te direcionar para um atendente humano.\nEm instantes voce sera atendido.\nSe quiser voltar ao bot, envie MENU.");
+                return (true, $"{ResolveHumanHandoffText(botText)}\nSe quiser voltar ao bot, envie MENU.");
 
             case 6:
                 slots.MenuContext = "closed";
                 slots.Pending = "closed";
                 ClearBookingSelection(slots);
-                return (true, "Atendimento encerrado. Quando quiser voltar, envie MENU.");
+                return (true, ResolveClosingText(botText));
 
             default:
-                return (true, $"Escolha uma opcao valida de 1 a 6.\n\n{MainMenuText}");
+                return (true, $"{ResolveFallbackText(botText)}\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
         }
     }
 
@@ -428,14 +432,15 @@ Regras:
         IncomingMessage incoming,
         ConversationSlots slots,
         string normalizedText,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        BotTextConfig botText)
     {
         if (IsMenuIntent(normalizedText))
         {
             slots.MenuContext = "awaiting_menu_choice";
             slots.Pending = null;
             ClearBookingSelection(slots);
-            return (true, MainMenuText);
+            return (true, BuildMainMenuResponse(botText, includeGreeting: false));
         }
 
         var number = ParseNumberChoice(normalizedText, 1, 99);
@@ -476,22 +481,23 @@ Regras:
 
         if (!success)
         {
-            return (true, $"Nao consegui cancelar o agendamento selecionado.\n\n{MainMenuText}");
+            return (true, $"Nao consegui cancelar o agendamento selecionado.\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
         }
 
-        return (true, $"Agendamento cancelado com sucesso:\n{selected.Label}\n\n{MainMenuText}");
+        return (true, $"Agendamento cancelado com sucesso:\n{selected.Label}\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
     }
 
     private (bool Handled, string Response) HandleRescheduleSelection(
         ConversationSlots slots,
-        string normalizedText)
+        string normalizedText,
+        BotTextConfig botText)
     {
         if (IsMenuIntent(normalizedText))
         {
             slots.MenuContext = "awaiting_menu_choice";
             slots.Pending = null;
             ClearBookingSelection(slots);
-            return (true, MainMenuText);
+            return (true, BuildMainMenuResponse(botText, includeGreeting: false));
         }
 
         var number = ParseNumberChoice(normalizedText, 1, 99);
@@ -525,21 +531,22 @@ Regras:
         IncomingMessage incoming,
         ConversationSlots slots,
         string normalizedText,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        BotTextConfig botText)
     {
         if (IsMenuIntent(normalizedText))
         {
             slots.MenuContext = "awaiting_menu_choice";
             slots.Pending = null;
             ClearBookingSelection(slots);
-            return (true, MainMenuText);
+            return (true, BuildMainMenuResponse(botText, includeGreeting: false));
         }
 
         if (string.IsNullOrWhiteSpace(slots.SelectedBookingId))
         {
             slots.MenuContext = "awaiting_menu_choice";
             ClearBookingSelection(slots);
-            return (true, $"Nao encontrei o agendamento selecionado.\n\n{MainMenuText}");
+            return (true, $"Nao encontrei o agendamento selecionado.\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
         }
 
         if (!_stateManager.TryParseDateTimeFromMessage(incoming.Text, nowUtc, out var newStartLocal))
@@ -587,11 +594,11 @@ Regras:
 
         if (updated is null)
         {
-            return (true, $"Nao consegui alterar o {selectedLabel}.\n\n{MainMenuText}");
+            return (true, $"Nao consegui alterar o {selectedLabel}.\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
         }
 
         return (true,
-            $"Agendamento alterado com sucesso para {updated.StartLocal:dd/MM/yyyy 'as' HH:mm}.\nCategoria: {updated.ServiceCategory}\nServico: {updated.ServiceTitle}\nEndereco: {updated.Address}\n\n{MainMenuText}");
+            $"Agendamento alterado com sucesso para {updated.StartLocal:dd/MM/yyyy 'as' HH:mm}.\nCategoria: {updated.ServiceCategory}\nServico: {updated.ServiceTitle}\nEndereco: {updated.Address}\n\n{BuildMainMenuResponse(botText, includeGreeting: false)}");
     }
 
     private ChatCompletionOptions BuildOptions()
@@ -717,6 +724,83 @@ Regra de classificacao:
 - Ao criar agendamento, defina categoryName.
 - Se nao houver categoria adequada, crie uma categoria especifica (nunca "Outros").
 """;
+    }
+
+    private static string BuildBotMessageContext(BotTextConfig botText)
+    {
+        return $"""
+Tenant message config:
+- greetingText: {ResolveGreetingText(botText)}
+- humanHandoffText: {ResolveHumanHandoffText(botText)}
+- closingText: {ResolveClosingText(botText)}
+- fallbackText: {ResolveFallbackText(botText)}
+
+When menu flow is active, keep language aligned to these texts.
+""";
+    }
+
+    private static string BuildMainMenuResponse(BotTextConfig botText, bool includeGreeting)
+    {
+        var menuBody = ResolveMainMenuBody(botText);
+        var menuText =
+            menuBody.Contains("como posso ajudar", StringComparison.OrdinalIgnoreCase) ||
+            menuBody.Contains("escolha uma opcao", StringComparison.OrdinalIgnoreCase)
+                ? menuBody
+                : $"Como posso ajudar? Escolha uma opcao:\n{menuBody}";
+
+        if (!includeGreeting)
+        {
+            return menuText;
+        }
+
+        var greeting = ResolveGreetingText(botText);
+        if (string.IsNullOrWhiteSpace(greeting))
+        {
+            return menuText;
+        }
+
+        if (greeting.Contains("como posso ajudar", StringComparison.OrdinalIgnoreCase) &&
+            menuText.Contains("como posso ajudar", StringComparison.OrdinalIgnoreCase))
+        {
+            return menuText;
+        }
+
+        return $"{greeting}\n\n{menuText}";
+    }
+
+    private static string ResolveMainMenuBody(BotTextConfig botText)
+    {
+        return string.IsNullOrWhiteSpace(botText.MainMenuText)
+            ? DefaultMainMenuBody
+            : botText.MainMenuText.Trim();
+    }
+
+    private static string ResolveGreetingText(BotTextConfig botText)
+    {
+        return string.IsNullOrWhiteSpace(botText.GreetingText)
+            ? "Como posso ajudar voce hoje?"
+            : botText.GreetingText.Trim();
+    }
+
+    private static string ResolveHumanHandoffText(BotTextConfig botText)
+    {
+        return string.IsNullOrWhiteSpace(botText.HumanHandoffText)
+            ? "Vou te direcionar para um atendente humano."
+            : botText.HumanHandoffText.Trim();
+    }
+
+    private static string ResolveClosingText(BotTextConfig botText)
+    {
+        return string.IsNullOrWhiteSpace(botText.ClosingText)
+            ? "Atendimento encerrado. Envie MENU para iniciar novamente."
+            : botText.ClosingText.Trim();
+    }
+
+    private static string ResolveFallbackText(BotTextConfig botText)
+    {
+        return string.IsNullOrWhiteSpace(botText.FallbackText)
+            ? "Nao entendi. Escolha uma opcao do menu."
+            : botText.FallbackText.Trim();
     }
 
     private static string ExtractAssistantText(ChatCompletion completion)

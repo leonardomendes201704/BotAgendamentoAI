@@ -55,6 +55,25 @@ public sealed class ConversationState
     public DateTimeOffset UpdatedAtUtc { get; set; }
 }
 
+public sealed class BotTextConfig
+{
+    public string TenantId { get; set; } = "A";
+    public string MainMenuText { get; set; } =
+        "1 - Agendar Servico\n2 - Consultar Agendamentos\n3 - Cancelar Agendamento\n4 - Alterar Agendamento\n5 - Falar com atendente\n6 - Encerrar atendimento";
+    public string GreetingText { get; set; } = "Como posso ajudar voce hoje?";
+    public string HumanHandoffText { get; set; } = "Vou te direcionar para um atendente humano.";
+    public string ClosingText { get; set; } = "Atendimento encerrado. Envie MENU para iniciar novamente.";
+    public string FallbackText { get; set; } = "Nao entendi. Escolha uma opcao do menu.";
+
+    public static BotTextConfig CreateDefault(string tenantId)
+    {
+        return new BotTextConfig
+        {
+            TenantId = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim()
+        };
+    }
+}
+
 public sealed class ConversationSlots
 {
     public string? ServiceTitle { get; set; }
