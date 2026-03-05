@@ -1083,6 +1083,133 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await UpsertSharedSettingAsync(connection, OpenAiApiKeySettingKey, openAiApiKeyToPersist, nowUtc);
     }
 
+    public async Task<TelegramMemoryResetResult> ResetTelegramMemoryAsync(string tenantId, long telegramUserId, bool clearHistory)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var safeUserId = Math.Max(0L, telegramUserId);
+        var result = new TelegramMemoryResetResult();
+        if (safeUserId <= 0)
+        {
+            return result;
+        }
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "Users", transaction);
+        var hasUserSessions = await TableExistsAsync(connection, "UserSessions", transaction);
+        var hasMessagesLog = await TableExistsAsync(connection, "MessagesLog", transaction);
+        var hasLegacyMessages = await TableExistsAsync(connection, "conversation_messages", transaction);
+        var hasLegacyState = await TableExistsAsync(connection, "conversation_state", transaction);
+
+        if (hasUsers)
+        {
+            var userIds = new List<long>();
+            await using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText =
+                """
+                SELECT Id
+                FROM Users
+                WHERE TenantId = @tenant_id
+                  AND TelegramUserId = @telegram_user_id;
+                """;
+                command.Parameters.AddWithValue("@tenant_id", tenant);
+                command.Parameters.AddWithValue("@telegram_user_id", safeUserId);
+
+                await using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    userIds.Add(reader.GetInt64(0));
+                }
+            }
+
+            if (userIds.Count > 0)
+            {
+                result.FoundUser = true;
+            }
+
+            if (hasUserSessions)
+            {
+                foreach (var userId in userIds)
+                {
+                    await using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText =
+                    """
+                    UPDATE UserSessions
+                    SET State = 'NONE',
+                        DraftJson = '{}',
+                        ActiveJobId = NULL,
+                        ChatJobId = NULL,
+                        ChatPeerUserId = NULL,
+                        IsChatActive = 0,
+                        UpdatedAt = @updated_at
+                    WHERE UserId = @user_id;
+                    """;
+                    command.Parameters.AddWithValue("@updated_at", ToUtcText(DateTimeOffset.UtcNow));
+                    command.Parameters.AddWithValue("@user_id", userId);
+                    result.SessionsReset += await command.ExecuteNonQueryAsync();
+                }
+            }
+        }
+
+        if (clearHistory && hasMessagesLog)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+            """
+            DELETE FROM MessagesLog
+            WHERE TenantId = @tenant_id
+              AND TelegramUserId = @telegram_user_id;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@telegram_user_id", safeUserId);
+            result.TelegramMessagesDeleted = await command.ExecuteNonQueryAsync();
+        }
+
+        var phone = safeUserId.ToString(CultureInfo.InvariantCulture);
+        var prefixedPhone = $"tg:{phone}";
+
+        if (clearHistory && hasLegacyMessages)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+            """
+            DELETE FROM conversation_messages
+            WHERE tenant_id = @tenant_id
+              AND (phone = @phone OR phone = @prefixed_phone);
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@phone", phone);
+            command.Parameters.AddWithValue("@prefixed_phone", prefixedPhone);
+            result.LegacyConversationMessagesDeleted = await command.ExecuteNonQueryAsync();
+        }
+
+        if (hasLegacyState)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+            """
+            DELETE FROM conversation_state
+            WHERE tenant_id = @tenant_id
+              AND (phone = @phone OR phone = @prefixed_phone);
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@phone", phone);
+            command.Parameters.AddWithValue("@prefixed_phone", prefixedPhone);
+            result.LegacyConversationStateDeleted = await command.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+        return result;
+    }
+
     private static string TrimPreview(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -1426,6 +1553,23 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             NormalizedName = reader.IsDBNull(3) ? normalized : reader.GetString(3),
             CreatedAtUtc = ParseUtc(reader.GetString(4))
         };
+    }
+
+    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName, SqliteTransaction transaction)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = @table_name
+        LIMIT 1;
+        """;
+        command.Parameters.AddWithValue("@table_name", tableName);
+        var scalar = await command.ExecuteScalarAsync();
+        return scalar is not null && scalar is not DBNull;
     }
 
     private static async Task<int> QueryIntAsync(SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)

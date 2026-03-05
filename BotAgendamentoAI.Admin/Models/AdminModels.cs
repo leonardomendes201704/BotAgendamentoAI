@@ -157,3 +157,12 @@ public sealed class BotConfigViewModel
     public long TelegramLastUpdateId { get; set; }
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
 }
+
+public sealed class TelegramMemoryResetResult
+{
+    public bool FoundUser { get; set; }
+    public int SessionsReset { get; set; }
+    public int TelegramMessagesDeleted { get; set; }
+    public int LegacyConversationMessagesDeleted { get; set; }
+    public int LegacyConversationStateDeleted { get; set; }
+}

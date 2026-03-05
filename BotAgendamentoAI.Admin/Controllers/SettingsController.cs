@@ -25,6 +25,35 @@ public sealed class SettingsController : Controller
     public async Task<IActionResult> Index(BotConfigViewModel input)
     {
         await _repository.SaveBotConfigAsync(input);
+        TempData["StatusMessage"] = "Configuracoes salvas com sucesso.";
         return RedirectToAction(nameof(Index), new { tenant = input.TenantId });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> ResetTelegramMemory(string tenantId, long telegramUserId, bool clearHistory = true)
+    {
+        var tenant = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
+        if (telegramUserId <= 0)
+        {
+            TempData["ErrorMessage"] = "Informe um Telegram User ID valido.";
+            return RedirectToAction(nameof(Index), new { tenant });
+        }
+
+        var result = await _repository.ResetTelegramMemoryAsync(tenant, telegramUserId, clearHistory);
+        if (!result.FoundUser)
+        {
+            TempData["ErrorMessage"] = $"Usuario Telegram {telegramUserId} nao encontrado no tenant {tenant}.";
+            return RedirectToAction(nameof(Index), new { tenant });
+        }
+
+        TempData["StatusMessage"] =
+            $"Memoria resetada para {telegramUserId}. " +
+            $"Sessoes: {result.SessionsReset}, " +
+            $"Logs Telegram: {result.TelegramMessagesDeleted}, " +
+            $"Legacy msgs: {result.LegacyConversationMessagesDeleted}, " +
+            $"Legacy state: {result.LegacyConversationStateDeleted}.";
+
+        return RedirectToAction(nameof(Index), new { tenant });
     }
 }

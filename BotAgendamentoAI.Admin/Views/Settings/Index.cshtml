@@ -1,10 +1,10 @@
 @model BotAgendamentoAI.Admin.Models.BotConfigViewModel
 @{
-    ViewData["Title"] = "Menu e mensagens";
+    ViewData["Title"] = "Configuracoes";
 }
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="h3 m-0">Menu e mensagens</h1>
+    <h1 class="h3 m-0">Configuracoes</h1>
     <form method="get" class="d-flex gap-2 align-items-center">
         <label class="form-label m-0">Tenant</label>
         <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
@@ -16,6 +16,16 @@
         <button class="btn btn-sm btn-primary" type="submit">Carregar</button>
     </form>
 </div>
+
+@if (TempData["StatusMessage"] is string statusMessage && !string.IsNullOrWhiteSpace(statusMessage))
+{
+    <div class="alert alert-success">@statusMessage</div>
+}
+
+@if (TempData["ErrorMessage"] is string errorMessage && !string.IsNullOrWhiteSpace(errorMessage))
+{
+    <div class="alert alert-danger">@errorMessage</div>
+}
 
 <form method="post" class="card card-body">
     @Html.AntiForgeryToken()
@@ -114,5 +124,33 @@
 
     <div>
         <button type="submit" class="btn btn-primary">Salvar</button>
+    </div>
+</form>
+
+<form method="post" asp-action="ResetTelegramMemory" class="card card-body mt-3">
+    @Html.AntiForgeryToken()
+    <input type="hidden" name="tenantId" value="@Model.TenantId" />
+
+    <h2 class="h5">Reset de memoria (Telegram)</h2>
+    <p class="text-muted">
+        Use para limpar estado e historico de um usuario especifico no tenant atual.
+        Isso ajuda nos testes quando o mesmo Telegram fica preso em um fluxo anterior.
+    </p>
+
+    <div class="mb-3">
+        <label class="form-label">Telegram User ID</label>
+        <input name="telegramUserId" type="number" min="1" class="form-control" placeholder="Ex.: 5953010045" required />
+    </div>
+
+    <input type="hidden" name="clearHistory" value="false" />
+    <div class="form-check mb-3">
+        <input class="form-check-input" type="checkbox" name="clearHistory" value="true" checked id="clearHistoryFlag" />
+        <label class="form-check-label" for="clearHistoryFlag">
+            Limpar historico de mensagens junto com a sessao
+        </label>
+    </div>
+
+    <div>
+        <button type="submit" class="btn btn-outline-danger">Resetar memoria do usuario</button>
     </div>
 </form>

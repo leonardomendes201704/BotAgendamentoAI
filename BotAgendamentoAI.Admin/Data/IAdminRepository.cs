@@ -23,4 +23,5 @@ public interface IAdminRepository
     Task<bool> DeleteServiceAsync(string tenantId, long id);
     Task<BotConfigViewModel> GetBotConfigAsync(string tenantId);
     Task SaveBotConfigAsync(BotConfigViewModel input);
+    Task<TelegramMemoryResetResult> ResetTelegramMemoryAsync(string tenantId, long telegramUserId, bool clearHistory);
 }
