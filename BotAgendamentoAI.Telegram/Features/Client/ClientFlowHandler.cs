@@ -32,19 +32,19 @@ public sealed class ClientFlowHandler
         var text = (message.Text ?? string.Empty).Trim();
         var state = context.Session.State;
 
-        if (string.Equals(text, "Cancelar", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase))
         {
             await GoHomeAsync(context, message.Chat.Id, cancellationToken);
             return;
         }
 
-        if (string.Equals(text, "Voltar", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.Back, StringComparison.OrdinalIgnoreCase))
         {
             await GoHomeAsync(context, message.Chat.Id, cancellationToken);
             return;
         }
 
-        if (string.Equals(text, "?? Trocar para Prestador", StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(text, MenuTexts.ClientSwitchToProvider, StringComparison.OrdinalIgnoreCase)
             && context.User.Role == UserRole.Both)
         {
             UserContextService.SetState(context.Session, BotStates.P_HOME);
@@ -64,19 +64,19 @@ public sealed class ClientFlowHandler
             return;
         }
 
-        if (string.Equals(text, "??? Pedir servico", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.ClientRequestService, StringComparison.OrdinalIgnoreCase))
         {
             await StartWizardAsync(context, message.Chat.Id, cancellationToken);
             return;
         }
 
-        if (string.Equals(text, "?? Meus agendamentos", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.ClientMyBookings, StringComparison.OrdinalIgnoreCase))
         {
-            await SendMyJobsAsync(context, message.Chat.Id, cancellationToken);
+            await SendMyJobsAsync(context, message.Chat.Id, 0, cancellationToken);
             return;
         }
 
-        if (string.Equals(text, "? Ajuda", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.ClientHelp, StringComparison.OrdinalIgnoreCase))
         {
             await _sender.SendTextAsync(
                 context.Db,
@@ -91,7 +91,7 @@ public sealed class ClientFlowHandler
             return;
         }
 
-        if (string.Equals(text, "? Favoritos", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.ClientFavorites, StringComparison.OrdinalIgnoreCase))
         {
             await _sender.SendTextAsync(
                 context.Db,
@@ -241,6 +241,40 @@ public sealed class ClientFlowHandler
         if (route.Scope == "NAV" && route.Action == "BACK")
         {
             await GoHomeAsync(context, chatId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "C" && route.Action == "MY")
+        {
+            if (!int.TryParse(route.Arg1, out var offset))
+            {
+                offset = 0;
+            }
+
+            await SendMyJobsAsync(context, chatId, Math.Max(0, offset), cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "J" && long.TryParse(route.Action, out var chatJobId) && route.Arg1 == "CHAT" && route.Arg2 == "EXIT")
+        {
+            context.Session.IsChatActive = false;
+            context.Session.ChatPeerUserId = null;
+            context.Session.ChatJobId = null;
+            context.Session.ActiveJobId = chatJobId;
+            context.Session.State = BotStates.C_TRACKING;
+            context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                BotMessages.ChatClosed(),
+                KeyboardFactory.ClientMenu(),
+                chatJobId,
+                cancellationToken);
             return true;
         }
 
@@ -548,7 +582,7 @@ public sealed class ClientFlowHandler
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == jobId && x.ClientUserId == context.User.Id, cancellationToken);
 
-        if (job is null || !job.ProviderUserId.HasValue || job.Status is JobStatus.Cancelled or JobStatus.Finished)
+        if (job is null || !CanOpenChat(job.Status, job.ProviderUserId.HasValue))
         {
             await _sender.SendTextAsync(
                 context.Db,
@@ -583,13 +617,21 @@ public sealed class ClientFlowHandler
             cancellationToken);
     }
 
-    public async Task SendMyJobsAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
+    public async Task SendMyJobsAsync(BotExecutionContext context, ChatId chatId, int offset, CancellationToken cancellationToken)
     {
+        var safeOffset = Math.Max(0, offset);
+        const int pageSize = 5;
+
+        var total = await context.Db.Jobs
+            .AsNoTracking()
+            .CountAsync(x => x.ClientUserId == context.User.Id, cancellationToken);
+
         var jobs = await context.Db.Jobs
             .AsNoTracking()
             .Where(x => x.ClientUserId == context.User.Id)
             .OrderByDescending(x => x.CreatedAt)
-            .Take(10)
+            .Skip(safeOffset)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
 
         if (jobs.Count == 0)
@@ -613,16 +655,22 @@ public sealed class ClientFlowHandler
             var status = job.Status.ToString();
             var when = job.IsUrgent
                 ? "Urgente"
-                : (job.ScheduledAt?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Nao definido");
+                : (job.ScheduledAt.HasValue
+                    ? TimeZoneInfo.ConvertTime(job.ScheduledAt.Value, context.Runtime.TimeZone).ToString("dd/MM/yyyy HH:mm")
+                    : "Nao definido");
 
             var text = $"#{job.Id} | {job.Category}\nStatus: {status}\nQuando: {when}";
-            var keyboard = new InlineKeyboardMarkup(new[]
+            InlineKeyboardMarkup? keyboard = null;
+            if (CanOpenChat(job.Status, job.ProviderUserId.HasValue))
             {
-                new[]
+                keyboard = new InlineKeyboardMarkup(new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("?? Chat", $"J:{job.Id}:CHAT")
-                }
-            });
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("Chat", $"J:{job.Id}:CHAT")
+                    }
+                });
+            }
 
             await _sender.SendTextAsync(
                 context.Db,
@@ -633,6 +681,32 @@ public sealed class ClientFlowHandler
                 text,
                 keyboard,
                 job.Id,
+                cancellationToken);
+        }
+
+        var navButtons = new List<InlineKeyboardButton>();
+        if (safeOffset > 0)
+        {
+            var previous = Math.Max(0, safeOffset - pageSize);
+            navButtons.Add(InlineKeyboardButton.WithCallbackData("Anterior", $"C:MY:{previous}"));
+        }
+
+        if (safeOffset + jobs.Count < total)
+        {
+            navButtons.Add(InlineKeyboardButton.WithCallbackData("Proximos", $"C:MY:{safeOffset + jobs.Count}"));
+        }
+
+        if (navButtons.Count > 0)
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                "Navegacao dos agendamentos:",
+                new InlineKeyboardMarkup(new[] { navButtons.ToArray() }),
+                null,
                 cancellationToken);
         }
     }
@@ -711,7 +785,7 @@ public sealed class ClientFlowHandler
 
     private async Task HandlePhotoCollectionTextAsync(BotExecutionContext context, Message message, string text, CancellationToken cancellationToken)
     {
-        if (string.Equals(text, "Concluir fotos", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(text, MenuTexts.FinishPhotos, StringComparison.OrdinalIgnoreCase))
         {
             UserContextService.SetState(context.Session, BotStates.C_LOCATION);
             UserContextService.SaveDraft(context.Session, context.Draft);
@@ -840,5 +914,15 @@ public sealed class ClientFlowHandler
         var offset = tz.GetUtcOffset(local);
         result = new DateTimeOffset(local, offset);
         return true;
+    }
+
+    private static bool CanOpenChat(JobStatus status, bool hasProvider)
+    {
+        if (!hasProvider)
+        {
+            return false;
+        }
+
+        return status is JobStatus.Accepted or JobStatus.OnTheWay or JobStatus.Arrived or JobStatus.InProgress;
     }
 }

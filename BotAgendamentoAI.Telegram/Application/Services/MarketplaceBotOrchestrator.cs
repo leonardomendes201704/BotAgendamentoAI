@@ -232,7 +232,10 @@ public sealed class MarketplaceBotOrchestrator
 
         var context = BuildContext(tenantId, db, botClient, user, runtime);
 
-        if (route.Scope == "J" && long.TryParse(route.Action, out var jobId) && route.Arg1 == "CHAT")
+        if (route.Scope == "J"
+            && long.TryParse(route.Action, out var jobId)
+            && route.Arg1 == "CHAT"
+            && route.Arg2 != "EXIT")
         {
             if (IsProviderMode(user))
             {

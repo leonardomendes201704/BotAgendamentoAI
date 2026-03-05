@@ -15,12 +15,16 @@
   <ItemGroup>
     <Compile Remove="BotAgendamentoAI.Admin\**\*.cs" />
     <Compile Remove="BotAgendamentoAI.Telegram\**\*.cs" />
+    <Compile Remove="BotAgendamentoAI.Telegram.Tests\**\*.cs" />
     <Content Remove="BotAgendamentoAI.Admin\**\*" />
     <Content Remove="BotAgendamentoAI.Telegram\**\*" />
+    <Content Remove="BotAgendamentoAI.Telegram.Tests\**\*" />
     <EmbeddedResource Remove="BotAgendamentoAI.Admin\**\*" />
     <EmbeddedResource Remove="BotAgendamentoAI.Telegram\**\*" />
+    <EmbeddedResource Remove="BotAgendamentoAI.Telegram.Tests\**\*" />
     <None Remove="BotAgendamentoAI.Admin\**\*" />
     <None Remove="BotAgendamentoAI.Telegram\**\*" />
+    <None Remove="BotAgendamentoAI.Telegram.Tests\**\*" />
   </ItemGroup>
 
 </Project>

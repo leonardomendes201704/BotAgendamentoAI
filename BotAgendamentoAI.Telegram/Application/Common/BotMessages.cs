@@ -43,7 +43,7 @@ public static class BotMessages
         => "Nao encontrei pedidos disponiveis agora. Tente novamente em instantes.";
 
     public static string PortfolioUploadHint()
-        => "Envie fotos para seu portfolio. Toque em 'Concluir upload' quando terminar.";
+        => "Envie fotos para seu portfolio. Use Voltar ou Cancelar para sair desse modo.";
 
     public static string ChatOpened()
         => "Chat mediado ativo. Envie mensagens normalmente. Use /sairchat para encerrar.";

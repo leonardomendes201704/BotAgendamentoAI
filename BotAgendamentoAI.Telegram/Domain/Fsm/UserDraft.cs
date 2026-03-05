@@ -15,6 +15,7 @@ public sealed class UserDraft
     public decimal? FinalAmount { get; set; }
     public string? FinalNotes { get; set; }
     public List<string> AfterPhotoFileIds { get; set; } = new();
+    public List<long> HiddenFeedJobIds { get; set; } = new();
 
     public static UserDraft Empty() => new();
 }

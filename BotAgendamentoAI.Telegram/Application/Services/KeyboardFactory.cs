@@ -1,4 +1,5 @@
 using BotAgendamentoAI.Telegram.Application.Callback;
+using BotAgendamentoAI.Telegram.Application.Common;
 using BotAgendamentoAI.Telegram.Domain.Entities;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types.ReplyMarkups;
 
@@ -26,9 +27,9 @@ public static class KeyboardFactory
     {
         return new ReplyKeyboardMarkup(new[]
         {
-            new KeyboardButton[] { "??? Pedir servico", "?? Meus agendamentos" },
-            new KeyboardButton[] { "? Favoritos", "? Ajuda" },
-            new KeyboardButton[] { "?? Trocar para Prestador" }
+            new KeyboardButton[] { MenuTexts.ClientRequestService, MenuTexts.ClientMyBookings },
+            new KeyboardButton[] { MenuTexts.ClientFavorites, MenuTexts.ClientHelp },
+            new KeyboardButton[] { MenuTexts.ClientSwitchToProvider }
         })
         {
             ResizeKeyboard = true,
@@ -40,9 +41,9 @@ public static class KeyboardFactory
     {
         return new ReplyKeyboardMarkup(new[]
         {
-            new KeyboardButton[] { "?? Pedidos disponiveis", "?? Minha agenda" },
-            new KeyboardButton[] { "?? Meu perfil", "?? Portfolio" },
-            new KeyboardButton[] { "?? Configuracoes", "?? Trocar para Cliente" }
+            new KeyboardButton[] { MenuTexts.ProviderAvailableJobs, MenuTexts.ProviderAgenda },
+            new KeyboardButton[] { MenuTexts.ProviderProfile, MenuTexts.ProviderPortfolio },
+            new KeyboardButton[] { MenuTexts.ProviderSettings, MenuTexts.ProviderSwitchToClient }
         })
         {
             ResizeKeyboard = true,
@@ -80,12 +81,12 @@ public static class KeyboardFactory
         {
             new KeyboardButton[]
             {
-                KeyboardButton.WithRequestLocation("?? Enviar localizacao")
+                KeyboardButton.WithRequestLocation("Enviar localizacao")
             },
             new KeyboardButton[]
             {
-                new KeyboardButton("Voltar"),
-                new KeyboardButton("Cancelar")
+                new KeyboardButton(MenuTexts.Back),
+                new KeyboardButton(MenuTexts.Cancel)
             }
         })
         {
@@ -210,7 +211,7 @@ public static class KeyboardFactory
             },
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("?? Chat", $"J:{jobId}:CHAT")
+                InlineKeyboardButton.WithCallbackData("Chat", $"J:{jobId}:CHAT")
             }
         });
     }
@@ -286,8 +287,8 @@ public static class KeyboardFactory
     {
         return new[]
         {
-            InlineKeyboardButton.WithCallbackData("Voltar", CallbackDataRouter.Back()),
-            InlineKeyboardButton.WithCallbackData("Cancelar", CallbackDataRouter.Cancel())
+            InlineKeyboardButton.WithCallbackData(MenuTexts.Back, CallbackDataRouter.Back()),
+            InlineKeyboardButton.WithCallbackData(MenuTexts.Cancel, CallbackDataRouter.Cancel())
         };
     }
 }

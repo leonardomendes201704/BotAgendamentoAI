@@ -134,7 +134,7 @@ public sealed class JobWorkflowService
             context.User.TelegramUserId,
             clientChatId,
             BotMessages.WaitingProvider(),
-            KeyboardFactory.ChatActions(job.Id),
+            KeyboardFactory.ClientMenu(),
             job.Id,
             cancellationToken);
 
@@ -168,7 +168,7 @@ public sealed class JobWorkflowService
                 continue;
             }
 
-            var caption = $"?? Novo pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nEndereco: {job.AddressText}";
+            var caption = $"Novo pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nEndereco: {job.AddressText}";
             var firstPhoto = await context.Db.JobPhotos
                 .AsNoTracking()
                 .Where(x => x.JobId == job.Id)

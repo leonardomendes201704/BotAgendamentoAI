@@ -94,7 +94,7 @@ public sealed class ChatMediatorService
             return true;
         }
 
-        var prefix = sender.Id == session.ChatPeerUserId ? "Contato" : (sender.Role == Domain.Enums.UserRole.Provider ? "Prestador" : "Cliente");
+        var prefix = BuildSenderLabel(sender, session.State);
         var peerChatId = new ChatId(peer.TelegramUserId);
 
         if (!string.IsNullOrWhiteSpace(incoming.Text))
@@ -105,7 +105,7 @@ public sealed class ChatMediatorService
                 tenantId,
                 peer.TelegramUserId,
                 peerChatId,
-                $"?? {prefix}: {incoming.Text}",
+                $"{prefix}: {incoming.Text}",
                 null,
                 session.ChatJobId,
                 cancellationToken);
@@ -123,7 +123,7 @@ public sealed class ChatMediatorService
                 peer.TelegramUserId,
                 peerChatId,
                 fileId,
-                $"?? {prefix} enviou uma foto",
+                $"{prefix} enviou uma foto",
                 null,
                 session.ChatJobId,
                 cancellationToken);
@@ -150,7 +150,7 @@ public sealed class ChatMediatorService
                 tenantId,
                 peer.TelegramUserId,
                 peerChatId,
-                $"?? {prefix} compartilhou localizacao",
+                $"{prefix} compartilhou localizacao",
                 null,
                 session.ChatJobId,
                 cancellationToken);
@@ -159,5 +159,24 @@ public sealed class ChatMediatorService
         }
 
         return true;
+    }
+
+    private static string BuildSenderLabel(AppUser sender, string sessionState)
+    {
+        var name = string.IsNullOrWhiteSpace(sender.Name) ? "Usuario" : sender.Name.Trim();
+
+        if (sender.Role == Domain.Enums.UserRole.Provider)
+        {
+            return $"Prestador {name}";
+        }
+
+        if (sender.Role == Domain.Enums.UserRole.Client)
+        {
+            return $"Cliente {name}";
+        }
+
+        return sessionState.StartsWith("P_", StringComparison.OrdinalIgnoreCase)
+            ? $"Prestador {name}"
+            : $"Cliente {name}";
     }
 }
