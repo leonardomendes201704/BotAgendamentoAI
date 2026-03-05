@@ -11,19 +11,18 @@ public static class Program
     {
         Console.OutputEncoding = Encoding.UTF8;
 
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            Console.WriteLine("Defina OPENAI_API_KEY antes de executar.");
-            Console.WriteLine("Exemplo (PowerShell): $env:OPENAI_API_KEY=\"sua_chave\"");
-            return;
-        }
-
         var timeZone = ResolveTimeZone("America/Sao_Paulo");
         var dbPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "bot.db"));
 
         var repository = new ConversationRepository(dbPath);
         await repository.InitializeAsync();
+        var apiKey = await repository.GetOpenAiApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            Console.WriteLine("Chave OpenAI nao configurada no banco.");
+            Console.WriteLine("Configure em Admin > Menu e mensagens > OpenAI API Key.");
+            return;
+        }
 
         IBookingStore bookingStore = new SqliteBookingStore(dbPath);
         var tools = new SecretaryTools(bookingStore);

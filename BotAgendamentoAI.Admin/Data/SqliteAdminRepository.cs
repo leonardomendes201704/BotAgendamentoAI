@@ -121,6 +121,12 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
   last_update_id INTEGER NOT NULL DEFAULT 0,
   updated_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS shared_settings (
+  setting_key TEXT PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_at_utc TEXT NOT NULL
+);
 """;
 
     public SqliteAdminRepository(IOptions<AdminOptions> options, ILogger<SqliteAdminRepository> logger)
@@ -339,7 +345,7 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
         }
 
         var geocodeAttempts = 0;
-        const int maxGeocodeAttemptsPerRequest = 6;
+        const int maxGeocodeAttemptsPerRequest = 10;
 
         foreach (var row in rows)
         {
@@ -348,9 +354,11 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
                 continue;
             }
 
+            var isRecentBooking = nowUtc - row.CreatedAtUtc <= TimeSpan.FromHours(24);
             if (string.Equals(row.GeocodeStatus, "failed", StringComparison.OrdinalIgnoreCase) &&
                 row.RetryAfterUtc.HasValue &&
-                row.RetryAfterUtc.Value > nowUtc)
+                row.RetryAfterUtc.Value > nowUtc &&
+                !isRecentBooking)
             {
                 continue;
             }
@@ -372,7 +380,7 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             else
             {
                 row.GeocodeStatus = "failed";
-                row.RetryAfterUtc = nowUtc.AddMinutes(20);
+                row.RetryAfterUtc = nowUtc.AddMinutes(isRecentBooking ? 3 : 20);
             }
 
             await UpsertGeocodeCacheAsync(connection, row, geocodeResult.ErrorMessage);
@@ -965,6 +973,10 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             }
         }
 
+        var openAiApiKey = await GetSharedSettingAsync(connection, OpenAiApiKeySettingKey);
+        model.HasOpenAiApiKey = !string.IsNullOrWhiteSpace(openAiApiKey);
+        model.OpenAiApiKey = string.Empty;
+
         return model;
     }
 
@@ -990,6 +1002,8 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
 
         var incomingToken = input.TelegramBotToken?.Trim() ?? string.Empty;
         var tokenToPersist = incomingToken;
+        var incomingOpenAiApiKey = input.OpenAiApiKey?.Trim() ?? string.Empty;
+        var openAiApiKeyToPersist = incomingOpenAiApiKey;
 
         if (string.IsNullOrWhiteSpace(tokenToPersist))
         {
@@ -1003,6 +1017,11 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             """;
             existingTokenCommand.Parameters.AddWithValue("@tenant_id", tenant);
             tokenToPersist = Convert.ToString(await existingTokenCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(openAiApiKeyToPersist))
+        {
+            openAiApiKeyToPersist = await GetSharedSettingAsync(connection, OpenAiApiKeySettingKey);
         }
 
         var telegram = new TelegramConfigStorage
@@ -1060,6 +1079,8 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
             await command.ExecuteNonQueryAsync();
         }
+
+        await UpsertSharedSettingAsync(connection, OpenAiApiKeySettingKey, openAiApiKeyToPersist, nowUtc);
     }
 
     private static string TrimPreview(string text)
@@ -1077,6 +1098,8 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
         return new BotConfigViewModel
         {
             TenantId = tenant,
+            HasOpenAiApiKey = false,
+            OpenAiApiKey = string.Empty,
             MainMenuText = "1 - Agendar Servico\n2 - Consultar Agendamentos\n3 - Cancelar Agendamento\n4 - Alterar Agendamento\n5 - Falar com atendente\n6 - Encerrar atendimento",
             GreetingText = "Como posso ajudar voce hoje?",
             HumanHandoffText = "Vou te direcionar para um atendente humano.",
@@ -1129,7 +1152,25 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             return GeocodeResult.Fail("Endereco vazio.");
         }
 
-        var query = Uri.EscapeDataString($"{safeAddress}, Brasil");
+        var candidates = BuildAddressGeocodeCandidates(safeAddress);
+        string? lastError = null;
+        foreach (var candidate in candidates)
+        {
+            var result = await TryQueryNominatimAsync(candidate);
+            if (result.Success)
+            {
+                return result;
+            }
+
+            lastError = result.ErrorMessage;
+        }
+
+        return GeocodeResult.Fail(lastError ?? "Nenhum resultado.");
+    }
+
+    private static async Task<GeocodeResult> TryQueryNominatimAsync(string queryAddress)
+    {
+        var query = Uri.EscapeDataString($"{queryAddress}, Brasil");
         var endpoint = $"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&q={query}";
 
         try
@@ -1163,6 +1204,67 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
         {
             return GeocodeResult.Fail(ex.Message);
         }
+    }
+
+    private static IReadOnlyList<string> BuildAddressGeocodeCandidates(string rawAddress)
+    {
+        var output = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        static string NormalizeCandidate(string value)
+        {
+            var normalized = Regex.Replace(value ?? string.Empty, @"\s+", " ").Trim();
+            normalized = Regex.Replace(normalized, @"\s*,\s*", ", ");
+            normalized = Regex.Replace(normalized, @",\s*,+", ", ");
+            return normalized.Trim().Trim(',');
+        }
+
+        void Add(string value)
+        {
+            var normalized = NormalizeCandidate(value);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return;
+            }
+
+            if (seen.Add(normalized))
+            {
+                output.Add(normalized);
+            }
+        }
+
+        Add(rawAddress);
+
+        var withoutComplement = Regex.Replace(
+            rawAddress,
+            @"(?i),?\s*(apto|apt|apartamento|bloco|casa|fundos|sala|conjunto|complemento)\b[^,]*",
+            string.Empty);
+        Add(withoutComplement);
+
+        var withoutNumber = Regex.Replace(
+            withoutComplement,
+            @"(?<!\d)\d{1,6}[A-Za-z]?(?!\d)",
+            string.Empty);
+        Add(withoutNumber);
+
+        Add(withoutNumber.Replace(" - ", ", ", StringComparison.Ordinal));
+
+        var parts = withoutNumber
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .ToArray();
+
+        if (parts.Length >= 3)
+        {
+            Add(string.Join(", ", parts.TakeLast(3)));
+        }
+
+        if (parts.Length >= 2)
+        {
+            Add(string.Join(", ", parts.TakeLast(2)));
+        }
+
+        return output;
     }
 
     private static async Task UpsertGeocodeCacheAsync(SqliteConnection connection, DashboardMapRow row, string? errorMessage)
@@ -1339,6 +1441,42 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
         return scalar is null || scalar is DBNull ? 0 : Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
     }
 
+    private static async Task<string> GetSharedSettingAsync(SqliteConnection connection, string settingKey)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT setting_value
+            FROM shared_settings
+            WHERE setting_key = @setting_key
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@setting_key", settingKey);
+        var scalar = await command.ExecuteScalarAsync();
+        return Convert.ToString(scalar, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+    }
+
+    private static async Task UpsertSharedSettingAsync(
+        SqliteConnection connection,
+        string settingKey,
+        string settingValue,
+        string updatedAtUtc)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO shared_settings (setting_key, setting_value, updated_at_utc)
+            VALUES (@setting_key, @setting_value, @updated_at_utc)
+            ON CONFLICT(setting_key) DO UPDATE SET
+                setting_value = excluded.setting_value,
+                updated_at_utc = excluded.updated_at_utc;
+            """;
+        command.Parameters.AddWithValue("@setting_key", settingKey);
+        command.Parameters.AddWithValue("@setting_value", (settingValue ?? string.Empty).Trim());
+        command.Parameters.AddWithValue("@updated_at_utc", updatedAtUtc);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private SqliteConnection CreateConnection() => new(_connectionString);
 
     private static DateTime ParseLocalDateTime(string value)
@@ -1405,6 +1543,8 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
 
         return candidates[0];
     }
+
+    private const string OpenAiApiKeySettingKey = "openai_api_key";
 
     private sealed class MenuConfigStorage
     {

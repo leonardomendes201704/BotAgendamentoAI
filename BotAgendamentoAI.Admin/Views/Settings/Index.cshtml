@@ -21,6 +21,30 @@
     @Html.AntiForgeryToken()
     <input type="hidden" asp-for="TenantId" />
 
+    <h2 class="h5">OpenAI (global)</h2>
+    <p class="text-muted">Esta chave e compartilhada entre o bot Console e o worker Telegram.</p>
+
+    @if (Model.HasOpenAiApiKey)
+    {
+        <div class="alert alert-success py-2">
+            Chave OpenAI ja configurada.
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning py-2">
+            Chave OpenAI ainda nao configurada.
+        </div>
+    }
+
+    <div class="mb-3">
+        <label class="form-label">OpenAI API Key</label>
+        <input asp-for="OpenAiApiKey" type="password" class="form-control" autocomplete="new-password" placeholder="sk-proj-..." />
+        <small class="text-muted">Se deixar em branco, o valor atual (se existir) sera mantido.</small>
+    </div>
+
+    <hr />
+
     <div class="mb-3">
         <label class="form-label">Menu principal</label>
         <textarea asp-for="MainMenuText" class="form-control" rows="8"></textarea>

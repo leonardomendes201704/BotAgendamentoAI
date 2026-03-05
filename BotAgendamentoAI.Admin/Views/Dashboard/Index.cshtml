@@ -18,6 +18,36 @@
         font-size: 0.875rem;
         color: #5f6b7a;
     }
+
+    .marker-cluster-small,
+    .marker-cluster-medium,
+    .marker-cluster-large {
+        width: 58px !important;
+        height: 58px !important;
+        margin-left: -29px !important;
+        margin-top: -29px !important;
+        border-radius: 50% !important;
+        background: rgba(30, 136, 229, 0.35) !important;
+        border: 2px solid rgba(13, 71, 161, 0.35) !important;
+        box-shadow: 0 0 0 3px rgba(144, 202, 249, 0.28) !important;
+    }
+
+    .marker-cluster-small div,
+    .marker-cluster-medium div,
+    .marker-cluster-large div {
+        width: 46px !important;
+        height: 46px !important;
+        margin-left: 6px !important;
+        margin-top: 6px !important;
+        line-height: 46px !important;
+        border-radius: 50% !important;
+        background: rgba(25, 118, 210, 0.95) !important;
+        color: #ffffff !important;
+        font-size: 18px !important;
+        font-weight: 700 !important;
+        text-align: center !important;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif !important;
+    }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -41,7 +71,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <h2 class="h6 text-muted">Conversas ativas</h2>
-                <div class="display-6">@Model.TotalIncomingConversations</div>
+                <div id="metricConversations" class="display-6">@Model.TotalIncomingConversations</div>
             </div>
         </div>
     </div>
@@ -49,7 +79,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <h2 class="h6 text-muted">Mensagens</h2>
-                <div class="display-6">@Model.TotalMessages</div>
+                <div id="metricMessages" class="display-6">@Model.TotalMessages</div>
             </div>
         </div>
     </div>
@@ -57,7 +87,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <h2 class="h6 text-muted">Agendamentos criados</h2>
-                <div class="display-6">@Model.CreatedBookings</div>
+                <div id="metricBookings" class="display-6">@Model.CreatedBookings</div>
             </div>
         </div>
     </div>
@@ -65,7 +95,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <h2 class="h6 text-muted">Taxa de conversao</h2>
-                <div class="display-6">@Model.ConversionRatePercent.ToString("0.##")%</div>
+                <div id="metricConversionRate" class="display-6">@Model.ConversionRatePercent.ToString("0.##")%</div>
             </div>
         </div>
     </div>
@@ -76,7 +106,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <h2 class="h6 text-muted">Atendente humano (fila aberta)</h2>
-                <div class="display-6">@Model.HumanHandoffOpen</div>
+                <div id="metricHumanHandoff" class="display-6">@Model.HumanHandoffOpen</div>
             </div>
         </div>
     </div>
@@ -84,7 +114,7 @@
         <div class="card h-100">
             <div class="card-body">
                 <h2 class="h6 text-muted">Periodo</h2>
-                <p class="mb-0">
+                <p id="periodText" class="mb-0">
                     @Model.FromUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
                     ate
                     @Model.ToUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
@@ -120,7 +150,7 @@
                             <th>Status</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="recentConversationsBody">
                     @foreach (var item in Model.RecentConversations)
                     {
                         <tr>
@@ -162,7 +192,7 @@
                             <th>Inicio</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="recentBookingsBody">
                     @foreach (var item in Model.RecentBookings)
                     {
                         <tr>
@@ -182,12 +212,23 @@
 @section Scripts {
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
     <script>
         (() => {
             const initialPins = @Html.Raw(JsonSerializer.Serialize(Model.MapPins));
             const tenantId = '@Model.TenantId';
-            const endpoint = '@Url.Action("MapPins", "Dashboard")';
+            const days = @Model.Days;
+            const snapshotEndpoint = '@Url.Action("Snapshot", "Dashboard")';
+            const conversationDetailsUrl = '@Url.Action("Details", "Conversations")';
             const statusEl = document.getElementById('mapStatus');
+            const metricConversationsEl = document.getElementById('metricConversations');
+            const metricMessagesEl = document.getElementById('metricMessages');
+            const metricBookingsEl = document.getElementById('metricBookings');
+            const metricConversionRateEl = document.getElementById('metricConversionRate');
+            const metricHumanHandoffEl = document.getElementById('metricHumanHandoff');
+            const periodTextEl = document.getElementById('periodText');
+            const recentConversationsBodyEl = document.getElementById('recentConversationsBody');
+            const recentBookingsBodyEl = document.getElementById('recentBookingsBody');
 
             const map = L.map('bookingsMap', {
                 zoomControl: true,
@@ -202,14 +243,15 @@
             const clusterGroup = L.markerClusterGroup({
                 showCoverageOnHover: false,
                 spiderfyOnMaxZoom: true,
+                spiderfyDistanceMultiplier: 2.4,
                 zoomToBoundsOnClick: true,
                 maxClusterRadius: 45
             });
             map.addLayer(clusterGroup);
 
             const markersById = new Map();
-            let latestCreatedAtUtc = null;
-            let pollTimer = null;
+            let fallbackTimer = null;
+            let isRefreshing = false;
 
             function toPin(raw) {
                 return {
@@ -235,8 +277,36 @@
                     .replaceAll("'", '&#39;');
             }
 
-            function addPin(rawPin) {
-                const pin = toPin(rawPin);
+            function formatDateTime(value) {
+                if (!value) {
+                    return '-';
+                }
+
+                const parsed = new Date(value);
+                if (Number.isNaN(parsed.getTime())) {
+                    return value.toString();
+                }
+
+                return parsed.toLocaleString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+
+            function toInt(value) {
+                const parsed = Number(value);
+                return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+            }
+
+            function toDecimal(value) {
+                const parsed = Number(value);
+                return Number.isFinite(parsed) ? parsed : 0;
+            }
+
+            function addNormalizedPin(pin) {
                 if (!pin.bookingId || markersById.has(pin.bookingId)) {
                     return false;
                 }
@@ -261,13 +331,30 @@
                 clusterGroup.addLayer(marker);
                 markersById.set(pin.bookingId, marker);
 
-                if (pin.createdAtUtc) {
-                    if (!latestCreatedAtUtc || pin.createdAtUtc > latestCreatedAtUtc) {
-                        latestCreatedAtUtc = pin.createdAtUtc;
+                return true;
+            }
+
+            function syncPins(rawPins) {
+                const previousIds = new Set(markersById.keys());
+                clusterGroup.clearLayers();
+                markersById.clear();
+
+                let added = 0;
+                let hasNewPin = false;
+
+                for (const rawPin of rawPins) {
+                    const pin = toPin(rawPin);
+                    if (pin.bookingId && !previousIds.has(pin.bookingId)) {
+                        hasNewPin = true;
+                    }
+
+                    if (addNormalizedPin(pin)) {
+                        added++;
                     }
                 }
 
-                return true;
+                fitMapToAllPins(hasNewPin || previousIds.size === 0);
+                return { added, hasNewPin };
             }
 
             function fitMapToAllPins(force) {
@@ -293,18 +380,112 @@
                 statusEl.textContent = `Pins: ${total} | Atualizado: ${now}${extra ? ` | ${extra}` : ''}`;
             }
 
-            async function pollPins() {
+            function renderMetrics(snapshot) {
+                const totalIncomingConversations = snapshot.totalIncomingConversations ?? snapshot.TotalIncomingConversations;
+                const totalMessages = snapshot.totalMessages ?? snapshot.TotalMessages;
+                const createdBookings = snapshot.createdBookings ?? snapshot.CreatedBookings;
+                const conversionRatePercent = snapshot.conversionRatePercent ?? snapshot.ConversionRatePercent;
+                const humanHandoffOpen = snapshot.humanHandoffOpen ?? snapshot.HumanHandoffOpen;
+                const fromUtc = snapshot.fromUtc ?? snapshot.FromUtc;
+                const toUtc = snapshot.toUtc ?? snapshot.ToUtc;
+
+                if (metricConversationsEl) {
+                    metricConversationsEl.textContent = toInt(totalIncomingConversations).toString();
+                }
+
+                if (metricMessagesEl) {
+                    metricMessagesEl.textContent = toInt(totalMessages).toString();
+                }
+
+                if (metricBookingsEl) {
+                    metricBookingsEl.textContent = toInt(createdBookings).toString();
+                }
+
+                if (metricHumanHandoffEl) {
+                    metricHumanHandoffEl.textContent = toInt(humanHandoffOpen).toString();
+                }
+
+                if (metricConversionRateEl) {
+                    metricConversionRateEl.textContent = `${toDecimal(conversionRatePercent).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%`;
+                }
+
+                if (periodTextEl) {
+                    periodTextEl.textContent = `${formatDateTime(fromUtc)} ate ${formatDateTime(toUtc)}`;
+                }
+            }
+
+            function renderRecentConversations(items) {
+                if (!recentConversationsBodyEl) {
+                    return;
+                }
+
+                if (!Array.isArray(items) || items.length === 0) {
+                    recentConversationsBodyEl.innerHTML = '<tr><td colspan="3" class="text-muted">Sem conversas no periodo.</td></tr>';
+                    return;
+                }
+
+                const rows = items.map(raw => {
+                    const phone = raw.phone ?? raw.Phone ?? '';
+                    const lastMessagePreview = raw.lastMessagePreview ?? raw.LastMessagePreview ?? '';
+                    const isInHumanHandoff = Boolean(raw.isInHumanHandoff ?? raw.IsInHumanHandoff);
+                    const detailsUrl = `${conversationDetailsUrl}?tenant=${encodeURIComponent(tenantId)}&phone=${encodeURIComponent(phone)}`;
+
+                    return `
+                        <tr>
+                            <td><a href="${detailsUrl}">${escapeHtml(phone)}</a></td>
+                            <td>${escapeHtml(lastMessagePreview)}</td>
+                            <td>${isInHumanHandoff
+                                ? '<span class="badge bg-warning text-dark">humano</span>'
+                                : '<span class="badge bg-secondary">bot</span>'}</td>
+                        </tr>
+                    `;
+                });
+
+                recentConversationsBodyEl.innerHTML = rows.join('');
+            }
+
+            function renderRecentBookings(items) {
+                if (!recentBookingsBodyEl) {
+                    return;
+                }
+
+                if (!Array.isArray(items) || items.length === 0) {
+                    recentBookingsBodyEl.innerHTML = '<tr><td colspan="4" class="text-muted">Sem agendamentos no periodo.</td></tr>';
+                    return;
+                }
+
+                const rows = items.map(raw => {
+                    const serviceCategory = raw.serviceCategory ?? raw.ServiceCategory ?? '';
+                    const serviceTitle = raw.serviceTitle ?? raw.ServiceTitle ?? '';
+                    const customerPhone = raw.customerPhone ?? raw.CustomerPhone ?? '';
+                    const startLocal = raw.startLocal ?? raw.StartLocal ?? '';
+
+                    return `
+                        <tr>
+                            <td>${escapeHtml(serviceCategory)}</td>
+                            <td>${escapeHtml(serviceTitle)}</td>
+                            <td>${escapeHtml(customerPhone)}</td>
+                            <td>${escapeHtml(formatDateTime(startLocal))}</td>
+                        </tr>
+                    `;
+                });
+
+                recentBookingsBodyEl.innerHTML = rows.join('');
+            }
+
+            async function refreshDashboard(reason) {
+                if (isRefreshing) {
+                    return;
+                }
+
+                isRefreshing = true;
                 try {
                     const query = new URLSearchParams({
                         tenant: tenantId,
-                        limit: '300'
+                        days: String(days)
                     });
 
-                    if (latestCreatedAtUtc) {
-                        query.set('sinceUtc', latestCreatedAtUtc);
-                    }
-
-                    const response = await fetch(`${endpoint}?${query.toString()}`, {
+                    const response = await fetch(`${snapshotEndpoint}?${query.toString()}`, {
                         method: 'GET',
                         headers: { 'Accept': 'application/json' },
                         cache: 'no-store'
@@ -315,40 +496,113 @@
                         return;
                     }
 
-                    const payload = await response.json();
-                    const pins = Array.isArray(payload.pins) ? payload.pins : [];
+                    const snapshot = await response.json();
+                    renderMetrics(snapshot);
 
-                    let added = 0;
-                    for (const pin of pins) {
-                        if (addPin(pin)) {
-                            added++;
-                        }
-                    }
+                    const recentConversations = Array.isArray(snapshot.recentConversations)
+                        ? snapshot.recentConversations
+                        : (Array.isArray(snapshot.RecentConversations) ? snapshot.RecentConversations : []);
+                    const recentBookings = Array.isArray(snapshot.recentBookings)
+                        ? snapshot.recentBookings
+                        : (Array.isArray(snapshot.RecentBookings) ? snapshot.RecentBookings : []);
+                    const mapPins = Array.isArray(snapshot.mapPins)
+                        ? snapshot.mapPins
+                        : (Array.isArray(snapshot.MapPins) ? snapshot.MapPins : []);
 
-                    if (added > 0) {
-                        fitMapToAllPins(true);
-                    }
-
-                    updateStatus(added > 0 ? `+${added} novo(s)` : null);
+                    renderRecentConversations(recentConversations);
+                    renderRecentBookings(recentBookings);
+                    const pinResult = syncPins(mapPins);
+                    updateStatus(reason ?? (pinResult.hasNewPin ? `+${pinResult.added} novo(s)` : null));
                 } catch {
                     updateStatus('erro de atualizacao');
+                } finally {
+                    isRefreshing = false;
                 }
             }
 
-            let initialAdded = 0;
-            for (const pin of initialPins) {
-                if (addPin(pin)) {
-                    initialAdded++;
+            function createRealtimeConnection() {
+                if (!window.signalR) {
+                    updateStatus('SignalR indisponivel');
+                    return null;
+                }
+
+                const connection = new signalR.HubConnectionBuilder()
+                    .withUrl('/hubs/dashboard')
+                    .withAutomaticReconnect([0, 2000, 5000, 10000])
+                    .build();
+
+                connection.on('dashboardChanged', async payload => {
+                    const eventTenantId = (payload?.tenantId ?? payload?.TenantId ?? '').toString().trim();
+                    if (eventTenantId && eventTenantId.toLowerCase() !== tenantId.toLowerCase()) {
+                        return;
+                    }
+
+                    await refreshDashboard('tempo real');
+                });
+
+                connection.onreconnecting(() => {
+                    updateStatus('reconectando realtime');
+                });
+
+                connection.onreconnected(async () => {
+                    try {
+                        await connection.invoke('JoinTenant', tenantId);
+                    } catch {
+                        // ignore
+                    }
+
+                    await refreshDashboard('reconectado');
+                });
+
+                connection.onclose(() => {
+                    updateStatus('realtime desconectado');
+                });
+
+                return connection;
+            }
+
+            async function startRealtime(connection) {
+                if (!connection) {
+                    return;
+                }
+
+                try {
+                    await connection.start();
+                    await connection.invoke('JoinTenant', tenantId);
+                    updateStatus('realtime conectado');
+                } catch {
+                    updateStatus('falha na conexao realtime');
+                    window.setTimeout(() => {
+                        startRealtime(connection);
+                    }, 5000);
                 }
             }
 
-            fitMapToAllPins(true);
-            updateStatus(initialAdded > 0 ? `${initialAdded} carregado(s)` : 'sem coordenadas geocodificadas ainda');
+            const initialPinResult = syncPins(initialPins);
+            updateStatus(initialPinResult.added > 0
+                ? `${initialPinResult.added} carregado(s)`
+                : 'sem coordenadas geocodificadas ainda');
 
-            pollTimer = window.setInterval(pollPins, 5000);
+            const realtimeConnection = createRealtimeConnection();
+            startRealtime(realtimeConnection);
+
+            fallbackTimer = window.setInterval(() => {
+                refreshDashboard('sync');
+            }, 30000);
+
+            refreshDashboard(null);
             window.addEventListener('beforeunload', () => {
-                if (pollTimer) {
-                    window.clearInterval(pollTimer);
+                if (fallbackTimer) {
+                    window.clearInterval(fallbackTimer);
+                }
+
+                if (realtimeConnection) {
+                    realtimeConnection.invoke('LeaveTenant', tenantId).catch(() => {
+                        // ignore
+                    });
+                    realtimeConnection.stop().catch(() => {
+                        // ignore
+                    });
                 }
             });
         })();

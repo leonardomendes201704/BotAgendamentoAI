@@ -10,11 +10,13 @@ var rawOptions = builder.Configuration.GetSection("TelegramWorker").Get<Telegram
 var databasePath = ResolveDatabasePath(rawOptions.DatabasePath);
 var timeZone = ResolveTimeZone(rawOptions.TimeZoneId);
 var model = string.IsNullOrWhiteSpace(rawOptions.OpenAiModel) ? "gpt-4.1-mini" : rawOptions.OpenAiModel.Trim();
-var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+var bootstrapRepository = new ConversationRepository(databasePath);
+await bootstrapRepository.InitializeAsync();
+var apiKey = await bootstrapRepository.GetOpenAiApiKey();
 if (string.IsNullOrWhiteSpace(apiKey))
 {
-    Console.WriteLine("Defina OPENAI_API_KEY antes de executar o worker Telegram.");
-    Console.WriteLine("Exemplo (PowerShell): $env:OPENAI_API_KEY=\"sua_chave\"");
+    Console.WriteLine("Chave OpenAI nao configurada no banco.");
+    Console.WriteLine("Configure em Admin > Menu e mensagens > OpenAI API Key.");
     return;
 }
 
@@ -28,8 +30,7 @@ builder.Services.AddSingleton(new TelegramRuntimeSettings
 
 builder.Services.AddSingleton<ConversationRepository>(sp =>
 {
-    var runtime = sp.GetRequiredService<TelegramRuntimeSettings>();
-    return new ConversationRepository(runtime.DatabasePath);
+    return bootstrapRepository;
 });
 builder.Services.AddSingleton<IBookingStore>(sp =>
 {

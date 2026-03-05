@@ -43,4 +43,26 @@ public sealed class DashboardController : Controller
             pins
         });
     }
+
+    [HttpGet]
+    public async Task<IActionResult> Snapshot(string tenant = "A", int days = 30)
+    {
+        var model = await _repository.GetDashboardAsync(tenant, days);
+        return Json(new
+        {
+            tenantId = model.TenantId,
+            days = model.Days,
+            fromUtc = model.FromUtc,
+            toUtc = model.ToUtc,
+            totalIncomingConversations = model.TotalIncomingConversations,
+            totalMessages = model.TotalMessages,
+            createdBookings = model.CreatedBookings,
+            humanHandoffOpen = model.HumanHandoffOpen,
+            convertedPhones = model.ConvertedPhones,
+            conversionRatePercent = model.ConversionRatePercent,
+            recentConversations = model.RecentConversations,
+            recentBookings = model.RecentBookings,
+            mapPins = model.MapPins
+        });
+    }
 }

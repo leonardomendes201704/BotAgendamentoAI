@@ -1,41 +1,133 @@
 @model BotAgendamentoAI.Admin.Models.ConversationDetailsViewModel
 @{
     ViewData["Title"] = "Detalhes da conversa";
+    var visibleMessages = Model.Messages
+        .Where(message => !string.Equals(message.Role, "tool", StringComparison.OrdinalIgnoreCase))
+        .ToList();
 }
+
+<style>
+    .conversation-chat-card {
+        border: 1px solid #dce5eb;
+        border-radius: 14px;
+        overflow: hidden;
+    }
+
+    .conversation-chat-track {
+        max-height: 72vh;
+        overflow-y: auto;
+        padding: 1rem;
+        background:
+            radial-gradient(circle at 1px 1px, rgba(35, 42, 54, 0.06) 1px, transparent 0) 0 0/16px 16px,
+            linear-gradient(180deg, #eef4f8 0%, #e7eef3 100%);
+    }
+
+    .chat-row {
+        display: flex;
+        margin-bottom: 0.65rem;
+    }
+
+    .chat-left {
+        justify-content: flex-start;
+    }
+
+    .chat-right {
+        justify-content: flex-end;
+    }
+
+    .chat-bubble {
+        max-width: min(78%, 820px);
+        border-radius: 12px;
+        padding: 0.5rem 0.7rem;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        border: 1px solid rgba(0, 0, 0, 0.08);
+    }
+
+    .chat-bubble-in {
+        background: #ffffff;
+        border-top-left-radius: 4px;
+    }
+
+    .chat-bubble-out {
+        background: #dcf8c6;
+        border-top-right-radius: 4px;
+    }
+
+    .chat-meta {
+        display: flex;
+        gap: 0.4rem;
+        align-items: center;
+        margin-bottom: 0.35rem;
+        font-size: 0.75rem;
+        color: #556170;
+    }
+
+    .chat-sender {
+        color: #000000;
+        font-weight: 700;
+    }
+
+    .chat-content {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 0.92rem;
+        color: #1f2a33;
+    }
+
+    .chat-empty {
+        text-align: center;
+        color: #6b7785;
+        padding: 2rem 1rem;
+    }
+</style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="h4 m-0">Conversa @Model.Phone</h1>
     <a class="btn btn-sm btn-outline-secondary" asp-action="Index" asp-route-tenant="@Model.TenantId">Voltar</a>
 </div>
 
-<div class="card">
-    <div class="table-responsive">
-        <table class="table table-sm table-striped m-0">
-            <thead>
-                <tr>
-                    <th style="width: 170px;">Data UTC</th>
-                    <th style="width: 130px;">Role</th>
-                    <th style="width: 120px;">Direction</th>
-                    <th>Conteudo</th>
-                </tr>
-            </thead>
-            <tbody>
-            @foreach (var message in Model.Messages)
+<div class="card conversation-chat-card">
+    <div id="chatTrack" class="conversation-chat-track">
+        @if (visibleMessages.Count == 0)
+        {
+            <div class="chat-empty">Sem mensagens visiveis para esta conversa.</div>
+        }
+        else
+        {
+            @foreach (var message in visibleMessages)
             {
-                <tr>
-                    <td>@message.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                    <td>
-                        @message.Role
-                        @if (!string.IsNullOrWhiteSpace(message.ToolName))
-                        {
-                            <span class="text-muted">(@message.ToolName)</span>
-                        }
-                    </td>
-                    <td>@message.Direction</td>
-                    <td><pre class="m-0" style="white-space: pre-wrap;">@message.Content</pre></td>
-                </tr>
+                var isInbound = string.Equals(message.Direction, "in", StringComparison.OrdinalIgnoreCase);
+                var bubbleClass = isInbound ? "chat-bubble-in" : "chat-bubble-out";
+                var rowClass = isInbound ? "chat-left" : "chat-right";
+                var roleLower = (message.Role ?? string.Empty).Trim().ToLowerInvariant();
+                var roleBadgeClass = roleLower switch
+                {
+                    "assistant" => "text-bg-primary",
+                    "system" => "text-bg-warning",
+                    _ => "text-bg-secondary"
+                };
+
+                <div class="chat-row @rowClass">
+                    <div class="chat-bubble @bubbleClass">
+                        <div class="chat-meta">
+                            <span class="badge @roleBadgeClass">@message.Role</span>
+                            <span class="chat-sender">@(isInbound ? "Cliente" : "Bot")</span>
+                            <span>@message.CreatedAtUtc.ToLocalTime().ToString("dd/MM HH:mm:ss")</span>
+                        </div>
+                        <p class="chat-content">@message.Content</p>
+                    </div>
+                </div>
             }
-            </tbody>
-        </table>
+        }
     </div>
 </div>
+
+<script>
+    (() => {
+        const chatTrack = document.getElementById('chatTrack');
+        if (chatTrack) {
+            chatTrack.scrollTop = chatTrack.scrollHeight;
+        }
+    })();
+</script>

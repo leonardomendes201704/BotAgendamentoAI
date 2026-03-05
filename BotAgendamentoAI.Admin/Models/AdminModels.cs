@@ -3,6 +3,7 @@ namespace BotAgendamentoAI.Admin.Models;
 public sealed class AdminOptions
 {
     public string? DatabasePath { get; set; }
+    public int DashboardRealtimePollSeconds { get; set; } = 2;
 }
 
 public sealed class DashboardViewModel
@@ -140,6 +141,8 @@ public sealed class ServiceEditViewModel
 public sealed class BotConfigViewModel
 {
     public string TenantId { get; set; } = "A";
+    public bool HasOpenAiApiKey { get; set; }
+    public string OpenAiApiKey { get; set; } = string.Empty;
     public string MainMenuText { get; set; } = string.Empty;
     public string GreetingText { get; set; } = string.Empty;
     public string HumanHandoffText { get; set; } = string.Empty;

@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
   last_update_id INTEGER NOT NULL DEFAULT 0,
   updated_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS shared_settings (
+  setting_key TEXT PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_at_utc TEXT NOT NULL
+);
 """;
 
     public ConversationRepository(string sqlitePath)
@@ -438,6 +444,46 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
         await command.ExecuteNonQueryAsync();
     }
 
+    public async Task<string> GetOpenAiApiKey()
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT setting_value
+            FROM shared_settings
+            WHERE setting_key = @setting_key
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@setting_key", OpenAiApiKeySettingKey);
+
+        var value = Convert.ToString(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+        return (value ?? string.Empty).Trim();
+    }
+
+    public async Task UpsertOpenAiApiKey(string apiKey)
+    {
+        var safeValue = (apiKey ?? string.Empty).Trim();
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO shared_settings (setting_key, setting_value, updated_at_utc)
+            VALUES (@setting_key, @setting_value, @updated_at_utc)
+            ON CONFLICT(setting_key) DO UPDATE SET
+                setting_value = excluded.setting_value,
+                updated_at_utc = excluded.updated_at_utc;
+            """;
+        command.Parameters.AddWithValue("@setting_key", OpenAiApiKeySettingKey);
+        command.Parameters.AddWithValue("@setting_value", safeValue);
+        command.Parameters.AddWithValue("@updated_at_utc", ToUtcText(DateTimeOffset.UtcNow));
+        await command.ExecuteNonQueryAsync();
+    }
+
     private SqliteConnection CreateConnection() => new(_connectionString);
 
     private static string ToUtcText(DateTimeOffset dateTimeOffset)
@@ -493,4 +539,6 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
 
     private static int ClampTelegramPollingSeconds(int value)
         => Math.Clamp(value, 5, 50);
+
+    private const string OpenAiApiKeySettingKey = "openai_api_key";
 }
