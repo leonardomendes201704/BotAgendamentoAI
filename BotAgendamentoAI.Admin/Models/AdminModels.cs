@@ -155,7 +155,14 @@ public sealed class BotConfigViewModel
     public bool TelegramIsActive { get; set; }
     public int TelegramPollingTimeoutSeconds { get; set; } = 30;
     public long TelegramLastUpdateId { get; set; }
+    public IReadOnlyList<TelegramUserOption> TelegramUsers { get; set; } = Array.Empty<TelegramUserOption>();
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
+}
+
+public sealed class TelegramUserOption
+{
+    public long TelegramUserId { get; set; }
+    public string DisplayLabel { get; set; } = string.Empty;
 }
 
 public sealed class TelegramMemoryResetResult

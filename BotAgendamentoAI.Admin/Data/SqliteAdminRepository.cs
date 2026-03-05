@@ -980,6 +980,57 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         return model;
     }
 
+    public async Task<IReadOnlyList<TelegramUserOption>> GetTelegramUsersAsync(string tenantId, int limit = 200)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var safeLimit = Math.Clamp(limit, 1, 1000);
+        var output = new List<TelegramUserOption>();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        if (!await TableExistsAsync(connection, "Users"))
+        {
+            return output;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+        """
+        SELECT TelegramUserId, Name, Username, Role
+        FROM Users
+        WHERE TenantId = @tenant_id
+        ORDER BY UpdatedAt DESC
+        LIMIT @limit;
+        """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@limit", safeLimit);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var telegramUserId = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
+            if (telegramUserId <= 0)
+            {
+                continue;
+            }
+
+            var name = reader.IsDBNull(1) ? "Usuario" : reader.GetString(1).Trim();
+            var username = reader.IsDBNull(2) ? string.Empty : reader.GetString(2).Trim();
+            var role = reader.IsDBNull(3) ? string.Empty : reader.GetString(3).Trim();
+            var usernameText = string.IsNullOrWhiteSpace(username) ? string.Empty : $" @{username}";
+            var roleText = string.IsNullOrWhiteSpace(role) ? string.Empty : $" [{role}]";
+
+            output.Add(new TelegramUserOption
+            {
+                TelegramUserId = telegramUserId,
+                DisplayLabel = $"{name}{usernameText} ({telegramUserId}){roleText}"
+            });
+        }
+
+        return output;
+    }
+
     public async Task SaveBotConfigAsync(BotConfigViewModel input)
     {
         var tenant = NormalizeTenant(input.TenantId);
@@ -1559,6 +1610,22 @@ CREATE TABLE IF NOT EXISTS shared_settings (
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        command.CommandText =
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = @table_name
+        LIMIT 1;
+        """;
+        command.Parameters.AddWithValue("@table_name", tableName);
+        var scalar = await command.ExecuteScalarAsync();
+        return scalar is not null && scalar is not DBNull;
+    }
+
+    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName)
+    {
+        await using var command = connection.CreateCommand();
         command.CommandText =
         """
         SELECT 1

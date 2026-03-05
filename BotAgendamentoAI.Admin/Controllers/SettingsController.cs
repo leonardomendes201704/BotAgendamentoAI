@@ -17,6 +17,7 @@ public sealed class SettingsController : Controller
     {
         var model = await _repository.GetBotConfigAsync(tenant);
         model.Tenants = await _repository.GetTenantIdsAsync();
+        model.TelegramUsers = await _repository.GetTelegramUsersAsync(tenant);
         return View(model);
     }
 

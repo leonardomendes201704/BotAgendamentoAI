@@ -137,10 +137,25 @@
         Isso ajuda nos testes quando o mesmo Telegram fica preso em um fluxo anterior.
     </p>
 
-    <div class="mb-3">
-        <label class="form-label">Telegram User ID</label>
-        <input name="telegramUserId" type="number" min="1" class="form-control" placeholder="Ex.: 5953010045" required />
-    </div>
+    @if (Model.TelegramUsers.Count == 0)
+    {
+        <div class="alert alert-warning py-2 mb-3">
+            Nenhum usuario Telegram encontrado para este tenant. Envie ao menos uma mensagem no bot para o usuario aparecer aqui.
+        </div>
+    }
+    else
+    {
+        <div class="mb-3">
+            <label class="form-label">Usuario Telegram</label>
+            <select name="telegramUserId" class="form-select" required>
+                <option value="">Selecione um usuario...</option>
+                @foreach (var option in Model.TelegramUsers)
+                {
+                    <option value="@option.TelegramUserId">@option.DisplayLabel</option>
+                }
+            </select>
+        </div>
+    }
 
     <input type="hidden" name="clearHistory" value="false" />
     <div class="form-check mb-3">
@@ -151,6 +166,6 @@
     </div>
 
     <div>
-        <button type="submit" class="btn btn-outline-danger">Resetar memoria do usuario</button>
+        <button type="submit" class="btn btn-outline-danger" @(Model.TelegramUsers.Count == 0 ? "disabled" : null)>Resetar memoria do usuario</button>
     </div>
 </form>
