@@ -16,6 +16,7 @@ public sealed class UserDraft
     public string? FinalNotes { get; set; }
     public List<string> AfterPhotoFileIds { get; set; } = new();
     public List<long> HiddenFeedJobIds { get; set; } = new();
+    public List<string> ProviderCategoryNames { get; set; } = new();
 
     public static UserDraft Empty() => new();
 }

@@ -271,6 +271,49 @@ public static class KeyboardFactory
         });
     }
 
+    public static InlineKeyboardMarkup ProviderProfileActions()
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Editar bio", "P:PRF:BIO"),
+                InlineKeyboardButton.WithCallbackData("Editar categorias", "P:PRF:CAT")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Editar raio", "P:PRF:RAD"),
+                InlineKeyboardButton.WithCallbackData("Definir local base", "P:PRF:LOC")
+            },
+            NavigationRow()
+        });
+    }
+
+    public static InlineKeyboardMarkup ProviderCategorySelection(
+        IReadOnlyList<ServiceCategoryEntity> categories,
+        ISet<string> selectedNames)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+
+        foreach (var category in categories.Take(20))
+        {
+            var selected = selectedNames.Contains(category.Name);
+            var label = selected ? $"[x] {category.Name}" : $"[ ] {category.Name}";
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData(label, $"P:CAT:{category.Id}")
+            });
+        }
+
+        rows.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("Salvar categorias", "P:CATSAVE")
+        });
+
+        rows.Add(NavigationRow());
+        return new InlineKeyboardMarkup(rows);
+    }
+
     public static InlineKeyboardMarkup GalleryNext(string prefix, int nextOffset)
     {
         return new InlineKeyboardMarkup(new[]

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BotAgendamentoAI.Telegram.Application.Callback;
 using BotAgendamentoAI.Telegram.Application.Common;
 using BotAgendamentoAI.Telegram.Application.Services;
@@ -88,6 +89,12 @@ public sealed class ProviderFlowHandler
             return;
         }
 
+        if (string.Equals(context.Session.State, BotStates.P_PROFILE_EDIT, StringComparison.Ordinal))
+        {
+            await HandleProfileEditTextAsync(context, message.Chat.Id, text, cancellationToken);
+            return;
+        }
+
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
             BotMessages.ProviderHomeMenu(), KeyboardFactory.ProviderMenu(), context.Session.ActiveJobId, cancellationToken);
@@ -139,6 +146,80 @@ public sealed class ProviderFlowHandler
         if (route.Scope == "NAV")
         {
             await GoHomeAsync(context, chatId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "P" && route.Action == "PRF")
+        {
+            if (route.Arg1 == "BIO")
+            {
+                UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+                context.Draft.PreferenceCode = "P:BIO";
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "Envie a nova bio do seu perfil (max 500 caracteres).",
+                    null,
+                    null,
+                    cancellationToken);
+                return true;
+            }
+
+            if (route.Arg1 == "RAD")
+            {
+                UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+                context.Draft.PreferenceCode = "P:RAD";
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "Informe o novo raio de atendimento em km (1 a 200).",
+                    null,
+                    null,
+                    cancellationToken);
+                return true;
+            }
+
+            if (route.Arg1 == "LOC")
+            {
+                UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+                context.Draft.PreferenceCode = "P:LOC";
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "Envie sua localizacao para definir o ponto base do atendimento.",
+                    KeyboardFactory.LocationRequestKeyboard(),
+                    null,
+                    cancellationToken);
+                return true;
+            }
+
+            if (route.Arg1 == "CAT")
+            {
+                await StartCategoryEditAsync(context, chatId, cancellationToken);
+                return true;
+            }
+        }
+
+        if (route.Scope == "P" && route.Action == "CAT")
+        {
+            if (!long.TryParse(route.Arg1, out var categoryId))
+            {
+                return true;
+            }
+
+            await ToggleCategoryEditAsync(context, chatId, categoryId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "P" && route.Action == "CATSAVE")
+        {
+            await SaveCategoryEditAsync(context, chatId, cancellationToken);
             return true;
         }
 
@@ -334,9 +415,17 @@ public sealed class ProviderFlowHandler
         profile.BaseLatitude = message.Location?.Latitude;
         profile.BaseLongitude = message.Location?.Longitude;
         context.Session.State = BotStates.P_HOME;
-        context.Session.DraftJson = "{}";
+        context.Draft.PreferenceCode = null;
+        UserContextService.SaveDraft(context.Session, context.Draft);
         context.Session.UpdatedAt = DateTimeOffset.UtcNow;
         await context.Db.SaveChangesAsync(cancellationToken);
+
+        await _sender.SendTextAsync(
+            context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
+            "Local base atualizada com sucesso.",
+            KeyboardFactory.ProviderMenu(),
+            null,
+            cancellationToken);
     }
 
     private async Task<bool> HandleTimelineAsync(BotExecutionContext context, Job job, string step, ChatId chatId, CancellationToken cancellationToken)
@@ -429,6 +518,179 @@ public sealed class ProviderFlowHandler
         context.Draft.FinalNotes = parts.Length > 1 ? parts[1] : string.Empty;
         UserContextService.SaveDraft(context.Session, context.Draft);
         await context.Db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task HandleProfileEditTextAsync(BotExecutionContext context, ChatId chatId, string text, CancellationToken cancellationToken)
+    {
+        var mode = context.Draft.PreferenceCode ?? string.Empty;
+        var profile = await EnsureProfileAsync(context, cancellationToken);
+
+        if (mode == "P:BIO")
+        {
+            var bio = (text ?? string.Empty).Trim();
+            if (bio.Length is < 3 or > 500)
+            {
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "Bio invalida. Envie entre 3 e 500 caracteres.",
+                    null,
+                    null,
+                    cancellationToken);
+                return;
+            }
+
+            profile.Bio = bio;
+            context.Draft.PreferenceCode = null;
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            UserContextService.SetState(context.Session, BotStates.P_HOME);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Bio atualizada com sucesso.",
+                KeyboardFactory.ProviderProfileActions(),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        if (mode == "P:RAD")
+        {
+            if (!int.TryParse(text, out var radius) || radius is < 1 or > 200)
+            {
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "Raio invalido. Informe um numero entre 1 e 200.",
+                    null,
+                    null,
+                    cancellationToken);
+                return;
+            }
+
+            profile.RadiusKm = radius;
+            context.Draft.PreferenceCode = null;
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            UserContextService.SetState(context.Session, BotStates.P_HOME);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                $"Raio atualizado para {radius} km.",
+                KeyboardFactory.ProviderProfileActions(),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        if (mode == "P:CAT")
+        {
+            var categories = await _jobWorkflow.GetCategoriesAsync(context.Db, context.TenantId, cancellationToken);
+            var selected = new HashSet<string>(context.Draft.ProviderCategoryNames, StringComparer.OrdinalIgnoreCase);
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Use os botoes para marcar/desmarcar categorias e depois toque em 'Salvar categorias'.",
+                KeyboardFactory.ProviderCategorySelection(categories, selected),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        if (mode == "P:LOC")
+        {
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Para definir local base, envie uma localizacao pelo Telegram.",
+                KeyboardFactory.LocationRequestKeyboard(),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        await GoHomeAsync(context, chatId, cancellationToken);
+    }
+
+    private async Task StartCategoryEditAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
+    {
+        var profile = await EnsureProfileAsync(context, cancellationToken);
+        var categories = await _jobWorkflow.GetCategoriesAsync(context.Db, context.TenantId, cancellationToken);
+
+        context.Draft.PreferenceCode = "P:CAT";
+        context.Draft.ProviderCategoryNames = ParseCategories(profile.CategoriesJson);
+        UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        var selected = new HashSet<string>(context.Draft.ProviderCategoryNames, StringComparer.OrdinalIgnoreCase);
+        await _sender.SendTextAsync(
+            context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+            "Selecione as categorias atendidas:",
+            KeyboardFactory.ProviderCategorySelection(categories, selected),
+            null,
+            cancellationToken);
+    }
+
+    private async Task ToggleCategoryEditAsync(BotExecutionContext context, ChatId chatId, long categoryId, CancellationToken cancellationToken)
+    {
+        if (!string.Equals(context.Draft.PreferenceCode, "P:CAT", StringComparison.Ordinal))
+        {
+            await StartCategoryEditAsync(context, chatId, cancellationToken);
+            return;
+        }
+
+        var category = await context.Db.ServiceCategories
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == categoryId && x.TenantId == context.TenantId, cancellationToken);
+
+        if (category is null)
+        {
+            return;
+        }
+
+        var selected = context.Draft.ProviderCategoryNames;
+        var existing = selected.FirstOrDefault(x => string.Equals(x, category.Name, StringComparison.OrdinalIgnoreCase));
+        if (existing is null)
+        {
+            selected.Add(category.Name);
+        }
+        else
+        {
+            selected.Remove(existing);
+        }
+
+        context.Draft.ProviderCategoryNames = selected
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        var categories = await _jobWorkflow.GetCategoriesAsync(context.Db, context.TenantId, cancellationToken);
+        var selectedSet = new HashSet<string>(context.Draft.ProviderCategoryNames, StringComparer.OrdinalIgnoreCase);
+        await _sender.SendTextAsync(
+            context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+            "Categorias atualizadas no rascunho.",
+            KeyboardFactory.ProviderCategorySelection(categories, selectedSet),
+            null,
+            cancellationToken);
+    }
+
+    private async Task SaveCategoryEditAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
+    {
+        var profile = await EnsureProfileAsync(context, cancellationToken);
+        profile.CategoriesJson = SerializeCategories(context.Draft.ProviderCategoryNames);
+        context.Draft.PreferenceCode = null;
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        UserContextService.SetState(context.Session, BotStates.P_HOME);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        await _sender.SendTextAsync(
+            context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+            "Categorias salvas com sucesso.",
+            KeyboardFactory.ProviderProfileActions(),
+            null,
+            cancellationToken);
     }
 
     private async Task SendFeedAsync(BotExecutionContext context, ChatId chatId, int offset, CancellationToken cancellationToken)
@@ -553,10 +815,13 @@ public sealed class ProviderFlowHandler
     private async Task SendProfileAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
     {
         var profile = await EnsureProfileAsync(context, cancellationToken);
+        var categories = ParseCategories(profile.CategoriesJson);
+        var categoriesText = categories.Count == 0 ? "Todas" : string.Join(", ", categories);
+
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-            $"Perfil Prestador\nBio: {profile.Bio}\nCategorias: {profile.CategoriesJson}\nRaio: {profile.RadiusKm} km\nDisponivel: {(profile.IsAvailable ? "Sim" : "Nao")}",
-            KeyboardFactory.ProviderMenu(), null, cancellationToken);
+            $"Perfil Prestador\nBio: {profile.Bio}\nCategorias: {categoriesText}\nRaio: {profile.RadiusKm} km\nDisponivel: {(profile.IsAvailable ? "Sim" : "Nao")}",
+            KeyboardFactory.ProviderProfileActions(), null, cancellationToken);
     }
 
     private async Task ToggleAvailabilityAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
@@ -718,6 +983,45 @@ public sealed class ProviderFlowHandler
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
             BotMessages.ProviderHomeMenu(), KeyboardFactory.ProviderMenu(), context.Session.ActiveJobId, cancellationToken);
+    }
+
+    private static List<string> ParseCategories(string? categoriesJson)
+    {
+        if (string.IsNullOrWhiteSpace(categoriesJson))
+        {
+            return new List<string>();
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<string>>(categoriesJson);
+            return parsed?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? new List<string>();
+        }
+        catch
+        {
+            return categoriesJson
+                .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+    }
+
+    private static string SerializeCategories(IEnumerable<string> categoryNames)
+    {
+        var normalized = categoryNames
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return JsonSerializer.Serialize(normalized);
     }
 
     private static bool CanOpenChat(JobStatus status)

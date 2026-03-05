@@ -68,6 +68,11 @@ dotnet run --project BotAgendamentoAI.Telegram/BotAgendamentoAI.Telegram.csproj
   - upload
   - visualizacao em galeria (`sendMediaGroup`) com paginação
   - remocao de foto por callback
+- Perfil Prestador (inline):
+  - editar bio
+  - editar categorias (seleção por botoes + salvar)
+  - editar raio de atendimento
+  - definir local base via localizacao Telegram
 
 ## Callback data (exemplos)
 
@@ -85,6 +90,9 @@ dotnet run --project BotAgendamentoAI.Telegram/BotAgendamentoAI.Telegram.csproj
   - `C:CONF:OK|EDIT|CANCEL`
   - `C:MY:{offset}`
 - Prestador:
+  - `P:PRF:BIO|CAT|RAD|LOC`
+  - `P:CAT:{categoryId}`
+  - `P:CATSAVE`
   - `P:FEED:{offset}`
   - `P:AGD:{offset}`
   - `P:POR:UP`
