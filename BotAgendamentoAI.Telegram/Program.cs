@@ -1,64 +1,68 @@
-using BotAgendamentoAI.Bot;
-using BotAgendamentoAI.Data;
-using BotAgendamentoAI.Domain;
 using BotAgendamentoAI.Telegram;
+using BotAgendamentoAI.Telegram.Application.Services;
+using BotAgendamentoAI.Telegram.Features.Client;
+using BotAgendamentoAI.Telegram.Features.Provider;
+using BotAgendamentoAI.Telegram.Features.Shared;
+using BotAgendamentoAI.Telegram.Infrastructure.Persistence;
+using BotAgendamentoAI.Telegram.Infrastructure.Services;
+using Microsoft.EntityFrameworkCore;
+using Serilog;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.Configure<TelegramWorkerOptions>(builder.Configuration.GetSection("TelegramWorker"));
 
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .CreateLogger();
+
+builder.Services.AddSerilog();
+
 var rawOptions = builder.Configuration.GetSection("TelegramWorker").Get<TelegramWorkerOptions>() ?? new TelegramWorkerOptions();
 var databasePath = ResolveDatabasePath(rawOptions.DatabasePath);
 var timeZone = ResolveTimeZone(rawOptions.TimeZoneId);
-var model = string.IsNullOrWhiteSpace(rawOptions.OpenAiModel) ? "gpt-4.1-mini" : rawOptions.OpenAiModel.Trim();
-var bootstrapRepository = new ConversationRepository(databasePath);
-await bootstrapRepository.InitializeAsync();
-var apiKey = await bootstrapRepository.GetOpenAiApiKey();
-if (string.IsNullOrWhiteSpace(apiKey))
-{
-    Console.WriteLine("Chave OpenAI nao configurada no banco.");
-    Console.WriteLine("Configure em Admin > Menu e mensagens > OpenAI API Key.");
-    return;
-}
 
 builder.Services.AddSingleton(new TelegramRuntimeSettings
 {
     DatabasePath = databasePath,
     TimeZone = timeZone,
-    OpenAiModel = model,
-    TenantIdleDelaySeconds = Math.Clamp(rawOptions.TenantIdleDelaySeconds, 1, 60)
+    TenantIdleDelaySeconds = Math.Clamp(rawOptions.TenantIdleDelaySeconds, 1, 60),
+    SessionExpiryMinutes = Math.Clamp(rawOptions.SessionExpiryMinutes, 5, 1440),
+    HistoryLimitPerContext = Math.Clamp(rawOptions.HistoryLimitPerContext, 5, 200),
+    EnablePhotoValidation = rawOptions.EnablePhotoValidation
 });
 
-builder.Services.AddSingleton<ConversationRepository>(sp =>
+builder.Services.AddDbContextFactory<BotDbContext>(options =>
 {
-    return bootstrapRepository;
+    options.UseSqlite($"Data Source={databasePath}");
 });
-builder.Services.AddSingleton<IBookingStore>(sp =>
-{
-    var runtime = sp.GetRequiredService<TelegramRuntimeSettings>();
-    return new SqliteBookingStore(runtime.DatabasePath);
-});
-builder.Services.AddSingleton<SecretaryTools>();
-builder.Services.AddSingleton<StateManager>(sp =>
-{
-    var runtime = sp.GetRequiredService<TelegramRuntimeSettings>();
-    return new StateManager(runtime.TimeZone);
-});
-builder.Services.AddSingleton<SecretaryBot>(sp =>
-{
-    var runtime = sp.GetRequiredService<TelegramRuntimeSettings>();
-    return new SecretaryBot(
-        apiKey: apiKey,
-        repository: sp.GetRequiredService<ConversationRepository>(),
-        tools: sp.GetRequiredService<SecretaryTools>(),
-        stateManager: sp.GetRequiredService<StateManager>(),
-        timeZone: runtime.TimeZone,
-        model: runtime.OpenAiModel);
-});
+
 builder.Services.AddHttpClient<TelegramApiClient>();
+builder.Services.AddSingleton<TenantConfigService>();
+builder.Services.AddSingleton<UserContextService>();
+builder.Services.AddSingleton<ConversationHistoryService>();
+builder.Services.AddSingleton<TelegramMessageSender>();
+builder.Services.AddSingleton<JobWorkflowService>();
+builder.Services.AddSingleton<IPhotoValidator, StubPhotoValidator>();
+builder.Services.AddSingleton<ChatMediatorService>();
+builder.Services.AddSingleton<ClientFlowHandler>();
+builder.Services.AddSingleton<ProviderFlowHandler>();
+builder.Services.AddSingleton<MarketplaceBotOrchestrator>();
 builder.Services.AddHostedService<TelegramPollingWorker>();
 
 var host = builder.Build();
+
+await EnsureDatabaseMigrated(host.Services);
 await host.RunAsync();
+
+static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider)
+{
+    await using var scope = serviceProvider.CreateAsyncScope();
+    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<BotDbContext>>();
+    await using var db = await factory.CreateDbContextAsync();
+    await db.Database.MigrateAsync();
+}
 
 static TimeZoneInfo ResolveTimeZone(string preferredId)
 {
@@ -90,8 +94,8 @@ static string ResolveDatabasePath(string? configuredPath)
     var candidates = new[]
     {
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "bot.db")),
-        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "bin", "Debug", "net9.0", "data", "bot.db")),
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "bin", "Debug", "net9.0", "data", "bot.db"))
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "bin", "Debug", "net8.0", "data", "bot.db")),
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "bin", "Debug", "net8.0", "data", "bot.db"))
     };
 
     foreach (var candidate in candidates)
@@ -100,6 +104,12 @@ static string ResolveDatabasePath(string? configuredPath)
         {
             return candidate;
         }
+    }
+
+    var folder = Path.GetDirectoryName(candidates[0]);
+    if (!string.IsNullOrWhiteSpace(folder))
+    {
+        Directory.CreateDirectory(folder);
     }
 
     return candidates[0];

@@ -1,4 +1,8 @@
 using System.Text.Json.Serialization;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types.Enums;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types.InputFiles;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types.ReplyMarkups;
 
 namespace BotAgendamentoAI.Telegram;
 
@@ -26,79 +30,7 @@ public sealed class TelegramGetUpdatesRequest
     public int Timeout { get; set; }
 
     [JsonPropertyName("allowed_updates")]
-    public IReadOnlyList<string> AllowedUpdates { get; set; } = Array.Empty<string>();
-}
-
-public sealed class TelegramUpdate
-{
-    [JsonPropertyName("update_id")]
-    public long UpdateId { get; set; }
-
-    [JsonPropertyName("message")]
-    public TelegramMessage? Message { get; set; }
-}
-
-public sealed class TelegramMessage
-{
-    [JsonPropertyName("message_id")]
-    public long MessageId { get; set; }
-
-    [JsonPropertyName("date")]
-    public long DateUnix { get; set; }
-
-    [JsonPropertyName("text")]
-    public string? Text { get; set; }
-
-    [JsonPropertyName("chat")]
-    public TelegramChat? Chat { get; set; }
-
-    [JsonPropertyName("from")]
-    public TelegramUser? From { get; set; }
-
-    [JsonPropertyName("contact")]
-    public TelegramContact? Contact { get; set; }
-}
-
-public sealed class TelegramChat
-{
-    [JsonPropertyName("id")]
-    public long Id { get; set; }
-
-    [JsonPropertyName("type")]
-    public string? Type { get; set; }
-}
-
-public sealed class TelegramUser
-{
-    [JsonPropertyName("id")]
-    public long Id { get; set; }
-
-    [JsonPropertyName("is_bot")]
-    public bool IsBot { get; set; }
-
-    [JsonPropertyName("first_name")]
-    public string? FirstName { get; set; }
-
-    [JsonPropertyName("last_name")]
-    public string? LastName { get; set; }
-
-    [JsonPropertyName("username")]
-    public string? Username { get; set; }
-}
-
-public sealed class TelegramContact
-{
-    [JsonPropertyName("phone_number")]
-    public string? PhoneNumber { get; set; }
-
-    [JsonPropertyName("first_name")]
-    public string? FirstName { get; set; }
-
-    [JsonPropertyName("last_name")]
-    public string? LastName { get; set; }
-
-    [JsonPropertyName("user_id")]
-    public long? UserId { get; set; }
+    public IReadOnlyList<string> AllowedUpdates { get; set; } = new[] { "message", "callback_query" };
 }
 
 public sealed class TelegramSendMessageRequest
@@ -108,4 +40,136 @@ public sealed class TelegramSendMessageRequest
 
     [JsonPropertyName("text")]
     public string Text { get; set; } = string.Empty;
+
+    [JsonPropertyName("parse_mode")]
+    public string? ParseMode { get; set; }
+
+    [JsonPropertyName("reply_markup")]
+    public object? ReplyMarkup { get; set; }
+}
+
+public sealed class TelegramSendPhotoRequest
+{
+    [JsonPropertyName("chat_id")]
+    public long ChatId { get; set; }
+
+    [JsonPropertyName("photo")]
+    public string Photo { get; set; } = string.Empty;
+
+    [JsonPropertyName("caption")]
+    public string? Caption { get; set; }
+
+    [JsonPropertyName("parse_mode")]
+    public string? ParseMode { get; set; }
+
+    [JsonPropertyName("reply_markup")]
+    public object? ReplyMarkup { get; set; }
+}
+
+public sealed class TelegramSendMediaGroupRequest
+{
+    [JsonPropertyName("chat_id")]
+    public long ChatId { get; set; }
+
+    [JsonPropertyName("media")]
+    public IReadOnlyList<TelegramMediaItem> Media { get; set; } = Array.Empty<TelegramMediaItem>();
+}
+
+public sealed class TelegramMediaItem
+{
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = "photo";
+
+    [JsonPropertyName("media")]
+    public string Media { get; set; } = string.Empty;
+
+    [JsonPropertyName("caption")]
+    public string? Caption { get; set; }
+
+    [JsonPropertyName("parse_mode")]
+    public string? ParseMode { get; set; }
+}
+
+public sealed class TelegramSendLocationRequest
+{
+    [JsonPropertyName("chat_id")]
+    public long ChatId { get; set; }
+
+    [JsonPropertyName("latitude")]
+    public double Latitude { get; set; }
+
+    [JsonPropertyName("longitude")]
+    public double Longitude { get; set; }
+}
+
+public sealed class TelegramAnswerCallbackRequest
+{
+    [JsonPropertyName("callback_query_id")]
+    public string CallbackQueryId { get; set; } = string.Empty;
+
+    [JsonPropertyName("text")]
+    public string? Text { get; set; }
+
+    [JsonPropertyName("show_alert")]
+    public bool ShowAlert { get; set; }
+}
+
+public static class TelegramReplyMarkupSerializer
+{
+    public static object? Convert(IReplyMarkup? markup)
+    {
+        return markup switch
+        {
+            null => null,
+            InlineKeyboardMarkup inline => new
+            {
+                inline_keyboard = inline.InlineKeyboard
+                    .Select(row => row.Select(button => new
+                    {
+                        text = button.Text,
+                        callback_data = button.CallbackData
+                    }).ToArray())
+                    .ToArray()
+            },
+            ReplyKeyboardMarkup reply => new
+            {
+                keyboard = reply.Keyboard
+                    .Select(row => row.Select(button =>
+                        button.RequestLocation
+                            ? new Dictionary<string, object?>
+                            {
+                                ["text"] = button.Text,
+                                ["request_location"] = true
+                            }
+                            : new Dictionary<string, object?> { ["text"] = button.Text })
+                    .ToArray())
+                    .ToArray(),
+                resize_keyboard = reply.ResizeKeyboard,
+                is_persistent = reply.IsPersistent,
+                one_time_keyboard = reply.OneTimeKeyboard
+            },
+            _ => null
+        };
+    }
+
+    public static string? Convert(ParseMode mode)
+    {
+        return mode switch
+        {
+            ParseMode.Html => "HTML",
+            ParseMode.Markdown => "Markdown",
+            _ => null
+        };
+    }
+
+    public static IReadOnlyList<TelegramMediaItem> Convert(IEnumerable<IAlbumInputMedia> media)
+    {
+        return media.Select(item => new TelegramMediaItem
+        {
+            Type = item.Type,
+            Media = item.Media,
+            Caption = item.Caption,
+            ParseMode = item.ParseMode.HasValue ? Convert(item.ParseMode.Value) : null
+        }).ToList();
+    }
 }

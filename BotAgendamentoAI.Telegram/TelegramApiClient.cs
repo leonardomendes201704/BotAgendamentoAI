@@ -1,5 +1,9 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types.Enums;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types.InputFiles;
+using BotAgendamentoAI.Telegram.TelegramCompat.Types.ReplyMarkups;
 
 namespace BotAgendamentoAI.Telegram;
 
@@ -17,10 +21,10 @@ public sealed class TelegramApiClient
     {
         _httpClient = httpClient;
         _logger = logger;
-        _httpClient.Timeout = TimeSpan.FromSeconds(75);
+        _httpClient.Timeout = TimeSpan.FromSeconds(90);
     }
 
-    public async Task<TelegramApiResponse<List<TelegramUpdate>>> GetUpdatesAsync(
+    public Task<TelegramApiResponse<List<Update>>> GetUpdatesAsync(
         string botToken,
         long offset,
         int timeoutSeconds,
@@ -30,25 +34,99 @@ public sealed class TelegramApiClient
         {
             Offset = offset,
             Timeout = Math.Clamp(timeoutSeconds, 5, 50),
-            AllowedUpdates = new[] { "message" }
+            AllowedUpdates = new[] { "message", "callback_query" }
         };
 
-        return await PostAsync<List<TelegramUpdate>>(botToken, "getUpdates", payload, cancellationToken);
+        return PostAsync<List<Update>>(botToken, "getUpdates", payload, cancellationToken);
     }
 
-    public async Task<TelegramApiResponse<TelegramMessage>> SendMessageAsync(
+    public Task<TelegramApiResponse<Message>> SendMessageAsync(
         string botToken,
         long chatId,
         string text,
+        ParseMode parseMode,
+        IReplyMarkup? replyMarkup,
         CancellationToken cancellationToken)
     {
         var payload = new TelegramSendMessageRequest
         {
             ChatId = chatId,
-            Text = text ?? string.Empty
+            Text = text ?? string.Empty,
+            ParseMode = TelegramReplyMarkupSerializer.Convert(parseMode),
+            ReplyMarkup = TelegramReplyMarkupSerializer.Convert(replyMarkup)
         };
 
-        return await PostAsync<TelegramMessage>(botToken, "sendMessage", payload, cancellationToken);
+        return PostAsync<Message>(botToken, "sendMessage", payload, cancellationToken);
+    }
+
+    public Task<TelegramApiResponse<Message>> SendPhotoAsync(
+        string botToken,
+        long chatId,
+        string fileId,
+        string? caption,
+        ParseMode parseMode,
+        InlineKeyboardMarkup? replyMarkup,
+        CancellationToken cancellationToken)
+    {
+        var payload = new TelegramSendPhotoRequest
+        {
+            ChatId = chatId,
+            Photo = fileId,
+            Caption = caption,
+            ParseMode = TelegramReplyMarkupSerializer.Convert(parseMode),
+            ReplyMarkup = TelegramReplyMarkupSerializer.Convert(replyMarkup)
+        };
+
+        return PostAsync<Message>(botToken, "sendPhoto", payload, cancellationToken);
+    }
+
+    public Task<TelegramApiResponse<List<Message>>> SendMediaGroupAsync(
+        string botToken,
+        long chatId,
+        IEnumerable<IAlbumInputMedia> media,
+        CancellationToken cancellationToken)
+    {
+        var payload = new TelegramSendMediaGroupRequest
+        {
+            ChatId = chatId,
+            Media = TelegramReplyMarkupSerializer.Convert(media)
+        };
+
+        return PostAsync<List<Message>>(botToken, "sendMediaGroup", payload, cancellationToken);
+    }
+
+    public Task<TelegramApiResponse<Message>> SendLocationAsync(
+        string botToken,
+        long chatId,
+        double latitude,
+        double longitude,
+        CancellationToken cancellationToken)
+    {
+        var payload = new TelegramSendLocationRequest
+        {
+            ChatId = chatId,
+            Latitude = latitude,
+            Longitude = longitude
+        };
+
+        return PostAsync<Message>(botToken, "sendLocation", payload, cancellationToken);
+    }
+
+    public Task<TelegramApiResponse<bool>> AnswerCallbackQueryAsync(
+        string botToken,
+        string callbackQueryId,
+        string? text,
+        bool showAlert,
+        CancellationToken cancellationToken)
+    {
+        var payload = new TelegramAnswerCallbackRequest
+        {
+            CallbackQueryId = callbackQueryId,
+            Text = text,
+            ShowAlert = showAlert
+        };
+
+        return PostAsync<bool>(botToken, "answerCallbackQuery", payload, cancellationToken);
     }
 
     private async Task<TelegramApiResponse<T>> PostAsync<T>(
