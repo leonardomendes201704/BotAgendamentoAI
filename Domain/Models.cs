@@ -79,6 +79,26 @@ public sealed class BotTextConfig
     }
 }
 
+public sealed class TelegramBotConfig
+{
+    public string TenantId { get; set; } = "A";
+    public string BotId { get; set; } = string.Empty;
+    public string BotUsername { get; set; } = string.Empty;
+    public string BotToken { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public int PollingTimeoutSeconds { get; set; } = 30;
+    public long LastUpdateId { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    public static TelegramBotConfig CreateDefault(string tenantId)
+    {
+        return new TelegramBotConfig
+        {
+            TenantId = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim()
+        };
+    }
+}
+
 public sealed class ConversationSlots
 {
     public string? ServiceTitle { get; set; }

@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
   messages_json TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tenant_telegram_config (
+  tenant_id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  bot_username TEXT NOT NULL,
+  bot_token TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 0,
+  polling_timeout_seconds INTEGER NOT NULL DEFAULT 30,
+  last_update_id INTEGER NOT NULL DEFAULT 0,
+  updated_at_utc TEXT NOT NULL
+);
 """;
 
     public ConversationRepository(string sqlitePath)
@@ -298,6 +309,135 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
         return config;
     }
 
+    public async Task<TelegramBotConfig> GetTelegramConfig(string tenantId)
+    {
+        var tenant = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc
+            FROM tenant_telegram_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            return TelegramBotConfig.CreateDefault(tenant);
+        }
+
+        return new TelegramBotConfig
+        {
+            TenantId = reader.GetString(0),
+            BotId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+            BotUsername = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+            BotToken = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+            IsActive = !reader.IsDBNull(4) && reader.GetInt32(4) == 1,
+            PollingTimeoutSeconds = ClampTelegramPollingSeconds(reader.IsDBNull(5) ? 30 : reader.GetInt32(5)),
+            LastUpdateId = reader.IsDBNull(6) ? 0L : reader.GetInt64(6),
+            UpdatedAtUtc = ParseUtc(reader.IsDBNull(7) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(7))
+        };
+    }
+
+    public async Task<IReadOnlyList<TelegramBotConfig>> GetActiveTelegramConfigs()
+    {
+        var output = new List<TelegramBotConfig>();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc
+            FROM tenant_telegram_config
+            WHERE is_active = 1
+              AND LENGTH(TRIM(bot_token)) > 0;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            output.Add(new TelegramBotConfig
+            {
+                TenantId = reader.GetString(0),
+                BotId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                BotUsername = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                BotToken = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                IsActive = !reader.IsDBNull(4) && reader.GetInt32(4) == 1,
+                PollingTimeoutSeconds = ClampTelegramPollingSeconds(reader.IsDBNull(5) ? 30 : reader.GetInt32(5)),
+                LastUpdateId = reader.IsDBNull(6) ? 0L : reader.GetInt64(6),
+                UpdatedAtUtc = ParseUtc(reader.IsDBNull(7) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(7))
+            });
+        }
+
+        return output;
+    }
+
+    public async Task UpsertTelegramConfig(TelegramBotConfig config)
+    {
+        var tenant = string.IsNullOrWhiteSpace(config.TenantId) ? "A" : config.TenantId.Trim();
+        var updatedAtUtc = config.UpdatedAtUtc == default ? DateTimeOffset.UtcNow : config.UpdatedAtUtc;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO tenant_telegram_config
+            (tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc)
+            VALUES
+            (@tenant_id, @bot_id, @bot_username, @bot_token, @is_active, @polling_timeout_seconds, @last_update_id, @updated_at_utc)
+            ON CONFLICT(tenant_id)
+            DO UPDATE SET
+              bot_id = excluded.bot_id,
+              bot_username = excluded.bot_username,
+              bot_token = excluded.bot_token,
+              is_active = excluded.is_active,
+              polling_timeout_seconds = excluded.polling_timeout_seconds,
+              last_update_id = excluded.last_update_id,
+              updated_at_utc = excluded.updated_at_utc;
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@bot_id", config.BotId?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("@bot_username", config.BotUsername?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("@bot_token", config.BotToken?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("@is_active", config.IsActive ? 1 : 0);
+        command.Parameters.AddWithValue("@polling_timeout_seconds", ClampTelegramPollingSeconds(config.PollingTimeoutSeconds));
+        command.Parameters.AddWithValue("@last_update_id", Math.Max(0L, config.LastUpdateId));
+        command.Parameters.AddWithValue("@updated_at_utc", ToUtcText(updatedAtUtc));
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+    public async Task UpdateTelegramLastUpdateId(string tenantId, long lastUpdateId)
+    {
+        var tenant = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE tenant_telegram_config
+            SET last_update_id = @last_update_id,
+                updated_at_utc = @updated_at_utc
+            WHERE tenant_id = @tenant_id;
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@last_update_id", Math.Max(0L, lastUpdateId));
+        command.Parameters.AddWithValue("@updated_at_utc", ToUtcText(DateTimeOffset.UtcNow));
+        await command.ExecuteNonQueryAsync();
+    }
+
     private SqliteConnection CreateConnection() => new(_connectionString);
 
     private static string ToUtcText(DateTimeOffset dateTimeOffset)
@@ -350,4 +490,7 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
 
     private static int ClampPoolingSeconds(int? value)
         => Math.Clamp(value ?? 15, 0, 120);
+
+    private static int ClampTelegramPollingSeconds(int value)
+        => Math.Clamp(value, 5, 50);
 }

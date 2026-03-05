@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BotAgendamentoAI", "BotAgen
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BotAgendamentoAI.Admin", "BotAgendamentoAI.Admin\BotAgendamentoAI.Admin.csproj", "{BE190FD2-0FF0-4762-86DE-0CFADA914941}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BotAgendamentoAI.Telegram", "BotAgendamentoAI.Telegram\BotAgendamentoAI.Telegram.csproj", "{0EE76A66-FEDA-4536-AEAA-C34D22158785}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -41,6 +43,18 @@ Global
 		{BE190FD2-0FF0-4762-86DE-0CFADA914941}.Release|x64.Build.0 = Release|Any CPU
 		{BE190FD2-0FF0-4762-86DE-0CFADA914941}.Release|x86.ActiveCfg = Release|Any CPU
 		{BE190FD2-0FF0-4762-86DE-0CFADA914941}.Release|x86.Build.0 = Release|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Debug|x64.Build.0 = Debug|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Debug|x86.Build.0 = Debug|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Release|x64.ActiveCfg = Release|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Release|x64.Build.0 = Release|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Release|x86.ActiveCfg = Release|Any CPU
+		{0EE76A66-FEDA-4536-AEAA-C34D22158785}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

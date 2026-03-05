@@ -16,13 +16,13 @@ public sealed class MessagePoolingDispatcher : IAsyncDisposable
 {
     private readonly ConversationRepository _repository;
     private readonly SecretaryBot _bot;
-    private readonly Action<BotBatchResult> _onBotResponse;
+    private readonly Func<BotBatchResult, Task> _onBotResponse;
     private readonly ConcurrentDictionary<string, ConversationBuffer> _buffers = new(StringComparer.Ordinal);
 
     public MessagePoolingDispatcher(
         ConversationRepository repository,
         SecretaryBot bot,
-        Action<BotBatchResult> onBotResponse)
+        Func<BotBatchResult, Task> onBotResponse)
     {
         _repository = repository;
         _bot = bot;
@@ -95,7 +95,7 @@ public sealed class MessagePoolingDispatcher : IAsyncDisposable
         private readonly string _tenantId;
         private readonly string _phone;
         private readonly SecretaryBot _bot;
-        private readonly Action<BotBatchResult> _onBotResponse;
+        private readonly Func<BotBatchResult, Task> _onBotResponse;
         private readonly object _sync = new();
         private readonly List<string> _pendingMessages = new();
         private readonly SemaphoreSlim _processingLock = new(1, 1);
@@ -107,7 +107,7 @@ public sealed class MessagePoolingDispatcher : IAsyncDisposable
             string tenantId,
             string phone,
             SecretaryBot bot,
-            Action<BotBatchResult> onBotResponse)
+            Func<BotBatchResult, Task> onBotResponse)
         {
             _tenantId = tenantId;
             _phone = phone;
@@ -244,12 +244,12 @@ public sealed class MessagePoolingDispatcher : IAsyncDisposable
                 };
 
                 var answer = await _bot.HandleAsync(incoming);
-                _onBotResponse(new BotBatchResult(_tenantId, _phone, mergedText, answer, messages.Count));
+                await _onBotResponse(new BotBatchResult(_tenantId, _phone, mergedText, answer, messages.Count));
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[pooling-process-error] {_tenantId}/{_phone}: {ex.Message}");
-                _onBotResponse(new BotBatchResult(
+                await _onBotResponse(new BotBatchResult(
                     _tenantId,
                     _phone,
                     mergedText,

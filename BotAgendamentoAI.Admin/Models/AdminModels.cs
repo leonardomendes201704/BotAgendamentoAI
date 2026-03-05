@@ -131,5 +131,11 @@ public sealed class BotConfigViewModel
     public string ClosingText { get; set; } = string.Empty;
     public string FallbackText { get; set; } = string.Empty;
     public int MessagePoolingSeconds { get; set; } = 15;
+    public string TelegramBotId { get; set; } = string.Empty;
+    public string TelegramBotUsername { get; set; } = string.Empty;
+    public string TelegramBotToken { get; set; } = string.Empty;
+    public bool TelegramIsActive { get; set; }
+    public int TelegramPollingTimeoutSeconds { get; set; } = 30;
+    public long TelegramLastUpdateId { get; set; }
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
 }

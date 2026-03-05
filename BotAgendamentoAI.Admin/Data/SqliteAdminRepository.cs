@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
   messages_json TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tenant_telegram_config (
+  tenant_id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  bot_username TEXT NOT NULL,
+  bot_token TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 0,
+  polling_timeout_seconds INTEGER NOT NULL DEFAULT 30,
+  last_update_id INTEGER NOT NULL DEFAULT 0,
+  updated_at_utc TEXT NOT NULL
+);
 """;
 
     public SqliteAdminRepository(IOptions<AdminOptions> options, ILogger<SqliteAdminRepository> logger)
@@ -148,6 +159,8 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
         await CollectAsync("SELECT DISTINCT tenant_id FROM conversation_messages;");
         await CollectAsync("SELECT DISTINCT tenant_id FROM bookings;");
         await CollectAsync("SELECT DISTINCT tenant_id FROM conversation_state;");
+        await CollectAsync("SELECT DISTINCT tenant_id FROM tenant_bot_config;");
+        await CollectAsync("SELECT DISTINCT tenant_id FROM tenant_telegram_config;");
 
         if (tenants.Count == 0)
         {
@@ -758,41 +771,63 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
     public async Task<BotConfigViewModel> GetBotConfigAsync(string tenantId)
     {
         var tenant = NormalizeTenant(tenantId);
+        var model = BuildDefaultBotConfig(tenant);
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        await using var command = connection.CreateCommand();
-        command.CommandText =
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
             """
             SELECT menu_json, messages_json
             FROM tenant_bot_config
             WHERE tenant_id = @tenant_id
             LIMIT 1;
             """;
-        command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@tenant_id", tenant);
 
-        await using var reader = await command.ExecuteReaderAsync();
-        if (await reader.ReadAsync())
-        {
-            var menuJson = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
-            var messagesJson = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-
-            var menu = DeserializeMenu(menuJson);
-            var messages = DeserializeMessages(messagesJson);
-            return new BotConfigViewModel
+            await using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
             {
-                TenantId = tenant,
-                MainMenuText = menu.MainMenuText,
-                GreetingText = messages.GreetingText,
-                HumanHandoffText = messages.HumanHandoffText,
-                ClosingText = messages.ClosingText,
-                FallbackText = messages.FallbackText,
-                MessagePoolingSeconds = ClampPoolingSeconds(messages.MessagePoolingSeconds)
-            };
+                var menuJson = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                var messagesJson = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+
+                var menu = DeserializeMenu(menuJson);
+                var messages = DeserializeMessages(messagesJson);
+                model.MainMenuText = menu.MainMenuText;
+                model.GreetingText = messages.GreetingText;
+                model.HumanHandoffText = messages.HumanHandoffText;
+                model.ClosingText = messages.ClosingText;
+                model.FallbackText = messages.FallbackText;
+                model.MessagePoolingSeconds = ClampPoolingSeconds(messages.MessagePoolingSeconds);
+            }
         }
 
-        return BuildDefaultBotConfig(tenant);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            SELECT bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id
+            FROM tenant_telegram_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                model.TelegramBotId = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                model.TelegramBotUsername = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                model.TelegramBotToken = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                model.TelegramIsActive = !reader.IsDBNull(3) && reader.GetInt32(3) == 1;
+                model.TelegramPollingTimeoutSeconds = ClampTelegramPollingSeconds(reader.IsDBNull(4) ? 30 : reader.GetInt32(4));
+                model.TelegramLastUpdateId = reader.IsDBNull(5) ? 0L : reader.GetInt64(5);
+            }
+        }
+
+        return model;
     }
 
     public async Task SaveBotConfigAsync(BotConfigViewModel input)
@@ -810,12 +845,23 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
             FallbackText = input.FallbackText?.Trim() ?? string.Empty,
             MessagePoolingSeconds = ClampPoolingSeconds(input.MessagePoolingSeconds)
         };
+        var telegram = new TelegramConfigStorage
+        {
+            BotId = input.TelegramBotId?.Trim() ?? string.Empty,
+            BotUsername = input.TelegramBotUsername?.Trim() ?? string.Empty,
+            BotToken = input.TelegramBotToken?.Trim() ?? string.Empty,
+            IsActive = input.TelegramIsActive,
+            PollingTimeoutSeconds = ClampTelegramPollingSeconds(input.TelegramPollingTimeoutSeconds),
+            LastUpdateId = Math.Max(0L, input.TelegramLastUpdateId)
+        };
+        var nowUtc = ToUtcText(DateTimeOffset.UtcNow);
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        await using var command = connection.CreateCommand();
-        command.CommandText =
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
             """
             INSERT INTO tenant_bot_config (tenant_id, menu_json, messages_json, updated_at_utc)
             VALUES (@tenant_id, @menu_json, @messages_json, @updated_at_utc)
@@ -824,11 +870,40 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
                 messages_json = excluded.messages_json,
                 updated_at_utc = excluded.updated_at_utc;
             """;
-        command.Parameters.AddWithValue("@tenant_id", tenant);
-        command.Parameters.AddWithValue("@menu_json", JsonSerializer.Serialize(menu));
-        command.Parameters.AddWithValue("@messages_json", JsonSerializer.Serialize(messages));
-        command.Parameters.AddWithValue("@updated_at_utc", ToUtcText(DateTimeOffset.UtcNow));
-        await command.ExecuteNonQueryAsync();
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@menu_json", JsonSerializer.Serialize(menu));
+            command.Parameters.AddWithValue("@messages_json", JsonSerializer.Serialize(messages));
+            command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            INSERT INTO tenant_telegram_config
+            (tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc)
+            VALUES
+            (@tenant_id, @bot_id, @bot_username, @bot_token, @is_active, @polling_timeout_seconds, @last_update_id, @updated_at_utc)
+            ON CONFLICT(tenant_id) DO UPDATE SET
+                bot_id = excluded.bot_id,
+                bot_username = excluded.bot_username,
+                bot_token = excluded.bot_token,
+                is_active = excluded.is_active,
+                polling_timeout_seconds = excluded.polling_timeout_seconds,
+                last_update_id = excluded.last_update_id,
+                updated_at_utc = excluded.updated_at_utc;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@bot_id", telegram.BotId);
+            command.Parameters.AddWithValue("@bot_username", telegram.BotUsername);
+            command.Parameters.AddWithValue("@bot_token", telegram.BotToken);
+            command.Parameters.AddWithValue("@is_active", telegram.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("@polling_timeout_seconds", telegram.PollingTimeoutSeconds);
+            command.Parameters.AddWithValue("@last_update_id", telegram.LastUpdateId);
+            command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     private static string TrimPreview(string text)
@@ -851,7 +926,8 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
             HumanHandoffText = "Vou te direcionar para um atendente humano.",
             ClosingText = "Atendimento encerrado. Envie MENU para iniciar novamente.",
             FallbackText = "Nao entendi. Escolha uma opcao do menu.",
-            MessagePoolingSeconds = 15
+            MessagePoolingSeconds = 15,
+            TelegramPollingTimeoutSeconds = 30
         };
     }
 
@@ -885,6 +961,9 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
 
     private static int ClampPoolingSeconds(int? value)
         => Math.Clamp(value ?? 15, 0, 120);
+
+    private static int ClampTelegramPollingSeconds(int value)
+        => Math.Clamp(value, 5, 50);
 
     private static string BuildSafeCategoryName(string rawName)
     {
@@ -1081,5 +1160,15 @@ CREATE TABLE IF NOT EXISTS tenant_bot_config (
         public string ClosingText { get; set; } = string.Empty;
         public string FallbackText { get; set; } = string.Empty;
         public int? MessagePoolingSeconds { get; set; }
+    }
+
+    private sealed class TelegramConfigStorage
+    {
+        public string BotId { get; set; } = string.Empty;
+        public string BotUsername { get; set; } = string.Empty;
+        public string BotToken { get; set; } = string.Empty;
+        public bool IsActive { get; set; }
+        public int PollingTimeoutSeconds { get; set; }
+        public long LastUpdateId { get; set; }
     }
 }

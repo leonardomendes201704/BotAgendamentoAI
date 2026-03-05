@@ -63,6 +63,8 @@ public static class Program
                     Console.WriteLine($"[{result.TenantId} | {result.Phone}] Bot: {result.BotText}");
                     Console.Write($"\n[{tenant} | {from}] Voce: ");
                 }
+
+                return Task.CompletedTask;
             });
 
         while (true)
