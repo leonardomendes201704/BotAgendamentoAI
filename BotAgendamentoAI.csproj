@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.3" />
+    <PackageReference Include="OpenAI" Version="2.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="BotAgendamentoAI.Admin\**\*.cs" />
+    <Content Remove="BotAgendamentoAI.Admin\**\*" />
+    <EmbeddedResource Remove="BotAgendamentoAI.Admin\**\*" />
+    <None Remove="BotAgendamentoAI.Admin\**\*" />
+  </ItemGroup>
+
+</Project>
