@@ -42,6 +42,8 @@ public sealed class TelegramPollingWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var lastNoConfigLogUtc = DateTimeOffset.MinValue;
+
         while (!stoppingToken.IsCancellationRequested)
         {
             IReadOnlyList<TelegramBotConfig> activeConfigs;
@@ -60,6 +62,13 @@ public sealed class TelegramPollingWorker : BackgroundService
 
             if (activeConfigs.Count == 0)
             {
+                var now = DateTimeOffset.UtcNow;
+                if (now - lastNoConfigLogUtc > TimeSpan.FromMinutes(2))
+                {
+                    _logger.LogWarning("Nenhum tenant Telegram ativo com token configurado. Verifique Settings no Admin.");
+                    lastNoConfigLogUtc = now;
+                }
+
                 await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _runtime.TenantIdleDelaySeconds)), stoppingToken);
                 continue;
             }

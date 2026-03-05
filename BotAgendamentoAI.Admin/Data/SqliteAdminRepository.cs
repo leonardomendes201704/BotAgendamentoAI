@@ -983,19 +983,37 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
             FallbackText = input.FallbackText?.Trim() ?? string.Empty,
             MessagePoolingSeconds = ClampPoolingSeconds(input.MessagePoolingSeconds)
         };
-        var telegram = new TelegramConfigStorage
-        {
-            BotId = input.TelegramBotId?.Trim() ?? string.Empty,
-            BotUsername = input.TelegramBotUsername?.Trim() ?? string.Empty,
-            BotToken = input.TelegramBotToken?.Trim() ?? string.Empty,
-            IsActive = input.TelegramIsActive,
-            PollingTimeoutSeconds = ClampTelegramPollingSeconds(input.TelegramPollingTimeoutSeconds),
-            LastUpdateId = Math.Max(0L, input.TelegramLastUpdateId)
-        };
         var nowUtc = ToUtcText(DateTimeOffset.UtcNow);
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+
+        var incomingToken = input.TelegramBotToken?.Trim() ?? string.Empty;
+        var tokenToPersist = incomingToken;
+
+        if (string.IsNullOrWhiteSpace(tokenToPersist))
+        {
+            await using var existingTokenCommand = connection.CreateCommand();
+            existingTokenCommand.CommandText =
+            """
+            SELECT bot_token
+            FROM tenant_telegram_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+            existingTokenCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            tokenToPersist = Convert.ToString(await existingTokenCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        var telegram = new TelegramConfigStorage
+        {
+            BotId = input.TelegramBotId?.Trim() ?? string.Empty,
+            BotUsername = input.TelegramBotUsername?.Trim() ?? string.Empty,
+            BotToken = tokenToPersist,
+            IsActive = input.TelegramIsActive,
+            PollingTimeoutSeconds = ClampTelegramPollingSeconds(input.TelegramPollingTimeoutSeconds),
+            LastUpdateId = Math.Max(0L, input.TelegramLastUpdateId)
+        };
 
         await using (var command = connection.CreateCommand())
         {
