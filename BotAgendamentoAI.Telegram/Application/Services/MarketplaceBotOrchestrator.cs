@@ -96,7 +96,7 @@ public sealed class MarketplaceBotOrchestrator
                 message.Chat.Id,
                 BotMessages.StateExpired,
                 user.Role == UserRole.Provider
-                    ? KeyboardFactory.ProviderMenu()
+                    ? KeyboardFactory.ProviderMenu(user.Role == UserRole.Both)
                     : KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
                 null,
                 cancellationToken);
@@ -338,7 +338,7 @@ public sealed class MarketplaceBotOrchestrator
                 chatId,
                 BotMessages.UnknownCommand,
                 IsProviderMode(user)
-                    ? KeyboardFactory.ProviderMenu()
+                    ? KeyboardFactory.ProviderMenu(user.Role == UserRole.Both)
                     : KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
                 user.Session.ActiveJobId,
                 cancellationToken);
@@ -398,8 +398,8 @@ public sealed class MarketplaceBotOrchestrator
                 tenantId,
                 user.TelegramUserId,
                 chatId,
-                BotMessages.ProviderHomeMenu(),
-                KeyboardFactory.ProviderMenu(),
+                BotMessages.ProviderHomeMenu(user.Role == UserRole.Both),
+                KeyboardFactory.ProviderMenu(user.Role == UserRole.Both),
                 null,
                 cancellationToken);
         }

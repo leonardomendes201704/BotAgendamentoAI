@@ -70,14 +70,24 @@ public static class KeyboardFactory
         return new InlineKeyboardMarkup(rows);
     }
 
-    public static ReplyKeyboardMarkup ProviderMenu()
+    public static ReplyKeyboardMarkup ProviderMenu(bool allowSwitchToClient)
     {
-        return new ReplyKeyboardMarkup(new[]
+        var rows = new List<KeyboardButton[]>
         {
             new KeyboardButton[] { MenuTexts.ProviderAvailableJobs, MenuTexts.ProviderAgenda },
-            new KeyboardButton[] { MenuTexts.ProviderProfile, MenuTexts.ProviderPortfolio },
-            new KeyboardButton[] { MenuTexts.ProviderSettings, MenuTexts.ProviderSwitchToClient }
-        })
+            new KeyboardButton[] { MenuTexts.ProviderProfile, MenuTexts.ProviderPortfolio }
+        };
+
+        if (allowSwitchToClient)
+        {
+            rows.Add(new KeyboardButton[] { MenuTexts.ProviderSettings, MenuTexts.ProviderSwitchToClient });
+        }
+        else
+        {
+            rows.Add(new KeyboardButton[] { MenuTexts.ProviderSettings });
+        }
+
+        return new ReplyKeyboardMarkup(rows)
         {
             ResizeKeyboard = true,
             IsPersistent = true

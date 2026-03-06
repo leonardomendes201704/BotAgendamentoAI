@@ -18,6 +18,7 @@ public sealed class DashboardViewModel
     public int CreatedBookings { get; set; }
     public int FinishedBookings { get; set; }
     public int CancelledBookings { get; set; }
+    public int RejectedJobs { get; set; }
     public int HumanHandoffOpen { get; set; }
     public int ConvertedPhones { get; set; }
     public decimal ConversionRatePercent { get; set; }
@@ -148,6 +149,27 @@ public sealed class ProvidersPageViewModel
     public string TenantId { get; set; } = "A";
     public IReadOnlyList<ProviderListItem> Providers { get; set; } = Array.Empty<ProviderListItem>();
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
+}
+
+public sealed class ProviderCoverageItem
+{
+    public long ProviderUserId { get; set; }
+    public long TelegramUserId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public int RadiusKm { get; set; } = 10;
+    public double? BaseLatitude { get; set; }
+    public double? BaseLongitude { get; set; }
+    public IReadOnlyList<string> Neighborhoods { get; set; } = Array.Empty<string>();
+}
+
+public sealed class CoveragePageViewModel
+{
+    public string TenantId { get; set; } = "A";
+    public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
+    public IReadOnlyList<ProviderCoverageItem> Providers { get; set; } = Array.Empty<ProviderCoverageItem>();
+    public IReadOnlyList<string> Neighborhoods { get; set; } = Array.Empty<string>();
 }
 
 public sealed class CategoryItem

@@ -86,12 +86,14 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider, bool 
         await EnsureSharedTablesSqlServer(db);
         await EnsureGoogleCalendarTablesSqlServer(db);
         await EnsureExceptionLogsTableSqlServer(db);
+        await EnsureProviderJobRejectionsTableSqlServer(db);
         return;
     }
 
     await db.Database.MigrateAsync();
     await EnsureGoogleCalendarTables(db);
     await EnsureExceptionLogsTable(db);
+    await EnsureProviderJobRejectionsTable(db);
     await EnsureJobContactColumns(db);
 }
 
@@ -707,7 +709,70 @@ static async Task EnsureExceptionLogsTableSqlServer(BotDbContext db)
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_exception_logs_tg_user_created' AND object_id = OBJECT_ID(N'dbo.tg_exception_logs'))
     BEGIN
         CREATE INDEX ix_exception_logs_tg_user_created
-        ON dbo.tg_exception_logs (telegram_user_id, created_at_utc);
+    ON dbo.tg_exception_logs (telegram_user_id, created_at_utc);
+    END;
+    """);
+}
+
+static async Task EnsureProviderJobRejectionsTable(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS tg_provider_job_rejections
+    (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        job_id INTEGER NOT NULL,
+        provider_user_id INTEGER NOT NULL,
+        created_at_utc TEXT NOT NULL
+    );
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_tg_provider_job_rejections_tenant_job_provider
+    ON tg_provider_job_rejections (tenant_id, job_id, provider_user_id);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_tg_provider_job_rejections_tenant_created
+    ON tg_provider_job_rejections (tenant_id, created_at_utc);
+    """);
+}
+
+static async Task EnsureProviderJobRejectionsTableSqlServer(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF OBJECT_ID(N'dbo.tg_provider_job_rejections', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.tg_provider_job_rejections
+        (
+            id BIGINT IDENTITY(1,1) PRIMARY KEY,
+            tenant_id NVARCHAR(32) NOT NULL,
+            job_id BIGINT NOT NULL,
+            provider_user_id BIGINT NOT NULL,
+            created_at_utc NVARCHAR(64) NOT NULL
+        );
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'uq_tg_provider_job_rejections_tenant_job_provider' AND object_id = OBJECT_ID(N'dbo.tg_provider_job_rejections'))
+    BEGIN
+        CREATE UNIQUE INDEX uq_tg_provider_job_rejections_tenant_job_provider
+        ON dbo.tg_provider_job_rejections (tenant_id, job_id, provider_user_id);
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_provider_job_rejections_tenant_created' AND object_id = OBJECT_ID(N'dbo.tg_provider_job_rejections'))
+    BEGIN
+        CREATE INDEX ix_tg_provider_job_rejections_tenant_created
+        ON dbo.tg_provider_job_rejections (tenant_id, created_at_utc);
     END;
     """);
 }

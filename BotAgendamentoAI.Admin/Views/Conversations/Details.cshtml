@@ -1,9 +1,11 @@
 @model BotAgendamentoAI.Admin.Models.ConversationDetailsViewModel
+@using System.Text.Json
 @{
     ViewData["Title"] = "Detalhes da conversa";
     var visibleMessages = Model.Messages
         .Where(message => !string.Equals(message.Role, "tool", StringComparison.OrdinalIgnoreCase))
         .ToList();
+    var realtimeLimit = (int?)ViewData["Limit"] ?? 250;
 }
 
 <style>
@@ -80,54 +82,451 @@
         color: #6b7785;
         padding: 2rem 1rem;
     }
+
+    .realtime-toggle-btn {
+        min-width: 150px;
+    }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="h4 m-0">Conversa @Model.Phone</h1>
-    <a class="btn btn-sm btn-outline-secondary" asp-action="Index" asp-route-tenant="@Model.TenantId">Voltar</a>
-</div>
-
-<div class="card conversation-chat-card">
-    <div id="chatTrack" class="conversation-chat-track">
-        @if (visibleMessages.Count == 0)
-        {
-            <div class="chat-empty">Sem mensagens visiveis para esta conversa.</div>
-        }
-        else
-        {
-            @foreach (var message in visibleMessages)
-            {
-                var isInbound = string.Equals(message.Direction, "in", StringComparison.OrdinalIgnoreCase);
-                var bubbleClass = isInbound ? "chat-bubble-in" : "chat-bubble-out";
-                var rowClass = isInbound ? "chat-left" : "chat-right";
-                var roleLower = (message.Role ?? string.Empty).Trim().ToLowerInvariant();
-                var roleBadgeClass = roleLower switch
-                {
-                    "assistant" => "text-bg-primary",
-                    "system" => "text-bg-warning",
-                    _ => "text-bg-secondary"
-                };
-
-                <div class="chat-row @rowClass">
-                    <div class="chat-bubble @bubbleClass">
-                        <div class="chat-meta">
-                            <span class="badge @roleBadgeClass">@message.Role</span>
-                            <span class="chat-sender">@(isInbound ? "Cliente" : "Bot")</span>
-                            <span>@message.CreatedAtUtc.ToLocalTime().ToString("dd/MM HH:mm:ss")</span>
-                        </div>
-                        <p class="chat-content">@message.Content</p>
-                    </div>
-                </div>
-            }
-        }
+    <div class="d-flex gap-2 align-items-center">
+        <span id="realtimeStatusBadge" class="badge text-bg-secondary">Realtime desligado</span>
+        <button id="realtimeToggleBtn" type="button" class="btn btn-sm btn-outline-primary realtime-toggle-btn">Ligar realtime</button>
+        <a class="btn btn-sm btn-outline-secondary" asp-action="Index" asp-route-tenant="@Model.TenantId">Voltar</a>
     </div>
 </div>
 
-<script>
-    (() => {
-        const chatTrack = document.getElementById('chatTrack');
-        if (chatTrack) {
-            chatTrack.scrollTop = chatTrack.scrollHeight;
-        }
-    })();
-</script>
+<div class="card conversation-chat-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Historico</strong>
+        <small id="realtimeUpdatedAt" class="text-muted">Ultima atualizacao: carregando...</small>
+    </div>
+    <div id="chatTrack" class="conversation-chat-track">
+        <div id="chatRows">
+            @if (visibleMessages.Count == 0)
+            {
+                <div class="chat-empty">Sem mensagens visiveis para esta conversa.</div>
+            }
+            else
+            {
+                @foreach (var message in visibleMessages)
+                {
+                    var isInbound = string.Equals(message.Direction, "in", StringComparison.OrdinalIgnoreCase);
+                    var bubbleClass = isInbound ? "chat-bubble-in" : "chat-bubble-out";
+                    var rowClass = isInbound ? "chat-left" : "chat-right";
+                    var roleLower = (message.Role ?? string.Empty).Trim().ToLowerInvariant();
+                    var roleBadgeClass = roleLower switch
+                    {
+                        "assistant" => "text-bg-primary",
+                        "system" => "text-bg-warning",
+                        _ => "text-bg-secondary"
+                    };
+
+                    <div class="chat-row @rowClass">
+                        <div class="chat-bubble @bubbleClass">
+                            <div class="chat-meta">
+                                <span class="badge @roleBadgeClass">@message.Role</span>
+                                <span class="chat-sender">@(isInbound ? "Cliente" : "Bot")</span>
+                                <span>@message.CreatedAtUtc.ToLocalTime().ToString("dd/MM HH:mm:ss")</span>
+                            </div>
+                            <p class="chat-content">@message.Content</p>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
+    <script>
+        (() => {
+            const tenantId = @Html.Raw(JsonSerializer.Serialize(Model.TenantId));
+            const phone = @Html.Raw(JsonSerializer.Serialize(Model.Phone));
+            const snapshotLimit = @realtimeLimit;
+            const snapshotEndpoint = '@Url.Action("Snapshot", "Conversations")';
+            const initialMessages = @Html.Raw(JsonSerializer.Serialize(
+                visibleMessages.Select(message => new
+                {
+                    id = message.Id,
+                    direction = message.Direction,
+                    role = message.Role,
+                    content = message.Content,
+                    createdAtUtc = message.CreatedAtUtc.ToString("O")
+                })));
+
+            const chatTrack = document.getElementById('chatTrack');
+            const chatRows = document.getElementById('chatRows');
+            const realtimeToggleBtn = document.getElementById('realtimeToggleBtn');
+            const realtimeStatusBadge = document.getElementById('realtimeStatusBadge');
+            const realtimeUpdatedAt = document.getElementById('realtimeUpdatedAt');
+            const storageKey = `conversation-realtime:${tenantId}:${phone}`;
+
+            let realtimeConnection = null;
+            let realtimeEnabled = true;
+            let isRefreshing = false;
+            let lastSignature = '';
+
+            try {
+                const storedValue = window.localStorage.getItem(storageKey);
+                realtimeEnabled = storedValue !== 'off';
+            } catch {
+                realtimeEnabled = true;
+            }
+
+            function saveRealtimePreference(enabled) {
+                try {
+                    window.localStorage.setItem(storageKey, enabled ? 'on' : 'off');
+                } catch {
+                    // ignore
+                }
+            }
+
+            function escapeHtml(value) {
+                return (value ?? '')
+                    .toString()
+                    .replaceAll('&', '&amp;')
+                    .replaceAll('<', '&lt;')
+                    .replaceAll('>', '&gt;')
+                    .replaceAll('"', '&quot;')
+                    .replaceAll("'", '&#39;');
+            }
+
+            function isInboundDirection(direction) {
+                const normalized = (direction ?? '').toString().trim().toLowerCase();
+                return normalized === 'in' || normalized === 'inbound' || normalized === 'incoming';
+            }
+
+            function toRoleBadgeClass(role) {
+                const normalized = (role ?? '').toString().trim().toLowerCase();
+                if (normalized === 'assistant') {
+                    return 'text-bg-primary';
+                }
+
+                if (normalized === 'system') {
+                    return 'text-bg-warning';
+                }
+
+                return 'text-bg-secondary';
+            }
+
+            function formatDateTime(value) {
+                const parsed = new Date(value ?? '');
+                if (Number.isNaN(parsed.getTime())) {
+                    return '-';
+                }
+
+                return parsed.toLocaleString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+
+            function normalizeMessages(rawItems) {
+                if (!Array.isArray(rawItems)) {
+                    return [];
+                }
+
+                return rawItems
+                    .map(raw => ({
+                        id: raw.id ?? raw.Id ?? 0,
+                        direction: raw.direction ?? raw.Direction ?? '',
+                        role: raw.role ?? raw.Role ?? '',
+                        content: raw.content ?? raw.Content ?? '',
+                        createdAtUtc: raw.createdAtUtc ?? raw.CreatedAtUtc ?? ''
+                    }))
+                    .filter(item => (item.role ?? '').toString().trim().toLowerCase() !== 'tool');
+            }
+
+            function buildSignature(messages) {
+                if (!Array.isArray(messages) || messages.length === 0) {
+                    return '0';
+                }
+
+                const last = messages[messages.length - 1];
+                return `${messages.length}|${last.id}|${last.createdAtUtc}|${(last.content ?? '').length}`;
+            }
+
+            function updateRealtimeStatus(text, enabled) {
+                if (!realtimeStatusBadge) {
+                    return;
+                }
+
+                realtimeStatusBadge.textContent = text;
+                realtimeStatusBadge.className = enabled
+                    ? 'badge text-bg-success'
+                    : 'badge text-bg-secondary';
+            }
+
+            function updateUpdatedAt(reason) {
+                if (!realtimeUpdatedAt) {
+                    return;
+                }
+
+                const clock = new Date().toLocaleTimeString('pt-BR');
+                realtimeUpdatedAt.textContent = `Ultima atualizacao: ${clock}${reason ? ` (${reason})` : ''}`;
+            }
+
+            function updateToggleButton() {
+                if (!realtimeToggleBtn) {
+                    return;
+                }
+
+                realtimeToggleBtn.textContent = realtimeEnabled ? 'Desligar realtime' : 'Ligar realtime';
+                realtimeToggleBtn.className = realtimeEnabled
+                    ? 'btn btn-sm btn-outline-danger realtime-toggle-btn'
+                    : 'btn btn-sm btn-outline-primary realtime-toggle-btn';
+            }
+
+            function isNearBottom() {
+                if (!chatTrack) {
+                    return true;
+                }
+
+                const delta = chatTrack.scrollHeight - chatTrack.scrollTop - chatTrack.clientHeight;
+                return delta <= 80;
+            }
+
+            function scrollToBottom() {
+                if (!chatTrack) {
+                    return;
+                }
+
+                chatTrack.scrollTop = chatTrack.scrollHeight;
+            }
+
+            function renderMessages(messages, forceScroll) {
+                if (!chatRows) {
+                    return;
+                }
+
+                if (!Array.isArray(messages) || messages.length === 0) {
+                    chatRows.innerHTML = '<div class="chat-empty">Sem mensagens visiveis para esta conversa.</div>';
+                    if (forceScroll) {
+                        scrollToBottom();
+                    }
+                    return;
+                }
+
+                const shouldScroll = forceScroll || isNearBottom();
+                const html = messages.map(message => {
+                    const inbound = isInboundDirection(message.direction);
+                    const rowClass = inbound ? 'chat-left' : 'chat-right';
+                    const bubbleClass = inbound ? 'chat-bubble-in' : 'chat-bubble-out';
+                    const sender = inbound ? 'Cliente' : 'Bot';
+                    const role = (message.role ?? '').toString().trim() || '-';
+
+                    return `
+                        <div class="chat-row ${rowClass}">
+                            <div class="chat-bubble ${bubbleClass}">
+                                <div class="chat-meta">
+                                    <span class="badge ${toRoleBadgeClass(role)}">${escapeHtml(role)}</span>
+                                    <span class="chat-sender">${sender}</span>
+                                    <span>${escapeHtml(formatDateTime(message.createdAtUtc))}</span>
+                                </div>
+                                <p class="chat-content">${escapeHtml(message.content)}</p>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                chatRows.innerHTML = html.join('');
+
+                if (shouldScroll) {
+                    scrollToBottom();
+                }
+            }
+
+            async function refreshConversation(reason) {
+                if (isRefreshing) {
+                    return;
+                }
+
+                isRefreshing = true;
+                try {
+                    const query = new URLSearchParams({
+                        tenant: tenantId,
+                        phone,
+                        limit: String(snapshotLimit)
+                    });
+
+                    const response = await fetch(`${snapshotEndpoint}?${query.toString()}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' },
+                        cache: 'no-store'
+                    });
+
+                    if (!response.ok) {
+                        updateRealtimeStatus(`Falha HTTP ${response.status}`, false);
+                        return;
+                    }
+
+                    const payload = await response.json();
+                    const messages = normalizeMessages(payload.messages ?? payload.Messages ?? []);
+                    const signature = buildSignature(messages);
+
+                    if (signature !== lastSignature) {
+                        renderMessages(messages, false);
+                        lastSignature = signature;
+                    }
+
+                    updateUpdatedAt(reason ?? 'sync');
+                    if (realtimeEnabled) {
+                        updateRealtimeStatus('Realtime ligado', true);
+                    }
+                } catch {
+                    updateRealtimeStatus('Erro de atualizacao', false);
+                } finally {
+                    isRefreshing = false;
+                }
+            }
+
+            function createConnection() {
+                if (!window.signalR) {
+                    updateRealtimeStatus('SignalR indisponivel', false);
+                    return null;
+                }
+
+                const connection = new signalR.HubConnectionBuilder()
+                    .withUrl('/hubs/dashboard')
+                    .withAutomaticReconnect([0, 2000, 5000, 10000])
+                    .build();
+
+                connection.on('dashboardChanged', async payload => {
+                    if (!realtimeEnabled) {
+                        return;
+                    }
+
+                    const eventTenantId = (payload?.tenantId ?? payload?.TenantId ?? '').toString().trim();
+                    if (eventTenantId && eventTenantId.toLowerCase() !== tenantId.toLowerCase()) {
+                        return;
+                    }
+
+                    await refreshConversation('tempo real');
+                });
+
+                connection.onreconnecting(() => {
+                    if (realtimeEnabled) {
+                        updateRealtimeStatus('Realtime reconectando', false);
+                    }
+                });
+
+                connection.onreconnected(async () => {
+                    if (!realtimeEnabled) {
+                        return;
+                    }
+
+                    try {
+                        await connection.invoke('JoinTenant', tenantId);
+                    } catch {
+                        // ignore
+                    }
+
+                    updateRealtimeStatus('Realtime ligado', true);
+                    await refreshConversation('reconectado');
+                });
+
+                connection.onclose(() => {
+                    if (realtimeEnabled) {
+                        updateRealtimeStatus('Realtime desconectado', false);
+                    }
+                });
+
+                return connection;
+            }
+
+            async function startRealtime() {
+                realtimeEnabled = true;
+                updateToggleButton();
+                saveRealtimePreference(true);
+
+                if (!realtimeConnection) {
+                    realtimeConnection = createConnection();
+                }
+
+                if (!realtimeConnection) {
+                    updateRealtimeStatus('SignalR indisponivel', false);
+                    return;
+                }
+
+                try {
+                    if (realtimeConnection.state !== signalR.HubConnectionState.Connected) {
+                        await realtimeConnection.start();
+                    }
+
+                    await realtimeConnection.invoke('JoinTenant', tenantId);
+                    updateRealtimeStatus('Realtime ligado', true);
+                    await refreshConversation('conectado');
+                } catch {
+                    updateRealtimeStatus('Falha na conexao realtime', false);
+                }
+            }
+
+            async function stopRealtime() {
+                realtimeEnabled = false;
+                updateToggleButton();
+                saveRealtimePreference(false);
+
+                if (!realtimeConnection) {
+                    updateRealtimeStatus('Realtime desligado', false);
+                    return;
+                }
+
+                try {
+                    if (realtimeConnection.state === signalR.HubConnectionState.Connected) {
+                        await realtimeConnection.invoke('LeaveTenant', tenantId);
+                    }
+                } catch {
+                    // ignore
+                }
+
+                try {
+                    await realtimeConnection.stop();
+                } catch {
+                    // ignore
+                }
+
+                realtimeConnection = null;
+                updateRealtimeStatus('Realtime desligado', false);
+            }
+
+            if (realtimeToggleBtn) {
+                realtimeToggleBtn.addEventListener('click', async () => {
+                    if (realtimeEnabled) {
+                        await stopRealtime();
+                    } else {
+                        await startRealtime();
+                    }
+                });
+            }
+
+            const normalizedInitial = normalizeMessages(initialMessages);
+            lastSignature = buildSignature(normalizedInitial);
+            renderMessages(normalizedInitial, true);
+            updateUpdatedAt('carregado');
+            updateToggleButton();
+
+            if (realtimeEnabled) {
+                startRealtime();
+            } else {
+                updateRealtimeStatus('Realtime desligado', false);
+            }
+
+            window.addEventListener('beforeunload', () => {
+                if (realtimeConnection) {
+                    realtimeConnection.invoke('LeaveTenant', tenantId).catch(() => {
+                        // ignore
+                    });
+                    realtimeConnection.stop().catch(() => {
+                        // ignore
+                    });
+                }
+            });
+        })();
+    </script>
+}

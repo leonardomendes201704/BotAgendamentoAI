@@ -12,15 +12,23 @@ public static class BotMessages
     public static string ClientHomeMenu(bool allowSwitchToProvider)
         => "Menu";
 
-    public static string ProviderHomeMenu()
-        => "Menu Prestador:\n" +
-           "1 - Pedidos disponiveis\n" +
-           "2 - Minha agenda\n" +
-           "3 - Meu perfil\n" +
-           "4 - Portfolio\n" +
-           "5 - Configuracoes\n" +
-           "6 - Trocar para Cliente\n\n" +
-           "Escolha uma opcao:";
+    public static string ProviderHomeMenu(bool allowSwitchToClient)
+        => allowSwitchToClient
+            ? "Menu Prestador:\n" +
+              "1 - Pedidos disponiveis\n" +
+              "2 - Minha agenda\n" +
+              "3 - Meu perfil\n" +
+              "4 - Portfolio\n" +
+              "5 - Configuracoes\n" +
+              "6 - Trocar para Cliente\n\n" +
+              "Escolha uma opcao:"
+            : "Menu Prestador:\n" +
+              "1 - Pedidos disponiveis\n" +
+              "2 - Minha agenda\n" +
+              "3 - Meu perfil\n" +
+              "4 - Portfolio\n" +
+              "5 - Configuracoes\n\n" +
+              "Escolha uma opcao:";
 
     public static string AskCategory()
         => "1/7 - Qual categoria do servico?";
@@ -41,10 +49,10 @@ public static class BotMessages
         => "6/7 - Qual sua preferencia para selecionar prestador?";
 
     public static string AskContactName()
-        => "Informe o nome de contato deste pedido.";
+        => "Informe o seu nome.";
 
     public static string AskContactPhone()
-        => "Informe o telefone de contato com DDD (ex.: 13999998888).";
+        => "Informe o seu telefone com DDD (ex.: 13999998888).";
 
     public static string AskConfirm(string summary)
         => $"7/7 - Confirme seu pedido:\n\n{summary}";

@@ -15,6 +15,7 @@ public sealed class BotDbContext : DbContext
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<ProviderProfile> ProvidersProfile => Set<ProviderProfile>();
     public DbSet<ProviderPortfolioPhoto> ProviderPortfolioPhotos => Set<ProviderPortfolioPhoto>();
+    public DbSet<ProviderJobRejection> ProviderJobRejections => Set<ProviderJobRejection>();
     public DbSet<Job> Jobs => Set<Job>();
     public DbSet<JobPhoto> JobPhotos => Set<JobPhoto>();
     public DbSet<MessageLog> MessagesLog => Set<MessageLog>();
@@ -90,6 +91,27 @@ public sealed class BotDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(x => x.ProviderUserId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProviderJobRejection>(entity =>
+        {
+            entity.ToTable("tg_provider_job_rejections");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).HasColumnName("id");
+            entity.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired().HasMaxLength(32);
+            entity.Property(x => x.JobId).HasColumnName("job_id").IsRequired();
+            entity.Property(x => x.ProviderUserId).HasColumnName("provider_user_id").IsRequired();
+            entity.Property(x => x.CreatedAtUtc)
+                .HasColumnName("created_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc })
+                .HasDatabaseName("ix_tg_provider_job_rejections_tenant_created");
+
+            entity.HasIndex(x => new { x.TenantId, x.JobId, x.ProviderUserId })
+                .IsUnique()
+                .HasDatabaseName("uq_tg_provider_job_rejections_tenant_job_provider");
         });
 
         modelBuilder.Entity<Job>(entity =>

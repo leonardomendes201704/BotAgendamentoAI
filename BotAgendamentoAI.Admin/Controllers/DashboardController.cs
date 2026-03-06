@@ -59,6 +59,7 @@ public sealed class DashboardController : Controller
             createdBookings = model.CreatedBookings,
             finishedBookings = model.FinishedBookings,
             cancelledBookings = model.CancelledBookings,
+            rejectedJobs = model.RejectedJobs,
             humanHandoffOpen = model.HumanHandoffOpen,
             convertedPhones = model.ConvertedPhones,
             conversionRatePercent = model.ConversionRatePercent,

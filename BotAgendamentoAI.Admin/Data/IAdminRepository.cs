@@ -13,6 +13,7 @@ public interface IAdminRepository
     Task<IReadOnlyList<BookingListItem>> GetBookingsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ClientListItem>> GetClientsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ProviderListItem>> GetProvidersAsync(string tenantId, int limit);
+    Task<IReadOnlyList<ProviderCoverageItem>> GetProviderCoverageAsync(string tenantId, int limit);
     Task<IReadOnlyList<CategoryItem>> GetCategoriesAsync(string tenantId);
     Task<CategoryItem?> GetCategoryByIdAsync(string tenantId, long id);
     Task<CategoryItem> CreateCategoryAsync(string tenantId, string name);

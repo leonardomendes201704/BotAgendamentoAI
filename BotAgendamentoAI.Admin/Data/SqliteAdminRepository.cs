@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http;
 using System.Text;
@@ -15,6 +16,8 @@ public sealed class SqliteAdminRepository : IAdminRepository
     private readonly string _connectionString;
     private readonly ILogger<SqliteAdminRepository> _logger;
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
+    private static readonly ConcurrentDictionary<string, string> ReverseNeighborhoodCache = new(StringComparer.Ordinal);
+    private const int CoverageReverseLookupBudget = 120;
 
     private const string AdminSchemaSql = """
 CREATE TABLE IF NOT EXISTS tg_conversation_messages (
@@ -248,6 +251,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
         var hasUsers = await TableExistsAsync(connection, "tg_Users");
         var hasLegacyState = await TableExistsAsync(connection, "tg_conversation_state");
+        var hasProviderJobRejections = await TableExistsAsync(connection, "tg_provider_job_rejections");
 
         var incomingConversationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var convertedConversationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -255,6 +259,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         var createdBookings = 0;
         var finishedBookings = 0;
         var cancelledBookings = 0;
+        var rejectedJobs = 0;
 
         if (hasLegacyMessages)
         {
@@ -451,6 +456,19 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 ("@tenant_id", tenant));
         }
 
+        if (hasProviderJobRejections)
+        {
+            rejectedJobs = await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM tg_provider_job_rejections
+                WHERE tenant_id = @tenant_id
+                  AND created_at_utc >= @from_utc
+                  AND created_at_utc <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+        }
+
         var recentConversations = await GetConversationThreadsAsync(tenant, 20);
         var recentBookings = await GetBookingsAsync(tenant, 20);
         var mapPins = await GetDashboardMapPinsAsync(tenant, null, 300);
@@ -473,6 +491,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             CreatedBookings = createdBookings,
             FinishedBookings = finishedBookings,
             CancelledBookings = cancelledBookings,
+            RejectedJobs = rejectedJobs,
             HumanHandoffOpen = humanHandoffOpen,
             ConvertedPhones = convertedPhones,
             ConversionRatePercent = conversionRate,
@@ -1587,6 +1606,204 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 CreatedAtUtc = ParseUtc(reader.IsDBNull(20) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(20)),
                 UpdatedAtUtc = ParseUtc(reader.IsDBNull(21) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(21))
             });
+        }
+
+        return output;
+    }
+
+    public async Task<IReadOnlyList<ProviderCoverageItem>> GetProviderCoverageAsync(string tenantId, int limit)
+    {
+        var output = new List<ProviderCoverageItem>();
+        var tenant = NormalizeTenant(tenantId);
+        var safeLimit = Math.Clamp(limit, 1, 2000);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "tg_Users");
+        if (!hasUsers)
+        {
+            return output;
+        }
+
+        var hasProviderProfiles = await TableExistsAsync(connection, "tg_ProvidersProfile");
+        var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
+        var hasGeocodeCache = hasJobs && await TableExistsAsync(connection, "tg_booking_geocode_cache");
+
+        await using (var providerCommand = connection.CreateCommand())
+        {
+            providerCommand.CommandText = hasProviderProfiles
+                ? """
+                  SELECT
+                    u.Id,
+                    u.TelegramUserId,
+                    COALESCE(u.Name, ''),
+                    COALESCE(u.Username, ''),
+                    COALESCE(u.Phone, ''),
+                    COALESCE(p.RadiusKm, 10),
+                    p.BaseLatitude,
+                    p.BaseLongitude
+                  FROM tg_Users u
+                  LEFT JOIN tg_ProvidersProfile p ON p.UserId = u.Id
+                  WHERE u.TenantId = @tenant_id
+                    AND (
+                      LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
+                      OR p.UserId IS NOT NULL
+                    )
+                  ORDER BY u.Name ASC, u.Id ASC
+                  LIMIT @limit;
+                  """
+                : """
+                  SELECT
+                    u.Id,
+                    u.TelegramUserId,
+                    COALESCE(u.Name, ''),
+                    COALESCE(u.Username, ''),
+                    COALESCE(u.Phone, ''),
+                    10,
+                    NULL,
+                    NULL
+                  FROM tg_Users u
+                  WHERE u.TenantId = @tenant_id
+                    AND LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
+                  ORDER BY u.Name ASC, u.Id ASC
+                  LIMIT @limit;
+                  """;
+            providerCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            providerCommand.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var providerReader = await providerCommand.ExecuteReaderAsync();
+            while (await providerReader.ReadAsync())
+            {
+                output.Add(new ProviderCoverageItem
+                {
+                    ProviderUserId = providerReader.GetInt64(0),
+                    TelegramUserId = providerReader.IsDBNull(1) ? 0L : providerReader.GetInt64(1),
+                    Name = providerReader.IsDBNull(2) ? string.Empty : providerReader.GetString(2),
+                    Username = providerReader.IsDBNull(3) ? string.Empty : providerReader.GetString(3),
+                    Phone = providerReader.IsDBNull(4) ? string.Empty : providerReader.GetString(4),
+                    RadiusKm = providerReader.IsDBNull(5) ? 10 : Convert.ToInt32(providerReader.GetValue(5), CultureInfo.InvariantCulture),
+                    BaseLatitude = providerReader.IsDBNull(6) ? null : providerReader.GetDouble(6),
+                    BaseLongitude = providerReader.IsDBNull(7) ? null : providerReader.GetDouble(7),
+                    Neighborhoods = Array.Empty<string>()
+                });
+            }
+        }
+
+        if (!hasJobs || output.Count == 0)
+        {
+            return output;
+        }
+
+        var jobs = new List<(long? ProviderUserId, string Neighborhood, double Latitude, double Longitude)>();
+        var reverseLookupBudget = CoverageReverseLookupBudget;
+
+        await using (var jobsCommand = connection.CreateCommand())
+        {
+            jobsCommand.CommandText = hasGeocodeCache
+                ?
+                """
+                SELECT
+                  j.ProviderUserId,
+                  COALESCE(j.AddressText, ''),
+                  COALESCE(j.Latitude, g.latitude),
+                  COALESCE(j.Longitude, g.longitude)
+                FROM tg_Jobs j
+                LEFT JOIN tg_booking_geocode_cache g
+                  ON g.booking_id = ('job:' || j.Id)
+                 AND g.tenant_id = j.TenantId
+                WHERE j.TenantId = @tenant_id
+                  AND j.Status <> 'Draft'
+                ORDER BY j.CreatedAt DESC
+                """
+                : """
+                SELECT
+                  j.ProviderUserId,
+                  COALESCE(j.AddressText, ''),
+                  j.Latitude,
+                  j.Longitude
+                FROM tg_Jobs j
+                WHERE j.TenantId = @tenant_id
+                  AND j.Status <> 'Draft'
+                ORDER BY j.CreatedAt DESC
+                """;
+            jobsCommand.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var jobsReader = await jobsCommand.ExecuteReaderAsync();
+            while (await jobsReader.ReadAsync())
+            {
+                var latitude = jobsReader.IsDBNull(2)
+                    ? (double?)null
+                    : Convert.ToDouble(jobsReader.GetValue(2), CultureInfo.InvariantCulture);
+                var longitude = jobsReader.IsDBNull(3)
+                    ? (double?)null
+                    : Convert.ToDouble(jobsReader.GetValue(3), CultureInfo.InvariantCulture);
+
+                if (!latitude.HasValue || !longitude.HasValue)
+                {
+                    continue;
+                }
+
+                var neighborhood = ExtractNeighborhoodFromAddress(jobsReader.IsDBNull(1) ? string.Empty : jobsReader.GetString(1));
+                if (string.IsNullOrWhiteSpace(neighborhood) && reverseLookupBudget > 0)
+                {
+                    neighborhood = await TryReverseGeocodeNeighborhoodAsync(latitude.Value, longitude.Value);
+                    reverseLookupBudget -= 1;
+                }
+
+                jobs.Add((
+                    ProviderUserId: jobsReader.IsDBNull(0) ? null : jobsReader.GetInt64(0),
+                    Neighborhood: neighborhood,
+                    Latitude: latitude.Value,
+                    Longitude: longitude.Value));
+            }
+        }
+
+        foreach (var item in output)
+        {
+            var neighborhoods = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (item.BaseLatitude.HasValue && item.BaseLongitude.HasValue)
+            {
+                var baseLat = item.BaseLatitude.Value;
+                var baseLon = item.BaseLongitude.Value;
+                var radiusKm = Math.Max(1, item.RadiusKm);
+
+                foreach (var job in jobs)
+                {
+                    if (string.IsNullOrWhiteSpace(job.Neighborhood))
+                    {
+                        continue;
+                    }
+
+                    if (IsWithinCoverageRadius(baseLat, baseLon, radiusKm, job.Latitude, job.Longitude))
+                    {
+                        neighborhoods.Add(job.Neighborhood);
+                    }
+                }
+            }
+
+            // fallback para prestadores sem base/radius consistente: usa historico do proprio prestador.
+            if (neighborhoods.Count == 0)
+            {
+                foreach (var job in jobs)
+                {
+                    if (job.ProviderUserId == item.ProviderUserId && !string.IsNullOrWhiteSpace(job.Neighborhood))
+                    {
+                        neighborhoods.Add(job.Neighborhood);
+                    }
+                }
+            }
+
+            if (neighborhoods.Count == 0 && item.BaseLatitude.HasValue && item.BaseLongitude.HasValue)
+            {
+                var baseNeighborhood = await TryReverseGeocodeNeighborhoodAsync(item.BaseLatitude.Value, item.BaseLongitude.Value);
+                if (!string.IsNullOrWhiteSpace(baseNeighborhood))
+                {
+                    neighborhoods.Add(baseNeighborhood);
+                }
+            }
+
+            item.Neighborhoods = neighborhoods.ToArray();
         }
 
         return output;
@@ -3453,6 +3670,179 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         catch
         {
             return "-";
+        }
+    }
+
+    private static string ExtractNeighborhoodFromAddress(string? rawAddress)
+    {
+        if (string.IsNullOrWhiteSpace(rawAddress))
+        {
+            return string.Empty;
+        }
+
+        var normalized = Regex.Replace(rawAddress, @"\s+", " ").Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var tokens = normalized.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length >= 3)
+        {
+            var candidate = CleanupNeighborhoodToken(tokens[2]);
+            if (IsLikelyNeighborhoodToken(candidate))
+            {
+                return ToTitleCase(candidate);
+            }
+        }
+
+        for (var i = 2; i < tokens.Length; i++)
+        {
+            var candidate = CleanupNeighborhoodToken(tokens[i]);
+            if (IsLikelyNeighborhoodToken(candidate))
+            {
+                return ToTitleCase(candidate);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string CleanupNeighborhoodToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return string.Empty;
+        }
+
+        var value = token.Trim();
+        value = Regex.Replace(value, @"^bairro\s+", string.Empty, RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"\bCEP\b.*$", string.Empty, RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"\s*-\s*[A-Z]{2}\b.*$", string.Empty, RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"\s+", " ").Trim(' ', '-', '.', ';', ':');
+        return value;
+    }
+
+    private static bool IsLikelyNeighborhoodToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        if (token.Length is < 2 or > 80)
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(token, @"^\d+$"))
+        {
+            return false;
+        }
+
+        return !Regex.IsMatch(
+            token,
+            @"\b(?:rua|r\.|avenida|av\.|travessa|alameda|estrada|rodovia|numero|nº)\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsWithinCoverageRadius(
+        double originLatitude,
+        double originLongitude,
+        int radiusKm,
+        double candidateLatitude,
+        double candidateLongitude)
+    {
+        var safeRadiusKm = Math.Max(1d, radiusKm);
+        var distanceKm = HaversineDistanceKm(originLatitude, originLongitude, candidateLatitude, candidateLongitude);
+        return distanceKm <= safeRadiusKm;
+    }
+
+    private static double HaversineDistanceKm(
+        double originLatitude,
+        double originLongitude,
+        double candidateLatitude,
+        double candidateLongitude)
+    {
+        const double EarthRadiusKm = 6371.0088d;
+
+        static double ToRadians(double value) => Math.PI * value / 180d;
+
+        var dLat = ToRadians(candidateLatitude - originLatitude);
+        var dLon = ToRadians(candidateLongitude - originLongitude);
+
+        var lat1 = ToRadians(originLatitude);
+        var lat2 = ToRadians(candidateLatitude);
+
+        var a = Math.Pow(Math.Sin(dLat / 2d), 2d)
+                + Math.Cos(lat1) * Math.Cos(lat2) * Math.Pow(Math.Sin(dLon / 2d), 2d);
+        var c = 2d * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1d - a));
+        return EarthRadiusKm * c;
+    }
+
+    private static async Task<string> TryReverseGeocodeNeighborhoodAsync(double latitude, double longitude)
+    {
+        var cacheKey = $"{Math.Round(latitude, 4).ToString("0.0000", CultureInfo.InvariantCulture)},{Math.Round(longitude, 4).ToString("0.0000", CultureInfo.InvariantCulture)}";
+
+        if (ReverseNeighborhoodCache.TryGetValue(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
+        var latText = latitude.ToString("0.000000", CultureInfo.InvariantCulture);
+        var lonText = longitude.ToString("0.000000", CultureInfo.InvariantCulture);
+        var endpoint =
+            $"https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&zoom=17&lat={latText}&lon={lonText}";
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync(endpoint);
+            if (!response.IsSuccessStatusCode)
+            {
+                ReverseNeighborhoodCache.TryAdd(cacheKey, string.Empty);
+                return string.Empty;
+            }
+
+            var payload = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(payload);
+
+            if (!document.RootElement.TryGetProperty("address", out var address) ||
+                address.ValueKind != JsonValueKind.Object)
+            {
+                ReverseNeighborhoodCache.TryAdd(cacheKey, string.Empty);
+                return string.Empty;
+            }
+
+            string? rawNeighborhood = null;
+            foreach (var key in new[] { "neighbourhood", "suburb", "quarter", "city_district", "borough", "town", "village" })
+            {
+                if (address.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    rawNeighborhood = value.GetString();
+                    if (!string.IsNullOrWhiteSpace(rawNeighborhood))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var cleaned = CleanupNeighborhoodToken(rawNeighborhood ?? string.Empty);
+            if (!IsLikelyNeighborhoodToken(cleaned))
+            {
+                cleaned = string.Empty;
+            }
+            else
+            {
+                cleaned = ToTitleCase(cleaned);
+            }
+
+            ReverseNeighborhoodCache.TryAdd(cacheKey, cleaned);
+            return cleaned;
+        }
+        catch
+        {
+            ReverseNeighborhoodCache.TryAdd(cacheKey, string.Empty);
+            return string.Empty;
         }
     }
 

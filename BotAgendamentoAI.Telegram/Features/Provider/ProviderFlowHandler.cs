@@ -46,6 +46,7 @@ public sealed class ProviderFlowHandler
     {
         var text = (message.Text ?? string.Empty).Trim();
         var normalizedText = NormalizeProviderMenuInput(text, context.Session.State);
+        var allowSwitchToClient = context.User.Role == UserRole.Both;
 
         if (text.Equals(MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase)
             || text.Equals(MenuTexts.Back, StringComparison.OrdinalIgnoreCase))
@@ -86,9 +87,19 @@ public sealed class ProviderFlowHandler
             return;
         }
 
-        if (normalizedText.Equals(MenuTexts.ProviderSwitchToClient, StringComparison.OrdinalIgnoreCase)
-            && context.User.Role == UserRole.Both)
+        if (normalizedText.Equals(MenuTexts.ProviderSwitchToClient, StringComparison.OrdinalIgnoreCase))
         {
+            if (!allowSwitchToClient)
+            {
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
+                    "Para trocar para modo Cliente, selecione o perfil 'Cliente + Prestador' no comando /start.",
+                    KeyboardFactory.ProviderMenu(false),
+                    context.Session.ActiveJobId,
+                    cancellationToken);
+                return;
+            }
+
             context.Session.State = BotStates.C_HOME;
             context.Session.DraftJson = "{}";
             context.Session.ActiveJobId = null;
@@ -121,7 +132,10 @@ public sealed class ProviderFlowHandler
 
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
-            BotMessages.ProviderHomeMenu(), KeyboardFactory.ProviderMenu(), context.Session.ActiveJobId, cancellationToken);
+            BotMessages.ProviderHomeMenu(allowSwitchToClient),
+            KeyboardFactory.ProviderMenu(allowSwitchToClient),
+            context.Session.ActiveJobId,
+            cancellationToken);
     }
 
     public async Task HandlePhotoAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -420,7 +434,10 @@ public sealed class ProviderFlowHandler
             {
                 await _sender.SendTextAsync(
                     context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                    "Esse pedido ja foi aceito.", KeyboardFactory.ProviderMenu(), job.Id, cancellationToken);
+                    "Esse pedido ja foi aceito.",
+                    KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
+                    job.Id,
+                    cancellationToken);
                 return true;
             }
 
@@ -447,7 +464,7 @@ public sealed class ProviderFlowHandler
                     await _sender.SendTextAsync(
                         context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
                         "Nao foi possivel aceitar: voce ou o cliente ja possui outro agendamento nesse horario.",
-                        KeyboardFactory.ProviderMenu(),
+                        KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
                         job.Id,
                         cancellationToken);
                     return true;
@@ -479,6 +496,22 @@ public sealed class ProviderFlowHandler
         {
             if (!context.Draft.HiddenFeedJobIds.Contains(job.Id))
             {
+                var alreadyRejected = await context.Db.ProviderJobRejections.AnyAsync(
+                    x => x.TenantId == context.TenantId
+                         && x.JobId == job.Id
+                         && x.ProviderUserId == context.User.Id,
+                    cancellationToken);
+                if (!alreadyRejected)
+                {
+                    context.Db.ProviderJobRejections.Add(new ProviderJobRejection
+                    {
+                        TenantId = context.TenantId,
+                        JobId = job.Id,
+                        ProviderUserId = context.User.Id,
+                        CreatedAtUtc = DateTimeOffset.UtcNow
+                    });
+                }
+
                 context.Draft.HiddenFeedJobIds.Add(job.Id);
                 UserContextService.SaveDraft(context.Session, context.Draft);
                 await context.Db.SaveChangesAsync(cancellationToken);
@@ -559,7 +592,7 @@ public sealed class ProviderFlowHandler
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
             "Local base atualizada com sucesso.",
-            KeyboardFactory.ProviderMenu(),
+            KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
             null,
             cancellationToken);
     }
@@ -637,7 +670,10 @@ public sealed class ProviderFlowHandler
 
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                $"Pedido #{job.Id} finalizado.", KeyboardFactory.ProviderMenu(), job.Id, cancellationToken);
+                $"Pedido #{job.Id} finalizado.",
+                KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
+                job.Id,
+                cancellationToken);
 
             await NotifyClientAsync(context, job, $"Seu pedido #{job.Id} foi finalizado. Avalie:", cancellationToken, KeyboardFactory.Rating(job.Id));
             return true;
@@ -999,7 +1035,7 @@ public sealed class ProviderFlowHandler
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
                 "Nao encontrei pedidos dentro do seu raio/categorias no momento.",
-                KeyboardFactory.ProviderMenu(),
+                KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
                 null,
                 cancellationToken);
             return;
@@ -1065,7 +1101,10 @@ public sealed class ProviderFlowHandler
         {
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                "Sua agenda esta vazia.", KeyboardFactory.ProviderMenu(), null, cancellationToken);
+                "Sua agenda esta vazia.",
+                KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
+                null,
+                cancellationToken);
             return;
         }
 
@@ -1118,7 +1157,7 @@ public sealed class ProviderFlowHandler
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
             $"Disponibilidade: {(profile.IsAvailable ? "ATIVO" : "PAUSADO")}",
-            KeyboardFactory.ProviderMenu(),
+            KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
             context.Session.ActiveJobId,
             cancellationToken);
     }
@@ -1268,7 +1307,10 @@ public sealed class ProviderFlowHandler
 
         await _sender.SendTextAsync(
             context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-            BotMessages.ProviderHomeMenu(), KeyboardFactory.ProviderMenu(), context.Session.ActiveJobId, cancellationToken);
+            BotMessages.ProviderHomeMenu(context.User.Role == UserRole.Both),
+            KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
+            context.Session.ActiveJobId,
+            cancellationToken);
     }
 
     private static string BuildProviderJobCaption(Job job)

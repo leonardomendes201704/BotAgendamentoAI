@@ -1725,8 +1725,8 @@ public sealed class ClientFlowHandler
             context.TenantId,
             context.User.TelegramUserId,
             chatId,
-            BotMessages.ProviderHomeMenu(),
-            KeyboardFactory.ProviderMenu(),
+            BotMessages.ProviderHomeMenu(context.User.Role == UserRole.Both),
+            KeyboardFactory.ProviderMenu(context.User.Role == UserRole.Both),
             null,
             cancellationToken);
     }

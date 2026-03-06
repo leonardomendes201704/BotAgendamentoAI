@@ -1,0 +1,264 @@
+@model BotAgendamentoAI.Admin.Models.CoveragePageViewModel
+@{
+    ViewData["Title"] = "Cobertura";
+    var limit = (int?)ViewData["Limit"] ?? 500;
+}
+@using System.Text.Json
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<style>
+    #coverageMap {
+        height: 560px;
+        border-radius: 10px;
+    }
+
+    .map-meta {
+        font-size: 0.875rem;
+        color: #5f6b7a;
+    }
+
+    .neighborhood-chip {
+        display: inline-block;
+        margin: 0.15rem 0.2rem 0.15rem 0;
+        padding: 0.22rem 0.5rem;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: #3730a3;
+        font-size: 0.82rem;
+        border: 1px solid #c7d2fe;
+    }
+
+    .provider-neighborhoods {
+        min-width: 260px;
+    }
+
+    .provider-neighborhoods .neighborhood-chip {
+        background: #f0fdf4;
+        color: #166534;
+        border-color: #bbf7d0;
+    }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Cobertura</h1>
+    <form method="get" class="d-flex gap-2 align-items-center">
+        <label class="form-label m-0">Tenant</label>
+        <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+            @foreach (var tenant in Model.Tenants)
+            {
+                <option value="@tenant" selected="@(tenant == Model.TenantId)">@tenant</option>
+            }
+        </select>
+        <label class="form-label m-0">Limite</label>
+        <input type="number" min="1" max="2000" name="limit" value="@limit" class="form-control form-control-sm" style="width: 100px" />
+        <button class="btn btn-sm btn-primary" type="submit">Aplicar</button>
+    </form>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-xl-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Mapa de cobertura dos prestadores</strong>
+                <span id="coverageMapStatus" class="map-meta">Carregando mapa...</span>
+            </div>
+            <div class="card-body">
+                <div id="coverageMap"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <strong>Bairros atendidos</strong>
+            </div>
+            <div class="card-body">
+                <div class="small text-muted mb-2">
+                    Total: <strong>@Model.Neighborhoods.Count</strong>
+                </div>
+
+                @if (Model.Neighborhoods.Count == 0)
+                {
+                    <div class="text-muted">Nenhum bairro identificado ainda.</div>
+                }
+                else
+                {
+                    @foreach (var neighborhood in Model.Neighborhoods)
+                    {
+                        <span class="neighborhood-chip">@neighborhood</span>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Prestadores e area de cobertura</strong>
+        <span class="text-muted small">Total: @Model.Providers.Count</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover m-0 align-middle">
+            <thead>
+                <tr>
+                    <th>Prestador</th>
+                    <th>Contato</th>
+                    <th>Base</th>
+                    <th>Raio</th>
+                    <th class="provider-neighborhoods">Bairros atendidos</th>
+                </tr>
+            </thead>
+            <tbody>
+            @if (Model.Providers.Count == 0)
+            {
+                <tr>
+                    <td colspan="5" class="text-muted">Nenhum prestador encontrado para este tenant.</td>
+                </tr>
+            }
+            else
+            {
+                @foreach (var item in Model.Providers)
+                {
+                    <tr>
+                        <td>
+                            <div>@item.Name</div>
+                            <small class="text-muted">Usuario: @item.ProviderUserId</small>
+                        </td>
+                        <td>
+                            <div>@(string.IsNullOrWhiteSpace(item.Phone) ? "-" : item.Phone)</div>
+                            <small class="text-muted">
+                                tg: @item.TelegramUserId
+                                @if (!string.IsNullOrWhiteSpace(item.Username))
+                                {
+                                    @(" | @")
+                                    @item.Username
+                                }
+                            </small>
+                        </td>
+                        <td>
+                            @if (item.BaseLatitude.HasValue && item.BaseLongitude.HasValue)
+                            {
+                                @($"{item.BaseLatitude.Value:0.000000}, {item.BaseLongitude.Value:0.000000}")
+                            }
+                            else
+                            {
+                                <span class="text-muted">Base nao definida</span>
+                            }
+                        </td>
+                        <td>@item.RadiusKm km</td>
+                        <td class="provider-neighborhoods">
+                            @if (item.Neighborhoods.Count == 0)
+                            {
+                                <span class="text-muted">Sem bairros identificados</span>
+                            }
+                            else
+                            {
+                                @foreach (var neighborhood in item.Neighborhoods)
+                                {
+                                    <span class="neighborhood-chip">@neighborhood</span>
+                                }
+                            }
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        (() => {
+            const rawProviders = @Html.Raw(JsonSerializer.Serialize(Model.Providers));
+            const statusEl = document.getElementById('coverageMapStatus');
+
+            const map = L.map('coverageMap', {
+                zoomControl: true,
+                attributionControl: true
+            });
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            const providers = (rawProviders || []).map((item) => ({
+                providerUserId: item.providerUserId ?? item.ProviderUserId,
+                telegramUserId: item.telegramUserId ?? item.TelegramUserId,
+                name: item.name ?? item.Name ?? '',
+                username: item.username ?? item.Username ?? '',
+                phone: item.phone ?? item.Phone ?? '',
+                radiusKm: item.radiusKm ?? item.RadiusKm ?? 10,
+                baseLatitude: item.baseLatitude ?? item.BaseLatitude,
+                baseLongitude: item.baseLongitude ?? item.BaseLongitude,
+                neighborhoods: item.neighborhoods ?? item.Neighborhoods ?? []
+            }));
+
+            const bounds = [];
+            let pinsCount = 0;
+
+            function escapeHtml(value) {
+                return (value ?? '')
+                    .toString()
+                    .replaceAll('&', '&amp;')
+                    .replaceAll('<', '&lt;')
+                    .replaceAll('>', '&gt;')
+                    .replaceAll('"', '&quot;')
+                    .replaceAll("'", '&#39;');
+            }
+
+            for (const provider of providers) {
+                const lat = Number(provider.baseLatitude);
+                const lng = Number(provider.baseLongitude);
+                if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                    continue;
+                }
+
+                const radiusKm = Number.isFinite(Number(provider.radiusKm)) ? Number(provider.radiusKm) : 10;
+                const radiusMeters = Math.max(1, radiusKm) * 1000;
+                const neighborhoods = Array.isArray(provider.neighborhoods) ? provider.neighborhoods.filter(Boolean) : [];
+
+                const popupLines = [
+                    `<strong>${escapeHtml(provider.name || 'Prestador')}</strong>`,
+                    `Raio: ${escapeHtml(radiusKm.toString())} km`
+                ];
+
+                if (provider.phone) {
+                    popupLines.push(`Telefone: ${escapeHtml(provider.phone)}`);
+                }
+
+                if (neighborhoods.length > 0) {
+                    popupLines.push(`Bairros: ${escapeHtml(neighborhoods.join(', '))}`);
+                }
+
+                L.marker([lat, lng])
+                    .bindPopup(popupLines.join('<br/>'))
+                    .addTo(map);
+
+                L.circle([lat, lng], {
+                    radius: radiusMeters,
+                    color: '#2563eb',
+                    fillColor: '#60a5fa',
+                    fillOpacity: 0.16,
+                    weight: 2
+                }).addTo(map);
+
+                bounds.push([lat, lng]);
+                pinsCount += 1;
+            }
+
+            if (bounds.length > 0) {
+                map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
+                statusEl.textContent = `${pinsCount} prestador(es) com base e raio plotados.`;
+            } else {
+                map.setView([-23.55052, -46.633308], 10);
+                statusEl.textContent = 'Nenhum prestador com base geolocalizada para plotar.';
+            }
+        })();
+    </script>
+}

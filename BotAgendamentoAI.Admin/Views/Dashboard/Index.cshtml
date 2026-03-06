@@ -130,7 +130,7 @@
     .kpi-grid {
         display: grid;
         gap: 0.9rem;
-        grid-template-columns: repeat(8, minmax(0, 1fr));
+        grid-template-columns: repeat(9, minmax(0, 1fr));
     }
 
     @@media (max-width: 1200px) {
@@ -214,6 +214,15 @@
             </div>
         </div>
     </div>
+    <div class="card h-100 kpi-card kpi-amber">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-hand-thumbs-down-fill"></i></span>
+            <div>
+                <div class="kpi-label">Pedidos recusados</div>
+                <div id="metricRejectedJobs" class="kpi-value">@Model.RejectedJobs</div>
+            </div>
+        </div>
+    </div>
     <div class="card h-100 kpi-card kpi-emerald">
         <div class="card-body kpi-body">
             <span class="kpi-icon"><i class="bi bi-people-fill"></i></span>
@@ -232,7 +241,7 @@
             </div>
         </div>
     </div>
-    <div class="card h-100 kpi-card kpi-amber">
+    <div class="card h-100 kpi-card kpi-cyan">
         <div class="card-body kpi-body">
             <span class="kpi-icon"><i class="bi bi-headset"></i></span>
             <div>
@@ -356,6 +365,7 @@
             const metricBookingsEl = document.getElementById('metricBookings');
             const metricFinishedBookingsEl = document.getElementById('metricFinishedBookings');
             const metricCancelledBookingsEl = document.getElementById('metricCancelledBookings');
+            const metricRejectedJobsEl = document.getElementById('metricRejectedJobs');
             const metricConvertedPhonesEl = document.getElementById('metricConvertedPhones');
             const metricConversionRateEl = document.getElementById('metricConversionRate');
             const metricHumanHandoffEl = document.getElementById('metricHumanHandoff');
@@ -519,6 +529,7 @@
                 const createdBookings = snapshot.createdBookings ?? snapshot.CreatedBookings;
                 const finishedBookings = snapshot.finishedBookings ?? snapshot.FinishedBookings;
                 const cancelledBookings = snapshot.cancelledBookings ?? snapshot.CancelledBookings;
+                const rejectedJobs = snapshot.rejectedJobs ?? snapshot.RejectedJobs;
                 const convertedPhones = snapshot.convertedPhones ?? snapshot.ConvertedPhones;
                 const conversionRatePercent = snapshot.conversionRatePercent ?? snapshot.ConversionRatePercent;
                 const humanHandoffOpen = snapshot.humanHandoffOpen ?? snapshot.HumanHandoffOpen;
@@ -543,6 +554,10 @@
 
                 if (metricCancelledBookingsEl) {
                     metricCancelledBookingsEl.textContent = toInt(cancelledBookings).toString();
+                }
+
+                if (metricRejectedJobsEl) {
+                    metricRejectedJobsEl.textContent = toInt(rejectedJobs).toString();
                 }
 
                 if (metricConvertedPhonesEl) {
