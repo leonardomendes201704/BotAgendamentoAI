@@ -15,11 +15,15 @@ public sealed class UserDraft
     public bool IsUrgent { get; set; }
     public DateTimeOffset? ScheduledAt { get; set; }
     public string? PreferenceCode { get; set; }
+    public string? ContactName { get; set; }
+    public string? ContactPhone { get; set; }
     public decimal? FinalAmount { get; set; }
     public string? FinalNotes { get; set; }
     public List<string> AfterPhotoFileIds { get; set; } = new();
     public List<long> HiddenFeedJobIds { get; set; } = new();
     public List<string> ProviderCategoryNames { get; set; } = new();
+    public DateTimeOffset? ProviderProfileReminderLastSentUtc { get; set; }
+    public DateTimeOffset? ProviderProfileReminderSnoozeUntilUtc { get; set; }
 
     public static UserDraft Empty() => new();
 }

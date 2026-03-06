@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using BotAgendamentoAI.Telegram.Application.Common;
 using BotAgendamentoAI.Telegram.Domain.Entities;
@@ -83,7 +84,9 @@ public sealed class JobWorkflowService
         {
             $"Categoria: {draft.Category}",
             $"Descricao: {draft.Description}",
-            $"Fotos: {draft.PhotoFileIds.Count}",
+            draft.PhotoFileIds.Count > 0 ? $"Fotos: {draft.PhotoFileIds.Count}" : string.Empty,
+            string.IsNullOrWhiteSpace(draft.ContactName) ? string.Empty : $"Contato: {draft.ContactName}",
+            string.IsNullOrWhiteSpace(draft.ContactPhone) ? string.Empty : $"Telefone contato: {draft.ContactPhone}",
             $"Endereco: {draft.AddressText}",
             $"Quando: {(draft.IsUrgent ? "Urgente" : draft.ScheduledAt?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Hoje")}",
             $"Preferencia: {PreferenceLabel(draft.PreferenceCode)}"
@@ -140,6 +143,8 @@ public sealed class JobWorkflowService
             Latitude = draft.Latitude,
             Longitude = draft.Longitude,
             PreferenceCode = draft.PreferenceCode ?? string.Empty,
+            ContactName = string.IsNullOrWhiteSpace(draft.ContactName) ? context.User.Name : draft.ContactName,
+            ContactPhone = string.IsNullOrWhiteSpace(draft.ContactPhone) ? context.User.Phone : draft.ContactPhone,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -206,7 +211,9 @@ public sealed class JobWorkflowService
                 continue;
             }
 
-            var caption = $"Novo pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nEndereco: {job.AddressText}";
+            var contactName = string.IsNullOrWhiteSpace(job.ContactName) ? "Nao informado" : job.ContactName.Trim();
+            var contactPhone = string.IsNullOrWhiteSpace(job.ContactPhone) ? "Nao informado" : job.ContactPhone.Trim();
+            var caption = $"Novo pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nContato: {contactName}\nTelefone: {contactPhone}\nEndereco: {job.AddressText}";
             var firstPhoto = await context.Db.JobPhotos
                 .AsNoTracking()
                 .Where(x => x.JobId == job.Id)
@@ -325,15 +332,31 @@ public sealed class JobWorkflowService
         }
 
         var normalizedCategory = NormalizeName(category);
-        return categoriesJson.Contains(normalizedCategory, StringComparison.OrdinalIgnoreCase)
-               || categoriesJson.Contains(category, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<string>>(categoriesJson);
+            if (parsed is null || parsed.Count == 0)
+            {
+                return true;
+            }
+
+            return parsed
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(NormalizeName)
+                .Any(x => string.Equals(x, normalizedCategory, StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return categoriesJson.Contains(normalizedCategory, StringComparison.OrdinalIgnoreCase)
+                   || categoriesJson.Contains(category, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static bool PassesRadiusFilter(Job job, ProviderProfile profile)
     {
         if (!job.Latitude.HasValue || !job.Longitude.HasValue || !profile.BaseLatitude.HasValue || !profile.BaseLongitude.HasValue)
         {
-            return true;
+            return false;
         }
 
         var distance = DistanceKm(job.Latitude.Value, job.Longitude.Value, profile.BaseLatitude.Value, profile.BaseLongitude.Value);

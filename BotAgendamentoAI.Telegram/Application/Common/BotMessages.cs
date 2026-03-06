@@ -40,6 +40,12 @@ public static class BotMessages
     public static string AskPreference()
         => "6/7 - Qual sua preferencia para selecionar prestador?";
 
+    public static string AskContactName()
+        => "Informe o nome de contato deste pedido.";
+
+    public static string AskContactPhone()
+        => "Informe o telefone de contato com DDD (ex.: 13999998888).";
+
     public static string AskConfirm(string summary)
         => $"7/7 - Confirme seu pedido:\n\n{summary}";
 

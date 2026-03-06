@@ -424,9 +424,42 @@ public static class KeyboardFactory
             new[]
             {
                 InlineKeyboardButton.WithCallbackData("Editar raio", "P:PRF:RAD"),
+                InlineKeyboardButton.WithCallbackData("Definir CEP base", "P:PRF:CEP")
+            },
+            new[]
+            {
                 InlineKeyboardButton.WithCallbackData("Definir local base", "P:PRF:LOC")
             },
             NavigationRow()
+        });
+    }
+
+    public static InlineKeyboardMarkup ProviderRadiusSelection(int currentRadiusKm)
+    {
+        var options = new[] { 1, 2, 5, 10, 25, 50 };
+        var rows = new List<InlineKeyboardButton[]>();
+        foreach (var option in options)
+        {
+            var label = option == currentRadiusKm ? $"[{option} km]" : $"{option} km";
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData(label, $"P:RADSET:{option}")
+            });
+        }
+
+        rows.Add(NavigationRow());
+        return new InlineKeyboardMarkup(rows);
+    }
+
+    public static InlineKeyboardMarkup ProviderProfileReminderActions()
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Atualizar agora", "P:REM:UPD"),
+                InlineKeyboardButton.WithCallbackData("Fazer mais tarde", "P:REM:LATER")
+            }
         });
     }
 

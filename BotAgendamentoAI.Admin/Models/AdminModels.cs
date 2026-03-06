@@ -15,6 +15,8 @@ public sealed class DashboardViewModel
     public int TotalIncomingConversations { get; set; }
     public int TotalMessages { get; set; }
     public int CreatedBookings { get; set; }
+    public int FinishedBookings { get; set; }
+    public int CancelledBookings { get; set; }
     public int HumanHandoffOpen { get; set; }
     public int ConvertedPhones { get; set; }
     public decimal ConversionRatePercent { get; set; }
@@ -86,6 +88,65 @@ public sealed class BookingsPageViewModel
 {
     public string TenantId { get; set; } = "A";
     public IReadOnlyList<BookingListItem> Bookings { get; set; } = Array.Empty<BookingListItem>();
+}
+
+public sealed class ClientListItem
+{
+    public long Id { get; set; }
+    public string TenantId { get; set; } = "A";
+    public long TelegramUserId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public int TotalJobs { get; set; }
+    public int OpenJobs { get; set; }
+    public int FinishedJobs { get; set; }
+    public int CancelledJobs { get; set; }
+    public DateTimeOffset? LastJobAtUtc { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+}
+
+public sealed class ClientsPageViewModel
+{
+    public string TenantId { get; set; } = "A";
+    public IReadOnlyList<ClientListItem> Clients { get; set; } = Array.Empty<ClientListItem>();
+    public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
+}
+
+public sealed class ProviderListItem
+{
+    public long Id { get; set; }
+    public string TenantId { get; set; } = "A";
+    public long TelegramUserId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public bool IsAvailable { get; set; }
+    public string CategoriesSummary { get; set; } = string.Empty;
+    public int RadiusKm { get; set; }
+    public decimal AvgRating { get; set; }
+    public int TotalReviews { get; set; }
+    public double? BaseLatitude { get; set; }
+    public double? BaseLongitude { get; set; }
+    public int TotalJobs { get; set; }
+    public int OpenJobs { get; set; }
+    public int FinishedJobs { get; set; }
+    public int CancelledJobs { get; set; }
+    public DateTimeOffset? LastJobAtUtc { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+}
+
+public sealed class ProvidersPageViewModel
+{
+    public string TenantId { get; set; } = "A";
+    public IReadOnlyList<ProviderListItem> Providers { get; set; } = Array.Empty<ProviderListItem>();
+    public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
 }
 
 public sealed class CategoryItem

@@ -56,6 +56,7 @@ builder.Services.AddSingleton<ProviderFlowHandler>();
 builder.Services.AddSingleton<MarketplaceBotOrchestrator>();
 builder.Services.AddHostedService<TelegramPollingWorker>();
 builder.Services.AddHostedService<GoogleCalendarSyncWorker>();
+builder.Services.AddHostedService<ProviderProfileReminderWorker>();
 
 var host = builder.Build();
 
@@ -70,6 +71,7 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider)
     await db.Database.MigrateAsync();
     await EnsureGoogleCalendarTables(db);
     await EnsureExceptionLogsTable(db);
+    await EnsureJobContactColumns(db);
 }
 
 static async Task EnsureGoogleCalendarTables(BotDbContext db)
@@ -206,6 +208,12 @@ static async Task EnsureExceptionLogsTable(BotDbContext db)
     CREATE INDEX IF NOT EXISTS ix_exception_logs_tg_user_created
     ON exception_logs (telegram_user_id, created_at_utc DESC);
     """);
+}
+
+static async Task EnsureJobContactColumns(BotDbContext db)
+{
+    await EnsureColumnAsync(db, "Jobs", "ContactName", "TEXT NULL");
+    await EnsureColumnAsync(db, "Jobs", "ContactPhone", "TEXT NULL");
 }
 
 static TimeZoneInfo ResolveTimeZone(string preferredId)

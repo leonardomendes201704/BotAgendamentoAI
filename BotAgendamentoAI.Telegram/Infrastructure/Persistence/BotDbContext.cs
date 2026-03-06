@@ -91,6 +91,8 @@ public sealed class BotDbContext : DbContext
             entity.Property(x => x.Status).HasConversion(jobStatusConverter).HasMaxLength(32);
             entity.Property(x => x.AddressText).HasMaxLength(2048);
             entity.Property(x => x.PreferenceCode).HasMaxLength(64);
+            entity.Property(x => x.ContactName).HasMaxLength(120);
+            entity.Property(x => x.ContactPhone).HasMaxLength(32);
             entity.Property(x => x.FinalAmount).HasPrecision(10, 2);
             entity.Property(x => x.FinalNotes).HasMaxLength(2048);
             entity.Property(x => x.CreatedAt).IsRequired();

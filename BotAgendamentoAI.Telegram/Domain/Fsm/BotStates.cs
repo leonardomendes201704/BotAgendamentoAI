@@ -10,6 +10,8 @@ public static class BotStates
     public const string C_LOCATION = "C_LOCATION";
     public const string C_SCHEDULE = "C_SCHEDULE";
     public const string C_PREFERENCES = "C_PREFERENCES";
+    public const string C_CONTACT_NAME = "C_CONTACT_NAME";
+    public const string C_CONTACT_PHONE = "C_CONTACT_PHONE";
     public const string C_CONFIRM = "C_CONFIRM";
     public const string C_TRACKING = "C_TRACKING";
     public const string C_RATING = "C_RATING";

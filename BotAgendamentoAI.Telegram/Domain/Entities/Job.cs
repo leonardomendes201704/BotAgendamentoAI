@@ -17,6 +17,8 @@ public sealed class Job
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
     public string PreferenceCode { get; set; } = string.Empty;
+    public string? ContactName { get; set; }
+    public string? ContactPhone { get; set; }
     public decimal? FinalAmount { get; set; }
     public string? FinalNotes { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

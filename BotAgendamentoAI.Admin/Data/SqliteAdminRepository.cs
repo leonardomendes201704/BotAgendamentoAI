@@ -253,6 +253,8 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var convertedConversationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var totalMessages = 0;
         var createdBookings = 0;
+        var finishedBookings = 0;
+        var cancelledBookings = 0;
 
         if (hasLegacyMessages)
         {
@@ -375,6 +377,28 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 """,
                 ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
 
+            finishedBookings = await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM Jobs
+                WHERE TenantId = @tenant_id
+                  AND Status = 'Finished'
+                  AND CreatedAt >= @from_utc
+                  AND CreatedAt <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+
+            cancelledBookings = await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM Jobs
+                WHERE TenantId = @tenant_id
+                  AND Status = 'Cancelled'
+                  AND CreatedAt >= @from_utc
+                  AND CreatedAt <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+
             await using var convertedJobsCommand = connection.CreateCommand();
             convertedJobsCommand.CommandText = hasUsers
                 ? """
@@ -436,6 +460,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var conversionRate = totalIncomingConversations == 0
             ? 0m
             : Math.Round(convertedPhones * 100m / totalIncomingConversations, 2);
+        createdBookings = Math.Max(0, createdBookings - finishedBookings - cancelledBookings);
 
         return new DashboardViewModel
         {
@@ -446,6 +471,8 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             TotalIncomingConversations = totalIncomingConversations,
             TotalMessages = totalMessages,
             CreatedBookings = createdBookings,
+            FinishedBookings = finishedBookings,
+            CancelledBookings = cancelledBookings,
             HumanHandoffOpen = humanHandoffOpen,
             ConvertedPhones = convertedPhones,
             ConversionRatePercent = conversionRate,
@@ -562,7 +589,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     ON u.Id = j.ClientUserId
                    AND u.TenantId = j.TenantId
                   WHERE j.TenantId = @tenant_id
-                    AND j.Status <> 'Draft'
+                    AND j.Status NOT IN ('Draft', 'Finished', 'Cancelled')
                     AND (@since_utc IS NULL OR j.CreatedAt >= @since_utc)
                   ORDER BY j.CreatedAt DESC
                   LIMIT @limit;
@@ -583,7 +610,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     j.Longitude
                   FROM Jobs j
                   WHERE j.TenantId = @tenant_id
-                    AND j.Status <> 'Draft'
+                    AND j.Status NOT IN ('Draft', 'Finished', 'Cancelled')
                     AND (@since_utc IS NULL OR j.CreatedAt >= @since_utc)
                   ORDER BY j.CreatedAt DESC
                   LIMIT @limit;
@@ -1009,6 +1036,29 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var hasGeocodeCache = await TableExistsAsync(connection, "booking_geocode_cache");
         var hasJobs = await TableExistsAsync(connection, "Jobs");
         var hasUsers = await TableExistsAsync(connection, "Users");
+        var hasGoogleCalendarConfig = await TableExistsAsync(connection, "tenant_google_calendar_config");
+        var defaultJobDurationMinutes = 60;
+
+        if (hasGoogleCalendarConfig)
+        {
+            await using var durationCommand = connection.CreateCommand();
+            durationCommand.CommandText =
+                """
+                SELECT default_duration_minutes
+                FROM tenant_google_calendar_config
+                WHERE tenant_id = @tenant_id
+                LIMIT 1;
+                """;
+            durationCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            var durationScalar = await durationCommand.ExecuteScalarAsync();
+            if (durationScalar is not null && durationScalar is not DBNull)
+            {
+                defaultJobDurationMinutes = Math.Clamp(
+                    Convert.ToInt32(durationScalar, CultureInfo.InvariantCulture),
+                    15,
+                    720);
+            }
+        }
 
         if (hasLegacyBookings)
         {
@@ -1177,7 +1227,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     ServiceCategory = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
                     ServiceTitle = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                     StartLocal = ParseLocalOrUtcDateTime(scheduledAtRaw, createdAtUtc),
-                    DurationMinutes = 60,
+                    DurationMinutes = defaultJobDurationMinutes,
                     Address = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
                     Latitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
                     Longitude = reader.IsDBNull(12) ? null : reader.GetDouble(12),
@@ -1191,6 +1241,355 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(safeLimit)
             .ToList();
+    }
+
+    public async Task<IReadOnlyList<ClientListItem>> GetClientsAsync(string tenantId, int limit)
+    {
+        var output = new List<ClientListItem>();
+        var tenant = NormalizeTenant(tenantId);
+        var safeLimit = Math.Clamp(limit, 1, 1000);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "Users");
+        if (!hasUsers)
+        {
+            return output;
+        }
+
+        var hasJobs = await TableExistsAsync(connection, "Jobs");
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = hasJobs
+            ? """
+              SELECT
+                u.Id,
+                u.TenantId,
+                u.TelegramUserId,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Username, ''),
+                COALESCE(u.Phone, ''),
+                COALESCE(u.Role, ''),
+                COALESCE(u.IsActive, 1),
+                u.CreatedAt,
+                u.UpdatedAt,
+                COALESCE(s.total_jobs, 0),
+                COALESCE(s.open_jobs, 0),
+                COALESCE(s.finished_jobs, 0),
+                COALESCE(s.cancelled_jobs, 0),
+                s.last_job_at
+              FROM Users u
+              LEFT JOIN (
+                SELECT
+                  j.ClientUserId AS user_id,
+                  COUNT(*) AS total_jobs,
+                  SUM(CASE WHEN j.Status NOT IN ('Draft', 'Finished', 'Cancelled') THEN 1 ELSE 0 END) AS open_jobs,
+                  SUM(CASE WHEN j.Status = 'Finished' THEN 1 ELSE 0 END) AS finished_jobs,
+                  SUM(CASE WHEN j.Status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_jobs,
+                  MAX(j.CreatedAt) AS last_job_at
+                FROM Jobs j
+                WHERE j.TenantId = @tenant_id
+                  AND j.Status <> 'Draft'
+                GROUP BY j.ClientUserId
+              ) s
+                ON s.user_id = u.Id
+              WHERE u.TenantId = @tenant_id
+                AND (
+                  LOWER(COALESCE(u.Role, '')) IN ('client', 'both')
+                  OR EXISTS (
+                    SELECT 1
+                    FROM Jobs jx
+                    WHERE jx.TenantId = u.TenantId
+                      AND jx.ClientUserId = u.Id
+                      AND jx.Status <> 'Draft'
+                  )
+                )
+              ORDER BY COALESCE(s.last_job_at, u.UpdatedAt) DESC, u.Name ASC
+              LIMIT @limit;
+              """
+            : """
+              SELECT
+                u.Id,
+                u.TenantId,
+                u.TelegramUserId,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Username, ''),
+                COALESCE(u.Phone, ''),
+                COALESCE(u.Role, ''),
+                COALESCE(u.IsActive, 1),
+                u.CreatedAt,
+                u.UpdatedAt,
+                0,
+                0,
+                0,
+                0,
+                NULL
+              FROM Users u
+              WHERE u.TenantId = @tenant_id
+                AND LOWER(COALESCE(u.Role, '')) IN ('client', 'both')
+              ORDER BY u.UpdatedAt DESC, u.Name ASC
+              LIMIT @limit;
+              """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@limit", safeLimit);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            output.Add(new ClientListItem
+            {
+                Id = reader.GetInt64(0),
+                TenantId = reader.IsDBNull(1) ? tenant : reader.GetString(1),
+                TelegramUserId = reader.IsDBNull(2) ? 0L : reader.GetInt64(2),
+                Name = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                Username = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                Phone = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                Role = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                IsActive = reader.IsDBNull(7) || Convert.ToInt32(reader.GetValue(7), CultureInfo.InvariantCulture) == 1,
+                CreatedAtUtc = ParseUtc(reader.IsDBNull(8) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(8)),
+                UpdatedAtUtc = ParseUtc(reader.IsDBNull(9) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(9)),
+                TotalJobs = reader.IsDBNull(10) ? 0 : Convert.ToInt32(reader.GetValue(10), CultureInfo.InvariantCulture),
+                OpenJobs = reader.IsDBNull(11) ? 0 : Convert.ToInt32(reader.GetValue(11), CultureInfo.InvariantCulture),
+                FinishedJobs = reader.IsDBNull(12) ? 0 : Convert.ToInt32(reader.GetValue(12), CultureInfo.InvariantCulture),
+                CancelledJobs = reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13), CultureInfo.InvariantCulture),
+                LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(14) ? null : reader.GetString(14))
+            });
+        }
+
+        return output;
+    }
+
+    public async Task<IReadOnlyList<ProviderListItem>> GetProvidersAsync(string tenantId, int limit)
+    {
+        var output = new List<ProviderListItem>();
+        var tenant = NormalizeTenant(tenantId);
+        var safeLimit = Math.Clamp(limit, 1, 1000);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "Users");
+        if (!hasUsers)
+        {
+            return output;
+        }
+
+        var hasJobs = await TableExistsAsync(connection, "Jobs");
+        var hasProviderProfiles = await TableExistsAsync(connection, "ProvidersProfile");
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = hasJobs && hasProviderProfiles
+            ? """
+              SELECT
+                u.Id,
+                u.TenantId,
+                u.TelegramUserId,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Username, ''),
+                COALESCE(u.Phone, ''),
+                COALESCE(u.Role, ''),
+                COALESCE(u.IsActive, 1),
+                COALESCE(p.IsAvailable, 1),
+                COALESCE(p.CategoriesJson, '[]'),
+                COALESCE(p.RadiusKm, 10),
+                COALESCE(p.AvgRating, 0),
+                COALESCE(p.TotalReviews, 0),
+                p.BaseLatitude,
+                p.BaseLongitude,
+                COALESCE(s.total_jobs, 0),
+                COALESCE(s.open_jobs, 0),
+                COALESCE(s.finished_jobs, 0),
+                COALESCE(s.cancelled_jobs, 0),
+                s.last_job_at,
+                u.CreatedAt,
+                u.UpdatedAt
+              FROM Users u
+              LEFT JOIN ProvidersProfile p ON p.UserId = u.Id
+              LEFT JOIN (
+                SELECT
+                  j.ProviderUserId AS user_id,
+                  COUNT(*) AS total_jobs,
+                  SUM(CASE WHEN j.Status NOT IN ('Draft', 'Finished', 'Cancelled') THEN 1 ELSE 0 END) AS open_jobs,
+                  SUM(CASE WHEN j.Status = 'Finished' THEN 1 ELSE 0 END) AS finished_jobs,
+                  SUM(CASE WHEN j.Status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_jobs,
+                  MAX(j.CreatedAt) AS last_job_at
+                FROM Jobs j
+                WHERE j.TenantId = @tenant_id
+                  AND j.ProviderUserId IS NOT NULL
+                  AND j.Status <> 'Draft'
+                GROUP BY j.ProviderUserId
+              ) s
+                ON s.user_id = u.Id
+              WHERE u.TenantId = @tenant_id
+                AND (
+                  LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
+                  OR p.UserId IS NOT NULL
+                  OR EXISTS (
+                    SELECT 1
+                    FROM Jobs jx
+                    WHERE jx.TenantId = u.TenantId
+                      AND jx.ProviderUserId = u.Id
+                      AND jx.Status <> 'Draft'
+                  )
+                )
+              ORDER BY COALESCE(s.last_job_at, u.UpdatedAt) DESC, u.Name ASC
+              LIMIT @limit;
+              """
+            : hasProviderProfiles
+            ? """
+              SELECT
+                u.Id,
+                u.TenantId,
+                u.TelegramUserId,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Username, ''),
+                COALESCE(u.Phone, ''),
+                COALESCE(u.Role, ''),
+                COALESCE(u.IsActive, 1),
+                COALESCE(p.IsAvailable, 1),
+                COALESCE(p.CategoriesJson, '[]'),
+                COALESCE(p.RadiusKm, 10),
+                COALESCE(p.AvgRating, 0),
+                COALESCE(p.TotalReviews, 0),
+                p.BaseLatitude,
+                p.BaseLongitude,
+                0,
+                0,
+                0,
+                0,
+                NULL,
+                u.CreatedAt,
+                u.UpdatedAt
+              FROM Users u
+              LEFT JOIN ProvidersProfile p ON p.UserId = u.Id
+              WHERE u.TenantId = @tenant_id
+                AND (
+                  LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
+                  OR p.UserId IS NOT NULL
+                )
+              ORDER BY u.UpdatedAt DESC, u.Name ASC
+              LIMIT @limit;
+              """
+            : hasJobs
+            ? """
+              SELECT
+                u.Id,
+                u.TenantId,
+                u.TelegramUserId,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Username, ''),
+                COALESCE(u.Phone, ''),
+                COALESCE(u.Role, ''),
+                COALESCE(u.IsActive, 1),
+                1,
+                '[]',
+                10,
+                0,
+                0,
+                NULL,
+                NULL,
+                COALESCE(s.total_jobs, 0),
+                COALESCE(s.open_jobs, 0),
+                COALESCE(s.finished_jobs, 0),
+                COALESCE(s.cancelled_jobs, 0),
+                s.last_job_at,
+                u.CreatedAt,
+                u.UpdatedAt
+              FROM Users u
+              LEFT JOIN (
+                SELECT
+                  j.ProviderUserId AS user_id,
+                  COUNT(*) AS total_jobs,
+                  SUM(CASE WHEN j.Status NOT IN ('Draft', 'Finished', 'Cancelled') THEN 1 ELSE 0 END) AS open_jobs,
+                  SUM(CASE WHEN j.Status = 'Finished' THEN 1 ELSE 0 END) AS finished_jobs,
+                  SUM(CASE WHEN j.Status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_jobs,
+                  MAX(j.CreatedAt) AS last_job_at
+                FROM Jobs j
+                WHERE j.TenantId = @tenant_id
+                  AND j.ProviderUserId IS NOT NULL
+                  AND j.Status <> 'Draft'
+                GROUP BY j.ProviderUserId
+              ) s
+                ON s.user_id = u.Id
+              WHERE u.TenantId = @tenant_id
+                AND (
+                  LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
+                  OR EXISTS (
+                    SELECT 1
+                    FROM Jobs jx
+                    WHERE jx.TenantId = u.TenantId
+                      AND jx.ProviderUserId = u.Id
+                      AND jx.Status <> 'Draft'
+                  )
+                )
+              ORDER BY COALESCE(s.last_job_at, u.UpdatedAt) DESC, u.Name ASC
+              LIMIT @limit;
+              """
+            : """
+              SELECT
+                u.Id,
+                u.TenantId,
+                u.TelegramUserId,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Username, ''),
+                COALESCE(u.Phone, ''),
+                COALESCE(u.Role, ''),
+                COALESCE(u.IsActive, 1),
+                1,
+                '[]',
+                10,
+                0,
+                0,
+                NULL,
+                NULL,
+                0,
+                0,
+                0,
+                0,
+                NULL,
+                u.CreatedAt,
+                u.UpdatedAt
+              FROM Users u
+              WHERE u.TenantId = @tenant_id
+                AND LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
+              ORDER BY u.UpdatedAt DESC, u.Name ASC
+              LIMIT @limit;
+              """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@limit", safeLimit);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            output.Add(new ProviderListItem
+            {
+                Id = reader.GetInt64(0),
+                TenantId = reader.IsDBNull(1) ? tenant : reader.GetString(1),
+                TelegramUserId = reader.IsDBNull(2) ? 0L : reader.GetInt64(2),
+                Name = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                Username = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                Phone = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                Role = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                IsActive = reader.IsDBNull(7) || Convert.ToInt32(reader.GetValue(7), CultureInfo.InvariantCulture) == 1,
+                IsAvailable = reader.IsDBNull(8) || Convert.ToInt32(reader.GetValue(8), CultureInfo.InvariantCulture) == 1,
+                CategoriesSummary = ParseCategoriesSummary(reader.IsDBNull(9) ? "[]" : reader.GetString(9)),
+                RadiusKm = reader.IsDBNull(10) ? 10 : Convert.ToInt32(reader.GetValue(10), CultureInfo.InvariantCulture),
+                AvgRating = reader.IsDBNull(11) ? 0m : Convert.ToDecimal(reader.GetValue(11), CultureInfo.InvariantCulture),
+                TotalReviews = reader.IsDBNull(12) ? 0 : Convert.ToInt32(reader.GetValue(12), CultureInfo.InvariantCulture),
+                BaseLatitude = reader.IsDBNull(13) ? null : reader.GetDouble(13),
+                BaseLongitude = reader.IsDBNull(14) ? null : reader.GetDouble(14),
+                TotalJobs = reader.IsDBNull(15) ? 0 : Convert.ToInt32(reader.GetValue(15), CultureInfo.InvariantCulture),
+                OpenJobs = reader.IsDBNull(16) ? 0 : Convert.ToInt32(reader.GetValue(16), CultureInfo.InvariantCulture),
+                FinishedJobs = reader.IsDBNull(17) ? 0 : Convert.ToInt32(reader.GetValue(17), CultureInfo.InvariantCulture),
+                CancelledJobs = reader.IsDBNull(18) ? 0 : Convert.ToInt32(reader.GetValue(18), CultureInfo.InvariantCulture),
+                LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(19) ? null : reader.GetString(19)),
+                CreatedAtUtc = ParseUtc(reader.IsDBNull(20) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(20)),
+                UpdatedAtUtc = ParseUtc(reader.IsDBNull(21) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(21))
+            });
+        }
+
+        return output;
     }
 
     public async Task<IReadOnlyList<CategoryItem>> GetCategoriesAsync(string tenantId)
@@ -2988,6 +3387,52 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         }
 
         return latitude is >= -90 and <= 90 && longitude is >= -180 and <= 180;
+    }
+
+    private static string ParseCategoriesSummary(string? categoriesJson)
+    {
+        if (string.IsNullOrWhiteSpace(categoriesJson))
+        {
+            return "-";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(categoriesJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return "-";
+            }
+
+            var categories = new List<string>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var value = item.GetString()?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                categories.Add(value);
+            }
+
+            if (categories.Count == 0)
+            {
+                return "-";
+            }
+
+            var joined = string.Join(", ", categories.Take(4));
+            return categories.Count > 4 ? $"{joined}..." : joined;
+        }
+        catch
+        {
+            return "-";
+        }
     }
 
     private static DateTimeOffset? TryParseNullableUtc(string? value)

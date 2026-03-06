@@ -138,17 +138,28 @@ public sealed class ClientFlowHandler
                 await HandleLocationAsync(context, message, text, cancellationToken);
                 return;
 
+            case BotStates.C_CONTACT_NAME:
+                await HandleContactNameAsync(context, message.Chat.Id, text, cancellationToken);
+                return;
+
+            case BotStates.C_CONTACT_PHONE:
+                await HandleContactPhoneAsync(context, message, text, cancellationToken);
+                return;
+
             case BotStates.C_RATING:
-                await _sender.SendTextAsync(
-                    context.Db,
-                    context.Bot,
-                    context.TenantId,
-                    context.User.TelegramUserId,
-                    message.Chat.Id,
-                    "Toque nas estrelas para avaliar o atendimento.",
-                    null,
-                    context.Session.ActiveJobId,
-                    cancellationToken);
+                var hasPendingRating = await PromptPendingRatingAsync(context, message.Chat.Id, null, cancellationToken);
+                if (!hasPendingRating)
+                {
+                    context.Session.State = BotStates.C_HOME;
+                    context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+                    await context.Db.SaveChangesAsync(cancellationToken);
+
+                    await SendClientHomeMenuAsync(
+                        context,
+                        message.Chat.Id,
+                        context.Session.ActiveJobId,
+                        cancellationToken);
+                }
                 return;
 
             default:
@@ -773,19 +784,27 @@ public sealed class ClientFlowHandler
         if (route.Scope == "C" && route.Action == "PRF")
         {
             context.Draft.PreferenceCode = route.Arg1;
+            context.Draft.ContactName = string.IsNullOrWhiteSpace(context.Draft.ContactName)
+                ? (context.User.Name ?? string.Empty).Trim()
+                : context.Draft.ContactName?.Trim();
+            context.Draft.ContactPhone = string.IsNullOrWhiteSpace(context.Draft.ContactPhone)
+                ? NormalizePhoneIfPossible(context.User.Phone)
+                : context.Draft.ContactPhone?.Trim();
             UserContextService.SaveDraft(context.Session, context.Draft);
-            UserContextService.SetState(context.Session, BotStates.C_CONFIRM);
+            UserContextService.SetState(context.Session, BotStates.C_CONTACT_NAME);
             await context.Db.SaveChangesAsync(cancellationToken);
 
-            var summary = JobWorkflowService.BuildConfirmationSummary(context.Draft);
+            var suggestedName = string.IsNullOrWhiteSpace(context.Draft.ContactName)
+                ? string.Empty
+                : $" (sugestao: {context.Draft.ContactName})";
             await _sender.SendTextAsync(
                 context.Db,
                 context.Bot,
                 context.TenantId,
                 context.User.TelegramUserId,
                 chatId,
-                BotMessages.AskConfirm(summary),
-                KeyboardFactory.ConfirmRequest(),
+                $"{BotMessages.AskContactName()}{suggestedName}",
+                null,
                 context.Session.ActiveJobId,
                 cancellationToken);
 
@@ -919,7 +938,7 @@ public sealed class ClientFlowHandler
 
             stars = Math.Clamp(stars, 1, 5);
             var job = await context.Db.Jobs.FirstOrDefaultAsync(x => x.Id == ratingJobId && x.ClientUserId == context.User.Id, cancellationToken);
-            if (job is null || !job.ProviderUserId.HasValue)
+            if (job is null || !job.ProviderUserId.HasValue || job.Status != JobStatus.Finished)
             {
                 return true;
             }
@@ -938,6 +957,17 @@ public sealed class ClientFlowHandler
 
                 await context.Db.SaveChangesAsync(cancellationToken);
             }
+
+            var hasMorePendingRatings = await PromptPendingRatingAsync(context, chatId, null, cancellationToken);
+            if (hasMorePendingRatings)
+            {
+                return true;
+            }
+
+            context.Session.State = BotStates.C_HOME;
+            context.Session.ActiveJobId = ratingJobId;
+            context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+            await context.Db.SaveChangesAsync(cancellationToken);
 
             await _sender.SendTextAsync(
                 context.Db,
@@ -1076,6 +1106,50 @@ public sealed class ClientFlowHandler
         }
     }
 
+    private async Task<bool> PromptPendingRatingAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        Job? knownPendingJob,
+        CancellationToken cancellationToken)
+    {
+        var pendingJob = knownPendingJob ?? await GetOldestPendingRatingJobAsync(context, cancellationToken);
+        if (pendingJob is null)
+        {
+            return false;
+        }
+
+        context.Session.ActiveJobId = pendingJob.Id;
+        context.Session.State = BotStates.C_RATING;
+        context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        var card = BuildClientJobCard(pendingJob, context.Runtime.TimeZone);
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            "Voce possui agendamento finalizado sem avaliacao. Antes de criar novo pedido, avalie este atendimento:\n\n" + card,
+            KeyboardFactory.Rating(pendingJob.Id),
+            pendingJob.Id,
+            cancellationToken);
+        return true;
+    }
+
+    private async Task<Job?> GetOldestPendingRatingJobAsync(BotExecutionContext context, CancellationToken cancellationToken)
+    {
+        return await context.Db.Jobs
+            .AsNoTracking()
+            .Where(x => x.TenantId == context.TenantId
+                        && x.ClientUserId == context.User.Id
+                        && x.Status == JobStatus.Finished)
+            .Where(x => !context.Db.Ratings.Any(r => r.JobId == x.Id))
+            .OrderBy(x => x.UpdatedAt)
+            .ThenBy(x => x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     private static string BuildClientJobCard(Job job, TimeZoneInfo timeZone)
     {
         var when = job.IsUrgent
@@ -1118,6 +1192,11 @@ public sealed class ClientFlowHandler
 
     public async Task StartWizardAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
     {
+        if (await PromptPendingRatingAsync(context, chatId, null, cancellationToken))
+        {
+            return;
+        }
+
         context.Session.DraftJson = "{}";
         context.Session.ActiveJobId = null;
         context.Session.ChatJobId = null;
@@ -1138,6 +1217,8 @@ public sealed class ClientFlowHandler
         context.Draft.IsUrgent = false;
         context.Draft.ScheduledAt = null;
         context.Draft.PreferenceCode = null;
+        context.Draft.ContactName = null;
+        context.Draft.ContactPhone = null;
         context.Draft.PhotoFileIds.Clear();
 
         UserContextService.SaveDraft(context.Session, context.Draft);
@@ -1406,6 +1487,101 @@ public sealed class ClientFlowHandler
             message.Chat.Id,
             $"Endereco resolvido pelo CEP:\n{baseAddress}\n\nInforme apenas numero e complemento (se houver).",
             KeyboardFactory.CepRequestKeyboard(),
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task HandleContactNameAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var safeName = (text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(safeName) || safeName.Length < 2)
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                "Informe um nome valido para contato (minimo 2 caracteres).",
+                null,
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
+        context.Draft.ContactName = safeName.Length <= 120 ? safeName : safeName[..120];
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        UserContextService.SetState(context.Session, BotStates.C_CONTACT_PHONE);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        var suggestedPhone = string.IsNullOrWhiteSpace(context.Draft.ContactPhone)
+            ? string.Empty
+            : $" (sugestao: {context.Draft.ContactPhone})";
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            $"{BotMessages.AskContactPhone()}{suggestedPhone}",
+            null,
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task HandleContactPhoneAsync(
+        BotExecutionContext context,
+        Message message,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var phoneInput = message.Contact?.PhoneNumber;
+        if (string.IsNullOrWhiteSpace(phoneInput))
+        {
+            phoneInput = text;
+        }
+
+        if (!TryNormalizePhone(phoneInput, out var contactPhone))
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                message.Chat.Id,
+                "Telefone invalido. Informe com DDD (ex.: 13999998888).",
+                null,
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
+        context.Draft.ContactPhone = contactPhone;
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        UserContextService.SetState(context.Session, BotStates.C_CONFIRM);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        await SendConfirmationAsync(context, message.Chat.Id, cancellationToken);
+    }
+
+    private async Task SendConfirmationAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        var summary = JobWorkflowService.BuildConfirmationSummary(context.Draft);
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            BotMessages.AskConfirm(summary),
+            KeyboardFactory.ConfirmRequest(),
             context.Session.ActiveJobId,
             cancellationToken);
     }
@@ -2433,6 +2609,33 @@ public sealed class ClientFlowHandler
             .Replace(" ", string.Empty, StringComparison.Ordinal)
             .Replace("-", string.Empty, StringComparison.Ordinal)
             .Replace("_", string.Empty, StringComparison.Ordinal);
+    }
+
+    private static string? NormalizePhoneIfPossible(string? rawPhone)
+    {
+        return TryNormalizePhone(rawPhone, out var normalized)
+            ? normalized
+            : null;
+    }
+
+    private static bool TryNormalizePhone(string? rawPhone, out string normalizedPhone)
+    {
+        normalizedPhone = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawPhone))
+        {
+            return false;
+        }
+
+        var trimmed = rawPhone.Trim();
+        var hasPlusPrefix = trimmed.StartsWith('+');
+        var digits = new string(trimmed.Where(char.IsDigit).ToArray());
+        if (digits.Length is < 10 or > 15)
+        {
+            return false;
+        }
+
+        normalizedPhone = hasPlusPrefix ? $"+{digits}" : digits;
+        return true;
     }
 
     private static string NormalizeClientMenuInput(string text, string state)

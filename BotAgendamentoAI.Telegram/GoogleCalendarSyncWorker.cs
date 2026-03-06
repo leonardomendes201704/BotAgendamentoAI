@@ -340,9 +340,14 @@ public sealed class GoogleCalendarSyncWorker : BackgroundService
 
     private static Dictionary<string, string> BuildTemplateTokens(Job job, DateTimeOffset startLocal, DateTimeOffset endLocal)
     {
-        var clientPhone = string.IsNullOrWhiteSpace(job.ClientUser?.Phone)
-            ? job.ClientUser?.TelegramUserId.ToString(CultureInfo.InvariantCulture) ?? string.Empty
-            : job.ClientUser.Phone!;
+        var contactName = string.IsNullOrWhiteSpace(job.ContactName)
+            ? (job.ClientUser?.Name ?? string.Empty)
+            : job.ContactName.Trim();
+        var contactPhone = string.IsNullOrWhiteSpace(job.ContactPhone)
+            ? (string.IsNullOrWhiteSpace(job.ClientUser?.Phone)
+                ? job.ClientUser?.TelegramUserId.ToString(CultureInfo.InvariantCulture) ?? string.Empty
+                : job.ClientUser.Phone!)
+            : job.ContactPhone.Trim();
         var providerName = string.IsNullOrWhiteSpace(job.ProviderUser?.Name)
             ? "Aguardando atribuicao"
             : job.ProviderUser.Name;
@@ -354,8 +359,10 @@ public sealed class GoogleCalendarSyncWorker : BackgroundService
             ["category"] = job.Category ?? string.Empty,
             ["description"] = job.Description ?? string.Empty,
             ["status"] = FormatJobStatus(job.Status),
-            ["client_name"] = job.ClientUser?.Name ?? string.Empty,
-            ["client_phone"] = clientPhone,
+            ["client_name"] = contactName,
+            ["client_phone"] = contactPhone,
+            ["contact_name"] = contactName,
+            ["contact_phone"] = contactPhone,
             ["provider_name"] = providerName,
             ["address"] = job.AddressText ?? string.Empty,
             ["scheduled_at_local"] = startLocal.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture),

@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
 
 <style>
     #bookingsMap {
@@ -48,6 +49,113 @@
         text-align: center !important;
         font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif !important;
     }
+
+    .kpi-card {
+        border: 0;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    .kpi-body {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+    }
+
+    .kpi-icon {
+        width: 2.4rem;
+        height: 2.4rem;
+        border-radius: 0.7rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.2rem;
+        background: rgba(255, 255, 255, 0.22);
+        flex-shrink: 0;
+    }
+
+    .kpi-label {
+        font-size: 0.8rem;
+        letter-spacing: 0.01em;
+        opacity: 0.9;
+        text-transform: uppercase;
+    }
+
+    .kpi-value {
+        font-size: 1.9rem;
+        line-height: 1.1;
+        font-weight: 700;
+        margin-top: 0.15rem;
+    }
+
+    .kpi-blue {
+        background: linear-gradient(140deg, #1d4ed8, #2563eb);
+        color: #ffffff;
+    }
+
+    .kpi-indigo {
+        background: linear-gradient(140deg, #4f46e5, #6366f1);
+        color: #ffffff;
+    }
+
+    .kpi-cyan {
+        background: linear-gradient(140deg, #0284c7, #06b6d4);
+        color: #ffffff;
+    }
+
+    .kpi-green {
+        background: linear-gradient(140deg, #059669, #22c55e);
+        color: #ffffff;
+    }
+
+    .kpi-red {
+        background: linear-gradient(140deg, #dc2626, #ef4444);
+        color: #ffffff;
+    }
+
+    .kpi-violet {
+        background: linear-gradient(140deg, #7c3aed, #8b5cf6);
+        color: #ffffff;
+    }
+
+    .kpi-amber {
+        background: linear-gradient(140deg, #d97706, #f59e0b);
+        color: #ffffff;
+    }
+
+    .kpi-emerald {
+        background: linear-gradient(140deg, #0f766e, #14b8a6);
+        color: #ffffff;
+    }
+
+    .kpi-grid {
+        display: grid;
+        gap: 0.9rem;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+    }
+
+    @@media (max-width: 1800px) {
+        .kpi-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+    }
+
+    @@media (max-width: 1200px) {
+        .kpi-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+    }
+
+    @@media (max-width: 900px) {
+        .kpi-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @@media (max-width: 576px) {
+        .kpi-grid {
+            grid-template-columns: repeat(1, minmax(0, 1fr));
+        }
+    }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -66,61 +174,89 @@
     </form>
 </div>
 
-<div class="row g-3 mb-4">
-    <div class="col-md-3">
-        <div class="card h-100">
-            <div class="card-body">
-                <h2 class="h6 text-muted">Conversas ativas</h2>
-                <div id="metricConversations" class="display-6">@Model.TotalIncomingConversations</div>
+<div class="kpi-grid mb-4">
+    <div class="card h-100 kpi-card kpi-blue">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-chat-dots-fill"></i></span>
+            <div>
+                <div class="kpi-label">Conversas ativas</div>
+                <div id="metricConversations" class="kpi-value">@Model.TotalIncomingConversations</div>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card h-100">
-            <div class="card-body">
-                <h2 class="h6 text-muted">Mensagens</h2>
-                <div id="metricMessages" class="display-6">@Model.TotalMessages</div>
+    <div class="card h-100 kpi-card kpi-indigo">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-envelope-fill"></i></span>
+            <div>
+                <div class="kpi-label">Mensagens</div>
+                <div id="metricMessages" class="kpi-value">@Model.TotalMessages</div>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card h-100">
-            <div class="card-body">
-                <h2 class="h6 text-muted">Agendamentos criados</h2>
-                <div id="metricBookings" class="display-6">@Model.CreatedBookings</div>
+    <div class="card h-100 kpi-card kpi-cyan">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-calendar-plus-fill"></i></span>
+            <div>
+                <div class="kpi-label">Agendamentos em aberto</div>
+                <div id="metricBookings" class="kpi-value">@Model.CreatedBookings</div>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card h-100">
-            <div class="card-body">
-                <h2 class="h6 text-muted">Taxa de conversao</h2>
-                <div id="metricConversionRate" class="display-6">@Model.ConversionRatePercent.ToString("0.##")%</div>
+    <div class="card h-100 kpi-card kpi-green">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-check-circle-fill"></i></span>
+            <div>
+                <div class="kpi-label">Agendamentos finalizados</div>
+                <div id="metricFinishedBookings" class="kpi-value">@Model.FinishedBookings</div>
+            </div>
+        </div>
+    </div>
+    <div class="card h-100 kpi-card kpi-red">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-x-circle-fill"></i></span>
+            <div>
+                <div class="kpi-label">Agendamentos cancelados</div>
+                <div id="metricCancelledBookings" class="kpi-value">@Model.CancelledBookings</div>
+            </div>
+        </div>
+    </div>
+    <div class="card h-100 kpi-card kpi-emerald">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-people-fill"></i></span>
+            <div>
+                <div class="kpi-label">Conversoes</div>
+                <div id="metricConvertedPhones" class="kpi-value">@Model.ConvertedPhones</div>
+            </div>
+        </div>
+    </div>
+    <div class="card h-100 kpi-card kpi-violet">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-graph-up-arrow"></i></span>
+            <div>
+                <div class="kpi-label">Taxa de conversao</div>
+                <div id="metricConversionRate" class="kpi-value">@Model.ConversionRatePercent.ToString("0.##")%</div>
+            </div>
+        </div>
+    </div>
+    <div class="card h-100 kpi-card kpi-amber">
+        <div class="card-body kpi-body">
+            <span class="kpi-icon"><i class="bi bi-headset"></i></span>
+            <div>
+                <div class="kpi-label">Atendente humano</div>
+                <div id="metricHumanHandoff" class="kpi-value">@Model.HumanHandoffOpen</div>
             </div>
         </div>
     </div>
 </div>
 
-<div class="row g-3 mb-4">
-    <div class="col-lg-4">
-        <div class="card h-100">
-            <div class="card-body">
-                <h2 class="h6 text-muted">Atendente humano (fila aberta)</h2>
-                <div id="metricHumanHandoff" class="display-6">@Model.HumanHandoffOpen</div>
-            </div>
-        </div>
-    </div>
-    <div class="col-lg-8">
-        <div class="card h-100">
-            <div class="card-body">
-                <h2 class="h6 text-muted">Periodo</h2>
-                <p id="periodText" class="mb-0">
-                    @Model.FromUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
-                    ate
-                    @Model.ToUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
-                </p>
-            </div>
-        </div>
+<div class="card mb-4">
+    <div class="card-body">
+        <h2 class="h6 text-muted">Periodo</h2>
+        <p id="periodText" class="mb-0">
+            @Model.FromUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
+            ate
+            @Model.ToUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
+        </p>
     </div>
 </div>
 
@@ -224,6 +360,9 @@
             const metricConversationsEl = document.getElementById('metricConversations');
             const metricMessagesEl = document.getElementById('metricMessages');
             const metricBookingsEl = document.getElementById('metricBookings');
+            const metricFinishedBookingsEl = document.getElementById('metricFinishedBookings');
+            const metricCancelledBookingsEl = document.getElementById('metricCancelledBookings');
+            const metricConvertedPhonesEl = document.getElementById('metricConvertedPhones');
             const metricConversionRateEl = document.getElementById('metricConversionRate');
             const metricHumanHandoffEl = document.getElementById('metricHumanHandoff');
             const periodTextEl = document.getElementById('periodText');
@@ -384,6 +523,9 @@
                 const totalIncomingConversations = snapshot.totalIncomingConversations ?? snapshot.TotalIncomingConversations;
                 const totalMessages = snapshot.totalMessages ?? snapshot.TotalMessages;
                 const createdBookings = snapshot.createdBookings ?? snapshot.CreatedBookings;
+                const finishedBookings = snapshot.finishedBookings ?? snapshot.FinishedBookings;
+                const cancelledBookings = snapshot.cancelledBookings ?? snapshot.CancelledBookings;
+                const convertedPhones = snapshot.convertedPhones ?? snapshot.ConvertedPhones;
                 const conversionRatePercent = snapshot.conversionRatePercent ?? snapshot.ConversionRatePercent;
                 const humanHandoffOpen = snapshot.humanHandoffOpen ?? snapshot.HumanHandoffOpen;
                 const fromUtc = snapshot.fromUtc ?? snapshot.FromUtc;
@@ -399,6 +541,18 @@
 
                 if (metricBookingsEl) {
                     metricBookingsEl.textContent = toInt(createdBookings).toString();
+                }
+
+                if (metricFinishedBookingsEl) {
+                    metricFinishedBookingsEl.textContent = toInt(finishedBookings).toString();
+                }
+
+                if (metricCancelledBookingsEl) {
+                    metricCancelledBookingsEl.textContent = toInt(cancelledBookings).toString();
+                }
+
+                if (metricConvertedPhonesEl) {
+                    metricConvertedPhonesEl.textContent = toInt(convertedPhones).toString();
                 }
 
                 if (metricHumanHandoffEl) {

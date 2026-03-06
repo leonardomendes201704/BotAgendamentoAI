@@ -1,0 +1,97 @@
+@model BotAgendamentoAI.Admin.Models.ClientsPageViewModel
+@{
+    ViewData["Title"] = "Clientes";
+    var limit = (int?)ViewData["Limit"] ?? 200;
+
+    static string RoleLabel(string role)
+    {
+        return (role ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "CLIENT" => "Cliente",
+            "PROVIDER" => "Prestador",
+            "BOTH" => "Cliente/Prestador",
+            _ => string.IsNullOrWhiteSpace(role) ? "Sem perfil" : role
+        };
+    }
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 m-0">Clientes</h1>
+    <form method="get" class="d-flex gap-2 align-items-center">
+        <label class="form-label m-0">Tenant</label>
+        <select name="tenant" class="form-select form-select-sm" style="min-width: 140px">
+            @foreach (var tenant in Model.Tenants)
+            {
+                <option value="@tenant" selected="@(tenant == Model.TenantId)">@tenant</option>
+            }
+        </select>
+        <label class="form-label m-0">Limite</label>
+        <input type="number" min="1" max="1000" name="limit" value="@limit" class="form-control form-control-sm" style="width: 100px" />
+        <button class="btn btn-sm btn-primary" type="submit">Aplicar</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover m-0">
+            <thead>
+            <tr>
+                <th>Nome</th>
+                <th>Contato</th>
+                <th>Perfil</th>
+                <th>Status</th>
+                <th>Agendamentos</th>
+                <th>Ultimo agendamento</th>
+                <th>Atualizado</th>
+            </tr>
+            </thead>
+            <tbody>
+            @if (Model.Clients.Count == 0)
+            {
+                <tr>
+                    <td colspan="7" class="text-muted">Nenhum cliente encontrado para este tenant.</td>
+                </tr>
+            }
+            else
+            {
+                @foreach (var item in Model.Clients)
+                {
+                    <tr>
+                        <td>
+                            <div>@item.Name</div>
+                            <small class="text-muted">ID: @item.Id</small>
+                        </td>
+                        <td>
+                            <div>@(string.IsNullOrWhiteSpace(item.Phone) ? "-" : item.Phone)</div>
+                            <small class="text-muted">tg: @item.TelegramUserId</small>
+                        </td>
+                        <td>@RoleLabel(item.Role)</td>
+                        <td>
+                            @if (item.IsActive)
+                            {
+                                <span class="badge bg-success">Ativo</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary">Inativo</span>
+                            }
+                        </td>
+                        <td>
+                            <div>Total: @item.TotalJobs</div>
+                            <small class="text-muted">
+                                Abertos: @item.OpenJobs | Finalizados: @item.FinishedJobs | Cancelados: @item.CancelledJobs
+                            </small>
+                        </td>
+                        <td>
+                            @(item.LastJobAtUtc.HasValue
+                                ? item.LastJobAtUtc.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
+                                : "-")
+                        </td>
+                        <td>@item.UpdatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using BotAgendamentoAI.Telegram.Application.Callback;
 using BotAgendamentoAI.Telegram.Application.Common;
@@ -13,6 +14,14 @@ namespace BotAgendamentoAI.Telegram.Features.Provider;
 
 public sealed class ProviderFlowHandler
 {
+    private static readonly HttpClient ViaCepHttpClient = BuildViaCepHttpClient();
+    private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
+    private static readonly int[] AllowedRadiusOptions = { 1, 2, 5, 10, 25, 50 };
+
     private readonly TelegramMessageSender _sender;
     private readonly JobWorkflowService _jobWorkflow;
     private readonly CalendarSyncQueueService? _calendarQueue;
@@ -161,6 +170,39 @@ public sealed class ProviderFlowHandler
             return true;
         }
 
+        if (route.Scope == "P" && route.Action == "REM")
+        {
+            var profile = await EnsureProfileAsync(context, cancellationToken);
+            if (route.Arg1 == "LATER")
+            {
+                context.Draft.ProviderProfileReminderSnoozeUntilUtc = DateTimeOffset.UtcNow.AddHours(24);
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
+                var resumeAtLocal = TimeZoneInfo
+                    .ConvertTime(context.Draft.ProviderProfileReminderSnoozeUntilUtc.Value, context.Runtime.TimeZone)
+                    .ToString("dd/MM HH:mm", CultureInfo.InvariantCulture);
+
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    $"Sem problemas. Vou lembrar novamente apos {resumeAtLocal}.",
+                    null,
+                    null,
+                    cancellationToken);
+                return true;
+            }
+
+            if (route.Arg1 == "UPD")
+            {
+                context.Draft.ProviderProfileReminderSnoozeUntilUtc = null;
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
+                await StartProfileCompletionFlowAsync(context, chatId, profile, cancellationToken);
+                return true;
+            }
+        }
+
         if (route.Scope == "P" && route.Action == "PRF")
         {
             if (route.Arg1 == "BIO")
@@ -186,9 +228,26 @@ public sealed class ProviderFlowHandler
                 UserContextService.SaveDraft(context.Session, context.Draft);
                 await context.Db.SaveChangesAsync(cancellationToken);
 
+                var profile = await EnsureProfileAsync(context, cancellationToken);
                 await _sender.SendTextAsync(
                     context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                    "Informe o novo raio de atendimento em km (1 a 200).",
+                    "Selecione o novo raio de atendimento:",
+                    KeyboardFactory.ProviderRadiusSelection(profile.RadiusKm),
+                    null,
+                    cancellationToken);
+                return true;
+            }
+
+            if (route.Arg1 == "CEP")
+            {
+                UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+                context.Draft.PreferenceCode = "P:CEP";
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "Envie o CEP base do seu atendimento (8 digitos, com ou sem hifen).",
                     null,
                     null,
                     cancellationToken);
@@ -216,6 +275,30 @@ public sealed class ProviderFlowHandler
                 await StartCategoryEditAsync(context, chatId, cancellationToken);
                 return true;
             }
+        }
+
+        if (route.Scope == "P" && route.Action == "RADSET")
+        {
+            if (!int.TryParse(route.Arg1, NumberStyles.Integer, CultureInfo.InvariantCulture, out var radius)
+                || !AllowedRadiusOptions.Contains(radius))
+            {
+                return true;
+            }
+
+            var profile = await EnsureProfileAsync(context, cancellationToken);
+            profile.RadiusKm = radius;
+            context.Draft.PreferenceCode = null;
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            UserContextService.SetState(context.Session, BotStates.P_HOME);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                $"Raio atualizado para {radius} km.",
+                KeyboardFactory.ProviderProfileActions(),
+                null,
+                cancellationToken);
+            return true;
         }
 
         if (route.Scope == "P" && route.Action == "CAT")
@@ -312,7 +395,7 @@ public sealed class ProviderFlowHandler
         {
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                $"Pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nEndereco: {job.AddressText}",
+                BuildProviderJobCaption(job),
                 KeyboardFactory.JobCardActions(job.Id), job.Id, cancellationToken);
             await _jobWorkflow.SendJobGalleryAsync(context, job.Id, 0, chatId, context.User.TelegramUserId, cancellationToken);
             return true;
@@ -613,12 +696,13 @@ public sealed class ProviderFlowHandler
 
         if (mode == "P:RAD")
         {
-            if (!int.TryParse(text, out var radius) || radius is < 1 or > 200)
+            if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var radius)
+                || !AllowedRadiusOptions.Contains(radius))
             {
                 await _sender.SendTextAsync(
                     context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                    "Raio invalido. Informe um numero entre 1 e 200.",
-                    null,
+                    "Raio invalido. Use uma das opcoes: 1, 2, 5, 10, 25 ou 50 km.",
+                    KeyboardFactory.ProviderRadiusSelection(profile.RadiusKm),
                     null,
                     cancellationToken);
                 return;
@@ -633,6 +717,47 @@ public sealed class ProviderFlowHandler
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
                 $"Raio atualizado para {radius} km.",
+                KeyboardFactory.ProviderProfileActions(),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        if (mode == "P:CEP")
+        {
+            if (!TryParseCepInput(text, out var cepDigits))
+            {
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    "CEP invalido. Envie 8 digitos (com ou sem hifen).",
+                    null,
+                    null,
+                    cancellationToken);
+                return;
+            }
+
+            var geocode = await ResolveCoordinatesByCepAsync(cepDigits, cancellationToken);
+            if (!geocode.Success)
+            {
+                await _sender.SendTextAsync(
+                    context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                    $"Nao consegui definir base por esse CEP agora. {geocode.Error}",
+                    null,
+                    null,
+                    cancellationToken);
+                return;
+            }
+
+            profile.BaseLatitude = geocode.Latitude;
+            profile.BaseLongitude = geocode.Longitude;
+            context.Draft.PreferenceCode = null;
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            UserContextService.SetState(context.Session, BotStates.P_HOME);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                $"CEP base atualizado para {geocode.CepFormatted} ({geocode.AddressPreview}).",
                 KeyboardFactory.ProviderProfileActions(),
                 null,
                 cancellationToken);
@@ -750,29 +875,127 @@ public sealed class ProviderFlowHandler
             cancellationToken);
     }
 
+    private async Task StartProfileCompletionFlowAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        ProviderProfile profile,
+        CancellationToken cancellationToken)
+    {
+        var missing = GetMissingProviderProfileItems(profile);
+        if (missing.Count == 0)
+        {
+            UserContextService.SetState(context.Session, BotStates.P_HOME);
+            await context.Db.SaveChangesAsync(cancellationToken);
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Seu perfil de prestador ja esta completo.",
+                KeyboardFactory.ProviderProfileActions(),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        await _sender.SendTextAsync(
+            context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+            "Vamos completar seu perfil de prestador.",
+            null,
+            null,
+            cancellationToken);
+
+        if (missing.Contains(MissingProviderProfileItem.Categories))
+        {
+            await StartCategoryEditAsync(context, chatId, cancellationToken);
+            return;
+        }
+
+        if (missing.Contains(MissingProviderProfileItem.BaseLocation))
+        {
+            UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+            context.Draft.PreferenceCode = "P:CEP";
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Primeiro, envie seu CEP base (8 digitos, com ou sem hifen).",
+                null,
+                null,
+                cancellationToken);
+            return;
+        }
+
+        if (missing.Contains(MissingProviderProfileItem.Radius))
+        {
+            UserContextService.SetState(context.Session, BotStates.P_PROFILE_EDIT);
+            context.Draft.PreferenceCode = "P:RAD";
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Agora selecione seu raio de atendimento.",
+                KeyboardFactory.ProviderRadiusSelection(profile.RadiusKm),
+                null,
+                cancellationToken);
+        }
+    }
+
     private async Task SendFeedAsync(BotExecutionContext context, ChatId chatId, int offset, CancellationToken cancellationToken)
     {
         const int pageSize = 5;
         var safeOffset = Math.Max(0, offset);
 
         var profile = await EnsureProfileAsync(context, cancellationToken);
+        if (!profile.BaseLatitude.HasValue || !profile.BaseLongitude.HasValue)
+        {
+            await _sender.SendTextAsync(
+                context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                "Defina primeiro seu CEP base ou local base no perfil para receber pedidos dentro do seu raio.",
+                KeyboardFactory.ProviderProfileActions(),
+                null,
+                cancellationToken);
+            return;
+        }
+
         var query = context.Db.Jobs
             .AsNoTracking()
             .Where(x => x.TenantId == context.TenantId && x.Status == JobStatus.WaitingProvider)
-            .OrderByDescending(x => x.Id);
+            .OrderByDescending(x => x.Id)
+            .Take(300);
 
-        var total = await query.CountAsync(cancellationToken);
-        var jobs = await query.Skip(safeOffset).Take(pageSize).ToListAsync(cancellationToken);
-        jobs = jobs
+        var providerCategories = ParseCategories(profile.CategoriesJson);
+        var hasCategoryFilter = providerCategories.Count > 0;
+        var normalizedCategories = providerCategories
+            .Select(NormalizeCategoryName)
+            .Where(x => x.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var filteredJobs = await query.ToListAsync(cancellationToken);
+        filteredJobs = filteredJobs
             .Where(x => !context.Draft.HiddenFeedJobIds.Contains(x.Id))
-            .Where(x => profile.CategoriesJson == "[]" || profile.CategoriesJson.Contains(x.Category, StringComparison.OrdinalIgnoreCase))
+            .Where(x => !hasCategoryFilter || normalizedCategories.Contains(NormalizeCategoryName(x.Category)))
+            .Where(x => IsJobInsideProviderRadius(x, profile))
+            .ToList();
+
+        var total = filteredJobs.Count;
+        if (safeOffset >= total)
+        {
+            safeOffset = Math.Max(0, total - pageSize);
+        }
+
+        var jobs = filteredJobs
+            .Skip(safeOffset)
+            .Take(pageSize)
             .ToList();
 
         if (jobs.Count == 0)
         {
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                BotMessages.NoProviderJobs(), KeyboardFactory.ProviderMenu(), null, cancellationToken);
+                "Nao encontrei pedidos dentro do seu raio/categorias no momento.",
+                KeyboardFactory.ProviderMenu(),
+                null,
+                cancellationToken);
             return;
         }
 
@@ -785,7 +1008,7 @@ public sealed class ProviderFlowHandler
                 .Select(x => x.TelegramFileId)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            var caption = $"Pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nEndereco: {job.AddressText}";
+            var caption = BuildProviderJobCaption(job);
             if (!string.IsNullOrWhiteSpace(photo))
             {
                 await _sender.SendPhotoCardAsync(
@@ -1042,6 +1265,13 @@ public sealed class ProviderFlowHandler
             BotMessages.ProviderHomeMenu(), KeyboardFactory.ProviderMenu(), context.Session.ActiveJobId, cancellationToken);
     }
 
+    private static string BuildProviderJobCaption(Job job)
+    {
+        var contactName = string.IsNullOrWhiteSpace(job.ContactName) ? "Nao informado" : job.ContactName.Trim();
+        var contactPhone = string.IsNullOrWhiteSpace(job.ContactPhone) ? "Nao informado" : job.ContactPhone.Trim();
+        return $"Pedido #{job.Id}\nCategoria: {job.Category}\n{job.Description}\nContato: {contactName}\nTelefone: {contactPhone}\nEndereco: {job.AddressText}";
+    }
+
     private static List<string> ParseCategories(string? categoriesJson)
     {
         if (string.IsNullOrWhiteSpace(categoriesJson))
@@ -1081,6 +1311,267 @@ public sealed class ProviderFlowHandler
         return JsonSerializer.Serialize(normalized);
     }
 
+    private static bool TryParseCepInput(string? text, out string cepDigits)
+    {
+        cepDigits = new string((text ?? string.Empty).Where(char.IsDigit).ToArray());
+        return cepDigits.Length == 8;
+    }
+
+    private static async Task<ProviderCepGeocodeResult> ResolveCoordinatesByCepAsync(string cepDigits, CancellationToken cancellationToken)
+    {
+        var lookup = await LookupCepAsync(cepDigits, cancellationToken);
+        if (!lookup.Ok)
+        {
+            return ProviderCepGeocodeResult.Fail(lookup.Error);
+        }
+
+        var addressQuery = BuildGeocodeAddressQuery(lookup);
+        var geocode = await TryGeocodeQueryAsync(addressQuery, cancellationToken);
+        if (!geocode.Success)
+        {
+            geocode = await TryGeocodeQueryAsync($"{FormatCep(lookup.Cep)}, Brasil", cancellationToken);
+        }
+
+        if (!geocode.Success)
+        {
+            return ProviderCepGeocodeResult.Fail(geocode.Error);
+        }
+
+        return ProviderCepGeocodeResult.Ok(
+            geocode.Latitude,
+            geocode.Longitude,
+            FormatCep(lookup.Cep),
+            BuildAddressPreview(lookup));
+    }
+
+    private static async Task<CepLookupResult> LookupCepAsync(string cepDigits, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(cepDigits) || cepDigits.Length != 8)
+        {
+            return CepLookupResult.Fail("CEP invalido.");
+        }
+
+        try
+        {
+            using var response = await ViaCepHttpClient.GetAsync($"https://viacep.com.br/ws/{cepDigits}/json/", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return CepLookupResult.Fail($"HTTP {(int)response.StatusCode} no ViaCEP.");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync(cancellationToken);
+            var payload = JsonSerializer.Deserialize<ViaCepPayload>(payloadText, JsonOptions);
+            if (payload is null || payload.Erro)
+            {
+                return CepLookupResult.Fail("CEP nao encontrado.");
+            }
+
+            return CepLookupResult.Success(
+                cepDigits,
+                payload.Logradouro,
+                payload.Bairro,
+                payload.Localidade,
+                payload.Uf);
+        }
+        catch (Exception ex)
+        {
+            return CepLookupResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<GeocodeResult> TryGeocodeQueryAsync(string query, CancellationToken cancellationToken)
+    {
+        var safeQuery = (query ?? string.Empty).Trim();
+        if (safeQuery.Length == 0)
+        {
+            return GeocodeResult.Fail("Endereco vazio para geocode.");
+        }
+
+        var encoded = Uri.EscapeDataString(safeQuery);
+        var endpoint = $"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&q={encoded}";
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return GeocodeResult.Fail($"HTTP {(int)response.StatusCode} no geocode.");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(payloadText);
+            if (document.RootElement.ValueKind != JsonValueKind.Array
+                || document.RootElement.GetArrayLength() == 0)
+            {
+                return GeocodeResult.Fail("Nenhum resultado no geocode.");
+            }
+
+            var first = document.RootElement[0];
+            var latText = first.TryGetProperty("lat", out var latProp) ? latProp.GetString() : null;
+            var lonText = first.TryGetProperty("lon", out var lonProp) ? lonProp.GetString() : null;
+
+            if (!double.TryParse(latText, NumberStyles.Float, CultureInfo.InvariantCulture, out var latitude)
+                || !double.TryParse(lonText, NumberStyles.Float, CultureInfo.InvariantCulture, out var longitude))
+            {
+                return GeocodeResult.Fail("Lat/lng invalidos no geocode.");
+            }
+
+            return GeocodeResult.Ok(latitude, longitude);
+        }
+        catch (Exception ex)
+        {
+            return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static string BuildGeocodeAddressQuery(CepLookupResult lookup)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(lookup.Logradouro))
+        {
+            parts.Add(lookup.Logradouro.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(lookup.Bairro))
+        {
+            parts.Add(lookup.Bairro.Trim());
+        }
+
+        var cityUf = BuildCityUf(lookup.Localidade, lookup.Uf);
+        if (!string.IsNullOrWhiteSpace(cityUf))
+        {
+            parts.Add(cityUf);
+        }
+
+        parts.Add(FormatCep(lookup.Cep));
+        parts.Add("Brasil");
+        return string.Join(", ", parts.Where(x => !string.IsNullOrWhiteSpace(x)));
+    }
+
+    private static string BuildAddressPreview(CepLookupResult lookup)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(lookup.Logradouro))
+        {
+            parts.Add(lookup.Logradouro.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(lookup.Bairro))
+        {
+            parts.Add(lookup.Bairro.Trim());
+        }
+
+        var cityUf = BuildCityUf(lookup.Localidade, lookup.Uf);
+        if (!string.IsNullOrWhiteSpace(cityUf))
+        {
+            parts.Add(cityUf);
+        }
+
+        return parts.Count == 0 ? $"CEP {FormatCep(lookup.Cep)}" : string.Join(", ", parts);
+    }
+
+    private static string BuildCityUf(string? city, string? uf)
+    {
+        var safeCity = (city ?? string.Empty).Trim();
+        var safeUf = (uf ?? string.Empty).Trim().ToUpperInvariant();
+        if (safeCity.Length > 0 && safeUf.Length > 0)
+        {
+            return $"{safeCity} - {safeUf}";
+        }
+
+        return safeCity.Length > 0 ? safeCity : safeUf;
+    }
+
+    private static string FormatCep(string? cep)
+    {
+        var digits = new string((cep ?? string.Empty).Where(char.IsDigit).ToArray());
+        if (digits.Length != 8)
+        {
+            return cep ?? string.Empty;
+        }
+
+        return $"{digits[..5]}-{digits[5..]}";
+    }
+
+    private static HttpClient BuildViaCepHttpClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(8)
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("BotAgendamentoAI.Telegram/1.0 (+lookup-cep-provider)");
+        return client;
+    }
+
+    private static HttpClient BuildGeocodeHttpClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(10)
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("BotAgendamentoAI.Telegram/1.0 (+nominatim-geocode-provider)");
+        return client;
+    }
+
+    private static bool IsJobInsideProviderRadius(Job job, ProviderProfile profile)
+    {
+        if (!job.Latitude.HasValue || !job.Longitude.HasValue || !profile.BaseLatitude.HasValue || !profile.BaseLongitude.HasValue)
+        {
+            return false;
+        }
+
+        var distanceKm = DistanceKm(
+            job.Latitude.Value,
+            job.Longitude.Value,
+            profile.BaseLatitude.Value,
+            profile.BaseLongitude.Value);
+
+        return distanceKm <= Math.Max(1, profile.RadiusKm);
+    }
+
+    private static double DistanceKm(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double earthRadiusKm = 6371d;
+        var dLat = ToRad(lat2 - lat1);
+        var dLon = ToRad(lon2 - lon1);
+        var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2)
+                + Math.Cos(ToRad(lat1)) * Math.Cos(ToRad(lat2)) * Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+        return earthRadiusKm * c;
+    }
+
+    private static double ToRad(double value) => value * Math.PI / 180d;
+
+    private static string NormalizeCategoryName(string value)
+    {
+        var safe = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return safe
+            .Replace(" ", string.Empty)
+            .Replace("-", string.Empty);
+    }
+
+    private static List<MissingProviderProfileItem> GetMissingProviderProfileItems(ProviderProfile profile)
+    {
+        var missing = new List<MissingProviderProfileItem>();
+        var categories = ParseCategories(profile.CategoriesJson);
+        if (categories.Count == 0)
+        {
+            missing.Add(MissingProviderProfileItem.Categories);
+        }
+
+        if (!profile.BaseLatitude.HasValue || !profile.BaseLongitude.HasValue)
+        {
+            missing.Add(MissingProviderProfileItem.BaseLocation);
+        }
+
+        if (!AllowedRadiusOptions.Contains(profile.RadiusKm))
+        {
+            missing.Add(MissingProviderProfileItem.Radius);
+        }
+
+        return missing;
+    }
+
     private static bool CanOpenChat(JobStatus status)
         => status is JobStatus.Accepted or JobStatus.OnTheWay or JobStatus.Arrived or JobStatus.InProgress;
 
@@ -1108,4 +1599,118 @@ public sealed class ProviderFlowHandler
            || string.Equals(state, BotStates.P_ACTIVE_JOB, StringComparison.Ordinal)
            || string.Equals(state, BotStates.P_FEED, StringComparison.Ordinal)
            || string.Equals(state, BotStates.NONE, StringComparison.Ordinal);
+
+    private sealed class ViaCepPayload
+    {
+        public string? Logradouro { get; set; }
+        public string? Bairro { get; set; }
+        public string? Localidade { get; set; }
+        public string? Uf { get; set; }
+        public bool Erro { get; set; }
+    }
+
+    private sealed class CepLookupResult
+    {
+        public bool Ok { get; private set; }
+        public string Cep { get; private set; } = string.Empty;
+        public string Logradouro { get; private set; } = string.Empty;
+        public string Bairro { get; private set; } = string.Empty;
+        public string Localidade { get; private set; } = string.Empty;
+        public string Uf { get; private set; } = string.Empty;
+        public string Error { get; private set; } = string.Empty;
+
+        public static CepLookupResult Success(
+            string cep,
+            string? logradouro,
+            string? bairro,
+            string? localidade,
+            string? uf)
+        {
+            return new CepLookupResult
+            {
+                Ok = true,
+                Cep = cep ?? string.Empty,
+                Logradouro = logradouro ?? string.Empty,
+                Bairro = bairro ?? string.Empty,
+                Localidade = localidade ?? string.Empty,
+                Uf = uf ?? string.Empty,
+                Error = string.Empty
+            };
+        }
+
+        public static CepLookupResult Fail(string error)
+        {
+            return new CepLookupResult
+            {
+                Ok = false,
+                Error = error ?? string.Empty
+            };
+        }
+    }
+
+    private sealed class GeocodeResult
+    {
+        public bool Success { get; private set; }
+        public double Latitude { get; private set; }
+        public double Longitude { get; private set; }
+        public string Error { get; private set; } = string.Empty;
+
+        public static GeocodeResult Ok(double latitude, double longitude)
+        {
+            return new GeocodeResult
+            {
+                Success = true,
+                Latitude = latitude,
+                Longitude = longitude
+            };
+        }
+
+        public static GeocodeResult Fail(string error)
+        {
+            return new GeocodeResult
+            {
+                Success = false,
+                Error = error ?? string.Empty
+            };
+        }
+    }
+
+    private sealed class ProviderCepGeocodeResult
+    {
+        public bool Success { get; private set; }
+        public double Latitude { get; private set; }
+        public double Longitude { get; private set; }
+        public string CepFormatted { get; private set; } = string.Empty;
+        public string AddressPreview { get; private set; } = string.Empty;
+        public string Error { get; private set; } = string.Empty;
+
+        public static ProviderCepGeocodeResult Ok(double latitude, double longitude, string cepFormatted, string addressPreview)
+        {
+            return new ProviderCepGeocodeResult
+            {
+                Success = true,
+                Latitude = latitude,
+                Longitude = longitude,
+                CepFormatted = cepFormatted ?? string.Empty,
+                AddressPreview = addressPreview ?? string.Empty,
+                Error = string.Empty
+            };
+        }
+
+        public static ProviderCepGeocodeResult Fail(string error)
+        {
+            return new ProviderCepGeocodeResult
+            {
+                Success = false,
+                Error = error ?? string.Empty
+            };
+        }
+    }
+
+    private enum MissingProviderProfileItem
+    {
+        Categories = 1,
+        Radius = 2,
+        BaseLocation = 3
+    }
 }

@@ -258,6 +258,13 @@ public sealed class MarketplaceBotOrchestrator
 
         var context = BuildContext(tenantId, db, botClient, user, runtime);
 
+        if (route.Scope == "P" && route.Action == "REM")
+        {
+            _ = await _providerFlow.HandleCallbackAsync(context, route, callback, cancellationToken);
+            await botClient.AnswerCallbackQuery(callback.Id, null, false, cancellationToken);
+            return;
+        }
+
         if (route.Scope == "C" && route.Action == "HOME")
         {
             var handledClientHome = await _clientFlow.HandleCallbackAsync(context, route, callback, cancellationToken);
