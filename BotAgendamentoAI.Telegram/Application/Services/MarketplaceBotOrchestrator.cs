@@ -126,6 +126,13 @@ public sealed class MarketplaceBotOrchestrator
 
         if (string.Equals(message.Text?.Trim(), "/start", StringComparison.OrdinalIgnoreCase))
         {
+            if (!IsProviderMode(user) && _clientFlow.IsClientRegistrationPending(user))
+            {
+                var registrationContext = BuildContext(tenantId, db, botClient, user, runtime);
+                await _clientFlow.StartOrResumeRegistrationAsync(registrationContext, message.Chat.Id, cancellationToken);
+                return;
+            }
+
             await _sender.SendTextAsync(
                 db,
                 botClient,
@@ -176,6 +183,14 @@ public sealed class MarketplaceBotOrchestrator
         }
 
         var context = BuildContext(tenantId, db, botClient, user, runtime);
+
+        if (!IsProviderMode(user) && _clientFlow.IsClientRegistrationPending(user))
+        {
+            if (await _clientFlow.TryHandleRegistrationTextAsync(context, message, cancellationToken))
+            {
+                return;
+            }
+        }
 
         if (message.Location is not null)
         {
@@ -285,12 +300,21 @@ public sealed class MarketplaceBotOrchestrator
 
         if (route.Scope == "U" && route.Action == "ROLE")
         {
-            await HandleRoleSelectionAsync(db, botClient, tenantId, user, route.Arg1, chatId, cancellationToken);
+            await HandleRoleSelectionAsync(db, botClient, tenantId, user, route.Arg1, chatId, runtime, cancellationToken);
             await botClient.AnswerCallbackQuery(callback.Id, "Perfil atualizado", false, cancellationToken);
             return;
         }
 
         var context = BuildContext(tenantId, db, botClient, user, runtime);
+
+        if (!IsProviderMode(user) && _clientFlow.IsClientRegistrationPending(user))
+        {
+            if (await _clientFlow.TryHandleRegistrationCallbackAsync(context, route, callback, cancellationToken))
+            {
+                await botClient.AnswerCallbackQuery(callback.Id, null, false, cancellationToken);
+                return;
+            }
+        }
 
         if (route.Scope == "P" && route.Action == "REM")
         {
@@ -368,6 +392,7 @@ public sealed class MarketplaceBotOrchestrator
         Domain.Entities.AppUser user,
         string code,
         ChatId chatId,
+        TelegramRuntimeSettings runtime,
         CancellationToken cancellationToken)
     {
         user.Role = code switch
@@ -419,16 +444,24 @@ public sealed class MarketplaceBotOrchestrator
         }
         else
         {
-            await _sender.SendTextAsync(
-                db,
-                botClient,
-                tenantId,
-                user.TelegramUserId,
-                chatId,
-                BotMessages.ClientHomeMenu(user.Role == UserRole.Both),
-                KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
-                null,
-                cancellationToken);
+            var context = BuildContext(tenantId, db, botClient, user, runtime);
+            if (_clientFlow.IsClientRegistrationPending(user))
+            {
+                await _clientFlow.StartOrResumeRegistrationAsync(context, chatId, cancellationToken);
+            }
+            else
+            {
+                await _sender.SendTextAsync(
+                    db,
+                    botClient,
+                    tenantId,
+                    user.TelegramUserId,
+                    chatId,
+                    BotMessages.ClientHomeMenu(user.Role == UserRole.Both),
+                    KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
+                    null,
+                    cancellationToken);
+            }
         }
     }
 

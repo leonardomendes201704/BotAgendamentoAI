@@ -13,6 +13,7 @@ public sealed class BotDbContext : DbContext
     }
 
     public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<ClientProfile> ClientProfiles => Set<ClientProfile>();
     public DbSet<ProviderProfile> ProvidersProfile => Set<ProviderProfile>();
     public DbSet<ProviderPortfolioPhoto> ProviderPortfolioPhotos => Set<ProviderPortfolioPhoto>();
     public DbSet<ProviderJobRejection> ProviderJobRejections => Set<ProviderJobRejection>();
@@ -91,6 +92,49 @@ public sealed class BotDbContext : DbContext
             entity.HasOne(x => x.ProviderUser)
                 .WithMany()
                 .HasForeignKey(x => x.ProviderUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClientProfile>(entity =>
+        {
+            entity.ToTable("tg_client_profiles", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.HasKey(x => x.UserId);
+            entity.Property(x => x.UserId).HasColumnName("user_id");
+            entity.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired().HasMaxLength(32);
+            entity.Property(x => x.FullName).HasColumnName("full_name").IsRequired().HasMaxLength(160);
+            entity.Property(x => x.Email).HasColumnName("email").IsRequired().HasMaxLength(160);
+            entity.Property(x => x.Cpf).HasColumnName("cpf").IsRequired().HasMaxLength(16);
+            entity.Property(x => x.Street).HasColumnName("street").IsRequired().HasMaxLength(160);
+            entity.Property(x => x.Number).HasColumnName("number").IsRequired().HasMaxLength(32);
+            entity.Property(x => x.Complement).HasColumnName("complement").IsRequired().HasMaxLength(160);
+            entity.Property(x => x.Neighborhood).HasColumnName("neighborhood").IsRequired().HasMaxLength(120);
+            entity.Property(x => x.City).HasColumnName("city").IsRequired().HasMaxLength(120);
+            entity.Property(x => x.State).HasColumnName("state").IsRequired().HasMaxLength(2);
+            entity.Property(x => x.Cep).HasColumnName("cep").IsRequired().HasMaxLength(8);
+            entity.Property(x => x.Latitude).HasColumnName("latitude");
+            entity.Property(x => x.Longitude).HasColumnName("longitude");
+            entity.Property(x => x.IsAddressConfirmed).HasColumnName("is_address_confirmed").IsRequired();
+            entity.Property(x => x.PhoneNumber).HasColumnName("phone_number").IsRequired().HasMaxLength(32);
+            entity.Property(x => x.IsRegistrationComplete).HasColumnName("is_registration_complete").IsRequired();
+            entity.Property(x => x.CreatedAtUtc)
+                .HasColumnName("created_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+
+            entity.HasIndex(x => new { x.TenantId, x.IsRegistrationComplete, x.UpdatedAtUtc })
+                .HasDatabaseName("ix_tg_client_profiles_tenant_complete_updated");
+            entity.HasIndex(x => new { x.TenantId, x.Cpf })
+                .HasDatabaseName("ix_tg_client_profiles_tenant_cpf");
+            entity.HasIndex(x => new { x.TenantId, x.PhoneNumber })
+                .HasDatabaseName("ix_tg_client_profiles_tenant_phone");
+
+            entity.HasOne(x => x.User)
+                .WithOne(x => x.ClientProfile)
+                .HasForeignKey<ClientProfile>(x => x.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

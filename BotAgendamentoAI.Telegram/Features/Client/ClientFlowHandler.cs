@@ -1,5 +1,7 @@
 using System.Net.Http;
+using System.Net.Mail;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BotAgendamentoAI.Telegram.Application.Callback;
 using BotAgendamentoAI.Telegram.Application.Common;
 using BotAgendamentoAI.Telegram.Application.Services;
@@ -18,6 +20,8 @@ public sealed class ClientFlowHandler
 {
     private static readonly HttpClient ViaCepHttpClient = BuildViaCepHttpClient();
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
+    private static readonly Regex ClientRegistrationCpfRegex = new(@"\D", RegexOptions.Compiled);
+    private static readonly Regex ClientRegistrationNumberRegex = new(@"^\s*(?<number>\d+[A-Za-z]?)\s*(?:[,\/-]?\s*(?<complement>.*))?$", RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
@@ -47,6 +51,140 @@ public sealed class ClientFlowHandler
         _logger = logger;
         _calendarQueue = calendarQueue;
         _availability = availability;
+    }
+
+    public bool IsClientRegistrationPending(AppUser user)
+    {
+        if (user.Role == UserRole.Provider)
+        {
+            return false;
+        }
+
+        return !IsClientRegistrationComplete(user.ClientProfile);
+    }
+
+    public async Task StartOrResumeRegistrationAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        var profile = await GetOrCreateClientProfileAsync(context, cancellationToken);
+        var nextState = ResolveClientRegistrationState(context, profile);
+        if (nextState is null)
+        {
+            await CompleteClientRegistrationAsync(context, profile, chatId, cancellationToken);
+            return;
+        }
+
+        await context.Db.SaveChangesAsync(cancellationToken);
+        await SendClientRegistrationPromptAsync(context, chatId, profile, null, cancellationToken);
+    }
+
+    public async Task<bool> TryHandleRegistrationTextAsync(
+        BotExecutionContext context,
+        Message message,
+        CancellationToken cancellationToken)
+    {
+        if (!IsClientRegistrationPending(context.User))
+        {
+            return false;
+        }
+
+        var profile = await GetOrCreateClientProfileAsync(context, cancellationToken);
+        var nextState = ResolveClientRegistrationState(context, profile);
+        if (nextState is null)
+        {
+            await CompleteClientRegistrationAsync(context, profile, message.Chat.Id, cancellationToken);
+            return true;
+        }
+
+        var safeText = (message.Text ?? string.Empty).Trim();
+        if (string.Equals(safeText, MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(safeText, MenuTexts.Back, StringComparison.OrdinalIgnoreCase))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                message.Chat.Id,
+                profile,
+                "Conclua seu cadastro para continuar.",
+                cancellationToken);
+            return true;
+        }
+
+        switch (nextState)
+        {
+            case BotStates.C_REG_NAME:
+                await HandleClientRegistrationNameAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
+            case BotStates.C_REG_EMAIL:
+                await HandleClientRegistrationEmailAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
+            case BotStates.C_REG_CPF:
+                await HandleClientRegistrationCpfAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
+            case BotStates.C_REG_CEP:
+                await HandleClientRegistrationCepAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
+            case BotStates.C_REG_ADDRESS_NUMBER:
+                await HandleClientRegistrationAddressNumberAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
+            case BotStates.C_REG_ADDRESS_CONFIRM:
+                await SendClientRegistrationPromptAsync(
+                    context,
+                    message.Chat.Id,
+                    profile,
+                    "Use os botoes para confirmar o endereco.",
+                    cancellationToken);
+                return true;
+
+            case BotStates.C_REG_PHONE:
+                await HandleClientRegistrationPhoneAsync(context, profile, message, safeText, cancellationToken);
+                return true;
+
+            default:
+                await StartOrResumeRegistrationAsync(context, message.Chat.Id, cancellationToken);
+                return true;
+        }
+    }
+
+    public async Task<bool> TryHandleRegistrationCallbackAsync(
+        BotExecutionContext context,
+        CallbackRoute route,
+        CallbackQuery callback,
+        CancellationToken cancellationToken)
+    {
+        if (!IsClientRegistrationPending(context.User))
+        {
+            return false;
+        }
+
+        var chatId = callback.Message?.Chat.Id ?? context.User.TelegramUserId;
+        var profile = await GetOrCreateClientProfileAsync(context, cancellationToken);
+        var nextState = ResolveClientRegistrationState(context, profile);
+        if (nextState is null)
+        {
+            await CompleteClientRegistrationAsync(context, profile, chatId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "C" && route.Action == "ADDR" && string.Equals(nextState, BotStates.C_REG_ADDRESS_CONFIRM, StringComparison.Ordinal))
+        {
+            await HandleClientRegistrationAddressConfirmationAsync(context, profile, chatId, route.Arg1, cancellationToken);
+            return true;
+        }
+
+        await SendClientRegistrationPromptAsync(
+            context,
+            chatId,
+            profile,
+            "Conclua seu cadastro antes de usar o menu do cliente.",
+            cancellationToken);
+        return true;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -1766,6 +1904,447 @@ public sealed class ClientFlowHandler
             cancellationToken);
     }
 
+    private async Task<ClientProfile> GetOrCreateClientProfileAsync(
+        BotExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        if (context.User.ClientProfile is not null)
+        {
+            return context.User.ClientProfile;
+        }
+
+        var existing = await context.Db.ClientProfiles
+            .FirstOrDefaultAsync(x => x.UserId == context.User.Id, cancellationToken);
+        if (existing is not null)
+        {
+            context.User.ClientProfile = existing;
+            return existing;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var created = new ClientProfile
+        {
+            UserId = context.User.Id,
+            TenantId = context.TenantId,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+
+        context.Db.ClientProfiles.Add(created);
+        context.User.ClientProfile = created;
+        return created;
+    }
+
+    private static string? ResolveClientRegistrationState(BotExecutionContext context, ClientProfile profile)
+    {
+        var nextState = DetermineClientRegistrationState(profile);
+        if (nextState is null)
+        {
+            return null;
+        }
+
+        if (!string.Equals(context.Session.State, nextState, StringComparison.Ordinal))
+        {
+            UserContextService.SetState(context.Session, nextState);
+        }
+        else
+        {
+            context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        return nextState;
+    }
+
+    private static string? DetermineClientRegistrationState(ClientProfile profile)
+    {
+        if (string.IsNullOrWhiteSpace(profile.FullName))
+        {
+            return BotStates.C_REG_NAME;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.Email))
+        {
+            return BotStates.C_REG_EMAIL;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.Cpf))
+        {
+            return BotStates.C_REG_CPF;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.Cep)
+            || string.IsNullOrWhiteSpace(profile.Street)
+            || string.IsNullOrWhiteSpace(profile.Neighborhood)
+            || string.IsNullOrWhiteSpace(profile.City)
+            || string.IsNullOrWhiteSpace(profile.State))
+        {
+            return BotStates.C_REG_CEP;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.Number))
+        {
+            return BotStates.C_REG_ADDRESS_NUMBER;
+        }
+
+        if (!profile.IsAddressConfirmed)
+        {
+            return BotStates.C_REG_ADDRESS_CONFIRM;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.PhoneNumber))
+        {
+            return BotStates.C_REG_PHONE;
+        }
+
+        return null;
+    }
+
+    private async Task SendClientRegistrationPromptAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        ClientProfile profile,
+        string? leadMessage,
+        CancellationToken cancellationToken)
+    {
+        var state = ResolveClientRegistrationState(context, profile);
+        if (state is null)
+        {
+            await CompleteClientRegistrationAsync(context, profile, chatId, cancellationToken);
+            return;
+        }
+
+        var suggestedPhone = NormalizePhoneIfPossible(profile.PhoneNumber)
+            ?? NormalizePhoneIfPossible(context.User.Phone);
+        var suggestedName = string.IsNullOrWhiteSpace(profile.FullName)
+            ? context.User.Name
+            : profile.FullName;
+
+        var message = state switch
+        {
+            BotStates.C_REG_NAME => string.IsNullOrWhiteSpace(suggestedName)
+                ? "Cadastro do cliente - 1/6\nInforme seu nome completo."
+                : $"Cadastro do cliente - 1/6\nInforme seu nome completo.\nSugestao atual: {suggestedName}",
+            BotStates.C_REG_EMAIL => "Cadastro do cliente - 2/6\nInforme seu e-mail.",
+            BotStates.C_REG_CPF => "Cadastro do cliente - 3/6\nInforme seu CPF.",
+            BotStates.C_REG_CEP => "Cadastro do cliente - 4/6\nEnvie o CEP do seu endereco (8 digitos, com ou sem hifen).",
+            BotStates.C_REG_ADDRESS_NUMBER => $"Cadastro do cliente - 5/6\nEndereco resolvido pelo CEP:\n{BuildClientProfileBaseAddress(profile)}\n\nInforme apenas numero e complemento (se houver).",
+            BotStates.C_REG_ADDRESS_CONFIRM => $"Cadastro do cliente - 5/6\nConfirme seu endereco:\n{BuildClientProfileFullAddress(profile)}",
+            BotStates.C_REG_PHONE => string.IsNullOrWhiteSpace(suggestedPhone)
+                ? "Cadastro do cliente - 6/6\nInforme seu telefone com DDD (ex.: 13999998888)."
+                : $"Cadastro do cliente - 6/6\nInforme seu telefone com DDD (ex.: 13999998888).\nSugestao atual: {suggestedPhone}",
+            _ => "Conclua seu cadastro para continuar."
+        };
+
+        if (!string.IsNullOrWhiteSpace(leadMessage))
+        {
+            message = $"{leadMessage}\n\n{message}";
+        }
+
+        IReplyMarkup? keyboard = state switch
+        {
+            BotStates.C_REG_CEP or BotStates.C_REG_ADDRESS_NUMBER => KeyboardFactory.CepRequestKeyboard(),
+            BotStates.C_REG_ADDRESS_CONFIRM => KeyboardFactory.AddressConfirmation(),
+            _ => null
+        };
+
+        await context.Db.SaveChangesAsync(cancellationToken);
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            message,
+            keyboard,
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationNameAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var safeName = (text ?? string.Empty).Trim();
+        if (safeName.Length < 3)
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Informe um nome valido com pelo menos 3 caracteres.",
+                cancellationToken);
+            return;
+        }
+
+        profile.FullName = safeName.Length <= 160 ? safeName : safeName[..160].Trim();
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationEmailAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var safeEmail = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (!IsValidEmail(safeEmail))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Informe um e-mail valido.",
+                cancellationToken);
+            return;
+        }
+
+        profile.Email = safeEmail.Length <= 160 ? safeEmail : safeEmail[..160].Trim();
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationCpfAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var normalizedCpf = NormalizeCpf(text);
+        if (!IsValidCpf(normalizedCpf))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "CPF invalido. Informe um CPF valido com 11 digitos.",
+                cancellationToken);
+            return;
+        }
+
+        profile.Cpf = normalizedCpf;
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationCepAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var safeText = (text ?? string.Empty).Trim();
+        if (!IsCepOnlyInput(safeText))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Envie apenas um CEP valido com 8 digitos.",
+                cancellationToken);
+            return;
+        }
+
+        var cep = ExtractCep(safeText);
+        var lookup = await LookupCepAsync(cep, cancellationToken);
+        if (!lookup.Ok || string.IsNullOrWhiteSpace(lookup.Logradouro))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Nao consegui resolver esse CEP com logradouro completo. Envie outro CEP.",
+                cancellationToken);
+            return;
+        }
+
+        var geocode = await TryGeocodeByCepAsync(lookup.Cep, cancellationToken);
+        profile.Cep = lookup.Cep;
+        profile.Street = lookup.Logradouro.Trim();
+        profile.Neighborhood = (lookup.Bairro ?? string.Empty).Trim();
+        profile.City = (lookup.Localidade ?? string.Empty).Trim();
+        profile.State = (lookup.Uf ?? string.Empty).Trim().ToUpperInvariant();
+        profile.Number = string.Empty;
+        profile.Complement = string.Empty;
+        profile.IsAddressConfirmed = false;
+        profile.Latitude = geocode.Success ? geocode.Latitude : null;
+        profile.Longitude = geocode.Success ? geocode.Longitude : null;
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationAddressNumberAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseClientRegistrationNumber(text, out var number, out var complement))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Informe ao menos o numero do local. Ex.: 136, apto 34.",
+                cancellationToken);
+            return;
+        }
+
+        profile.Number = number;
+        profile.Complement = complement;
+        profile.IsAddressConfirmed = false;
+
+        var exactAddress = BuildClientProfileFullAddress(profile);
+        var exactGeo = await TryGeocodeByAddressAsync(exactAddress, cancellationToken);
+        if (exactGeo.Success)
+        {
+            profile.Latitude = exactGeo.Latitude;
+            profile.Longitude = exactGeo.Longitude;
+        }
+        else
+        {
+            var fallbackGeo = await TryGeocodeByCepAsync(profile.Cep, cancellationToken);
+            profile.Latitude = fallbackGeo.Success ? fallbackGeo.Latitude : profile.Latitude;
+            profile.Longitude = fallbackGeo.Success ? fallbackGeo.Longitude : profile.Longitude;
+        }
+
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationAddressConfirmationAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string action,
+        CancellationToken cancellationToken)
+    {
+        var normalizedAction = (action ?? string.Empty).Trim().ToUpperInvariant();
+        if (normalizedAction == "EDIT")
+        {
+            profile.Street = string.Empty;
+            profile.Number = string.Empty;
+            profile.Complement = string.Empty;
+            profile.Neighborhood = string.Empty;
+            profile.City = string.Empty;
+            profile.State = string.Empty;
+            profile.Cep = string.Empty;
+            profile.Latitude = null;
+            profile.Longitude = null;
+            profile.IsAddressConfirmed = false;
+            profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+
+            await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+            return;
+        }
+
+        if (normalizedAction != "OK")
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Use os botoes para confirmar o endereco.",
+                cancellationToken);
+            return;
+        }
+
+        profile.IsAddressConfirmed = true;
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationPhoneAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        Message message,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var phoneInput = message.Contact?.PhoneNumber;
+        if (string.IsNullOrWhiteSpace(phoneInput))
+        {
+            phoneInput = text;
+        }
+
+        if (!TryNormalizePhone(phoneInput, out var phone))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                message.Chat.Id,
+                profile,
+                "Telefone invalido. Informe com DDD.",
+                cancellationToken);
+            return;
+        }
+
+        profile.PhoneNumber = phone;
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await ContinueClientRegistrationAsync(context, profile, message.Chat.Id, cancellationToken);
+    }
+
+    private async Task ContinueClientRegistrationAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        var nextState = ResolveClientRegistrationState(context, profile);
+        if (nextState is null)
+        {
+            await CompleteClientRegistrationAsync(context, profile, chatId, cancellationToken);
+            return;
+        }
+
+        await context.Db.SaveChangesAsync(cancellationToken);
+        await SendClientRegistrationPromptAsync(context, chatId, profile, null, cancellationToken);
+    }
+
+    private async Task CompleteClientRegistrationAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (profile.CreatedAtUtc == default)
+        {
+            profile.CreatedAtUtc = now;
+        }
+
+        profile.TenantId = context.TenantId;
+        profile.IsAddressConfirmed = true;
+        profile.IsRegistrationComplete = true;
+        profile.UpdatedAtUtc = now;
+
+        context.User.Name = profile.FullName;
+        context.User.Phone = profile.PhoneNumber;
+        context.User.UpdatedAt = now;
+        context.User.ClientProfile = profile;
+
+        UserContextService.ResetSession(context.Session, BotStates.C_HOME);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            $"Cadastro concluido com sucesso.\n\nNome: {profile.FullName}\nCPF: {FormatCpf(profile.Cpf)}\nE-mail: {profile.Email}\nTelefone: {profile.PhoneNumber}\nEndereco: {BuildClientProfileFullAddress(profile)}",
+            KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+            null,
+            cancellationToken);
+    }
+
     private async Task AdvanceToScheduleAsync(
         BotExecutionContext context,
         ChatId chatId,
@@ -1833,6 +2412,176 @@ public sealed class ClientFlowHandler
 
         var digits = new string(safe.Where(char.IsDigit).ToArray());
         return digits.Length == 8;
+    }
+
+    private static bool IsClientRegistrationComplete(ClientProfile? profile)
+    {
+        return profile is not null
+            && profile.IsRegistrationComplete
+            && !string.IsNullOrWhiteSpace(profile.FullName)
+            && !string.IsNullOrWhiteSpace(profile.Email)
+            && !string.IsNullOrWhiteSpace(profile.Cpf)
+            && !string.IsNullOrWhiteSpace(profile.Street)
+            && !string.IsNullOrWhiteSpace(profile.Number)
+            && !string.IsNullOrWhiteSpace(profile.Neighborhood)
+            && !string.IsNullOrWhiteSpace(profile.City)
+            && !string.IsNullOrWhiteSpace(profile.State)
+            && !string.IsNullOrWhiteSpace(profile.Cep)
+            && !string.IsNullOrWhiteSpace(profile.PhoneNumber)
+            && profile.IsAddressConfirmed;
+    }
+
+    private static bool IsValidEmail(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return false;
+        }
+
+        try
+        {
+            var mail = new MailAddress(email);
+            return string.Equals(mail.Address, email.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeCpf(string? value)
+        => ClientRegistrationCpfRegex.Replace(value ?? string.Empty, string.Empty);
+
+    private static string FormatCpf(string? cpf)
+    {
+        var digits = NormalizeCpf(cpf);
+        return digits.Length == 11
+            ? $"{digits[..3]}.{digits.Substring(3, 3)}.{digits.Substring(6, 3)}-{digits[9..]}"
+            : digits;
+    }
+
+    private static bool IsValidCpf(string? cpf)
+    {
+        var digits = NormalizeCpf(cpf);
+        if (digits.Length != 11)
+        {
+            return false;
+        }
+
+        if (digits.Distinct().Count() == 1)
+        {
+            return false;
+        }
+
+        static int CalculateDigit(string source, int factor)
+        {
+            var sum = 0;
+            foreach (var ch in source)
+            {
+                sum += (ch - '0') * factor--;
+            }
+
+            var remainder = sum % 11;
+            return remainder < 2 ? 0 : 11 - remainder;
+        }
+
+        var digit1 = CalculateDigit(digits[..9], 10);
+        var digit2 = CalculateDigit(digits[..10], 11);
+        return digits[9] - '0' == digit1 && digits[10] - '0' == digit2;
+    }
+
+    private static bool TryParseClientRegistrationNumber(string? text, out string number, out string complement)
+    {
+        number = string.Empty;
+        complement = string.Empty;
+
+        var safe = (text ?? string.Empty).Trim();
+        if (safe.Length == 0 || !safe.Any(char.IsDigit))
+        {
+            return false;
+        }
+
+        var match = ClientRegistrationNumberRegex.Match(safe);
+        if (match.Success)
+        {
+            number = match.Groups["number"].Value.Trim();
+            complement = match.Groups["complement"].Value.Trim().Trim(',', '-', '/').Trim();
+            return !string.IsNullOrWhiteSpace(number);
+        }
+
+        number = safe;
+        return true;
+    }
+
+    private static string BuildClientProfileBaseAddress(ClientProfile profile)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(profile.Street))
+        {
+            parts.Add(profile.Street.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Neighborhood))
+        {
+            parts.Add(profile.Neighborhood.Trim());
+        }
+
+        var cityUf = BuildCityUf(profile.City, profile.State);
+        if (!string.IsNullOrWhiteSpace(cityUf))
+        {
+            parts.Add(cityUf);
+        }
+
+        var assembled = string.Join(", ", parts.Where(x => !string.IsNullOrWhiteSpace(x)));
+        return string.IsNullOrWhiteSpace(profile.Cep)
+            ? assembled
+            : string.IsNullOrWhiteSpace(assembled)
+                ? $"CEP {FormatCep(profile.Cep)}"
+                : $"{assembled}, CEP {FormatCep(profile.Cep)}";
+    }
+
+    private static string BuildClientProfileFullAddress(ClientProfile profile)
+    {
+        var parts = new List<string>();
+        var firstLine = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(profile.Street))
+        {
+            firstLine.Add(profile.Street.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Number))
+        {
+            firstLine.Add(profile.Number.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Complement))
+        {
+            firstLine.Add(profile.Complement.Trim());
+        }
+
+        if (firstLine.Count > 0)
+        {
+            parts.Add(string.Join(", ", firstLine));
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Neighborhood))
+        {
+            parts.Add(profile.Neighborhood.Trim());
+        }
+
+        var cityUf = BuildCityUf(profile.City, profile.State);
+        if (!string.IsNullOrWhiteSpace(cityUf))
+        {
+            parts.Add(cityUf);
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Cep))
+        {
+            parts.Add($"CEP {FormatCep(profile.Cep)}");
+        }
+
+        return string.Join(", ", parts.Where(x => !string.IsNullOrWhiteSpace(x)));
     }
 
     private static string BuildAddressFromCep(CepLookupResult lookup)

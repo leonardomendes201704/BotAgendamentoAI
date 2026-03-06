@@ -15,6 +15,13 @@ public static class BotStates
     public const string C_CONFIRM = "C_CONFIRM";
     public const string C_TRACKING = "C_TRACKING";
     public const string C_RATING = "C_RATING";
+    public const string C_REG_NAME = "C_REG_NAME";
+    public const string C_REG_EMAIL = "C_REG_EMAIL";
+    public const string C_REG_CPF = "C_REG_CPF";
+    public const string C_REG_CEP = "C_REG_CEP";
+    public const string C_REG_ADDRESS_NUMBER = "C_REG_ADDRESS_NUMBER";
+    public const string C_REG_ADDRESS_CONFIRM = "C_REG_ADDRESS_CONFIRM";
+    public const string C_REG_PHONE = "C_REG_PHONE";
 
     // Provider
     public const string P_HOME = "P_HOME";

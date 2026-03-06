@@ -38,6 +38,8 @@
             <tr>
                 <th>Nome</th>
                 <th>Contato</th>
+                <th>Cadastro</th>
+                <th>Endereco</th>
                 <th>Perfil</th>
                 <th>Status</th>
                 <th>Agendamentos</th>
@@ -49,7 +51,7 @@
             @if (Model.Clients.Count == 0)
             {
                 <tr>
-                    <td colspan="7" class="text-muted">Nenhum cliente encontrado para este tenant.</td>
+                    <td colspan="9" class="text-muted">Nenhum cliente encontrado para este tenant.</td>
                 </tr>
             }
             else
@@ -65,6 +67,19 @@
                             <div>@(string.IsNullOrWhiteSpace(item.Phone) ? "-" : item.Phone)</div>
                             <small class="text-muted">tg: @item.TelegramUserId</small>
                         </td>
+                        <td>
+                            <div>@(string.IsNullOrWhiteSpace(item.Email) ? "-" : item.Email)</div>
+                            <small class="text-muted">CPF: @(string.IsNullOrWhiteSpace(item.Cpf) ? "-" : item.Cpf)</small>
+                        </td>
+                        <td>
+                            <div>@(string.IsNullOrWhiteSpace(item.AddressSummary) ? "-" : item.AddressSummary)</div>
+                            <small class="text-muted">
+                                Lat/Lng:
+                                @((item.Latitude.HasValue && item.Longitude.HasValue)
+                                    ? $"{item.Latitude.Value:F6}, {item.Longitude.Value:F6}"
+                                    : "-")
+                            </small>
+                        </td>
                         <td>@RoleLabel(item.Role)</td>
                         <td>
                             @if (item.IsActive)
@@ -74,6 +89,15 @@
                             else
                             {
                                 <span class="badge bg-secondary">Inativo</span>
+                            }
+
+                            @if (item.IsRegistrationComplete)
+                            {
+                                <span class="badge bg-primary">Cadastrado</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-warning text-dark">Cadastro pendente</span>
                             }
                         </td>
                         <td>

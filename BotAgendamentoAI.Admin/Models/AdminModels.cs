@@ -127,6 +127,18 @@ public sealed class ClientListItem
     public string Name { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string Cpf { get; set; } = string.Empty;
+    public string Street { get; set; } = string.Empty;
+    public string Number { get; set; } = string.Empty;
+    public string Complement { get; set; } = string.Empty;
+    public string Neighborhood { get; set; } = string.Empty;
+    public string City { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string Cep { get; set; } = string.Empty;
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+    public bool IsRegistrationComplete { get; set; }
     public string Role { get; set; } = string.Empty;
     public bool IsActive { get; set; }
     public int TotalJobs { get; set; }
@@ -136,6 +148,53 @@ public sealed class ClientListItem
     public DateTimeOffset? LastJobAtUtc { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
+
+    public string AddressSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            var firstLine = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(Street))
+            {
+                firstLine.Add(Street.Trim());
+            }
+
+            if (!string.IsNullOrWhiteSpace(Number))
+            {
+                firstLine.Add(Number.Trim());
+            }
+
+            if (!string.IsNullOrWhiteSpace(Complement))
+            {
+                firstLine.Add(Complement.Trim());
+            }
+
+            if (firstLine.Count > 0)
+            {
+                parts.Add(string.Join(", ", firstLine));
+            }
+
+            if (!string.IsNullOrWhiteSpace(Neighborhood))
+            {
+                parts.Add(Neighborhood.Trim());
+            }
+
+            var cityUf = string.Join(" - ", new[] { City?.Trim() ?? string.Empty, State?.Trim() ?? string.Empty }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            if (!string.IsNullOrWhiteSpace(cityUf))
+            {
+                parts.Add(cityUf);
+            }
+
+            if (!string.IsNullOrWhiteSpace(Cep))
+            {
+                parts.Add($"CEP {Cep}");
+            }
+
+            return string.Join(", ", parts.Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
+    }
 }
 
 public sealed class ClientsPageViewModel

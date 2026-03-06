@@ -169,6 +169,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_tg_human_handoff_sessions_open_thread
 ON tg_human_handoff_sessions(tenant_id, telegram_user_id)
 WHERE is_open = 1;
 
+CREATE TABLE IF NOT EXISTS tg_client_profiles (
+  user_id INTEGER PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  full_name TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  cpf TEXT NOT NULL DEFAULT '',
+  street TEXT NOT NULL DEFAULT '',
+  number TEXT NOT NULL DEFAULT '',
+  complement TEXT NOT NULL DEFAULT '',
+  neighborhood TEXT NOT NULL DEFAULT '',
+  city TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  cep TEXT NOT NULL DEFAULT '',
+  latitude REAL NULL,
+  longitude REAL NULL,
+  is_address_confirmed INTEGER NOT NULL DEFAULT 0,
+  phone_number TEXT NOT NULL DEFAULT '',
+  is_registration_complete INTEGER NOT NULL DEFAULT 0,
+  created_at_utc TEXT NOT NULL DEFAULT '',
+  updated_at_utc TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS ix_tg_client_profiles_tenant_complete_updated
+ON tg_client_profiles(tenant_id, is_registration_complete, updated_at_utc DESC);
+
+CREATE INDEX IF NOT EXISTS ix_tg_client_profiles_tenant_cpf
+ON tg_client_profiles(tenant_id, cpf);
+
+CREATE INDEX IF NOT EXISTS ix_tg_client_profiles_tenant_phone
+ON tg_client_profiles(tenant_id, phone_number);
+
 CREATE TABLE IF NOT EXISTS tg_shared_settings (
   setting_key TEXT PRIMARY KEY,
   setting_value TEXT NOT NULL,
@@ -246,6 +277,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         await CollectFromTableAsync("tg_tenant_bot_config", "tenant_id");
         await CollectFromTableAsync("tg_tenant_telegram_config", "tenant_id");
         await CollectFromTableAsync("tg_tenant_google_calendar_config", "tenant_id");
+        await CollectFromTableAsync("tg_client_profiles", "tenant_id");
         await CollectFromTableAsync("tg_Users", "TenantId");
         await CollectFromTableAsync("tg_MessagesLog", "TenantId");
         await CollectFromTableAsync("tg_human_handoff_sessions", "tenant_id");
@@ -1704,6 +1736,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         var hasLegacyBookings = await TableExistsAsync(connection, "tg_bookings");
         var hasGeocodeCache = await TableExistsAsync(connection, "tg_booking_geocode_cache");
         var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
         var hasUsers = await TableExistsAsync(connection, "tg_Users");
         var hasGoogleCalendarConfig = await TableExistsAsync(connection, "tg_tenant_google_calendar_config");
         var defaultJobDurationMinutes = 60;
@@ -1928,6 +1961,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         }
 
         var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
 
         await using var command = connection.CreateCommand();
         command.CommandText = hasJobs
@@ -2024,6 +2058,76 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 CancelledJobs = reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13), CultureInfo.InvariantCulture),
                 LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(14) ? null : reader.GetString(14))
             });
+        }
+
+        if (hasClientProfiles && output.Count > 0)
+        {
+            var byId = output.ToDictionary(x => x.Id);
+            await using var profileCommand = connection.CreateCommand();
+            profileCommand.CommandText =
+                """
+                SELECT
+                  user_id,
+                  COALESCE(full_name, ''),
+                  COALESCE(email, ''),
+                  COALESCE(cpf, ''),
+                  COALESCE(street, ''),
+                  COALESCE(number, ''),
+                  COALESCE(complement, ''),
+                  COALESCE(neighborhood, ''),
+                  COALESCE(city, ''),
+                  COALESCE(state, ''),
+                  COALESCE(cep, ''),
+                  latitude,
+                  longitude,
+                  COALESCE(phone_number, ''),
+                  COALESCE(is_registration_complete, 0),
+                  updated_at_utc
+                FROM tg_client_profiles
+                WHERE tenant_id = @tenant_id;
+                """;
+            profileCommand.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var profileReader = await profileCommand.ExecuteReaderAsync();
+            while (await profileReader.ReadAsync())
+            {
+                var userId = profileReader.IsDBNull(0) ? 0L : profileReader.GetInt64(0);
+                if (!byId.TryGetValue(userId, out var item))
+                {
+                    continue;
+                }
+
+                var fullName = profileReader.IsDBNull(1) ? string.Empty : profileReader.GetString(1);
+                var phoneNumber = profileReader.IsDBNull(13) ? string.Empty : profileReader.GetString(13);
+                if (!string.IsNullOrWhiteSpace(fullName))
+                {
+                    item.Name = fullName;
+                }
+
+                if (!string.IsNullOrWhiteSpace(phoneNumber))
+                {
+                    item.Phone = phoneNumber;
+                }
+
+                item.Email = profileReader.IsDBNull(2) ? string.Empty : profileReader.GetString(2);
+                item.Cpf = profileReader.IsDBNull(3) ? string.Empty : profileReader.GetString(3);
+                item.Street = profileReader.IsDBNull(4) ? string.Empty : profileReader.GetString(4);
+                item.Number = profileReader.IsDBNull(5) ? string.Empty : profileReader.GetString(5);
+                item.Complement = profileReader.IsDBNull(6) ? string.Empty : profileReader.GetString(6);
+                item.Neighborhood = profileReader.IsDBNull(7) ? string.Empty : profileReader.GetString(7);
+                item.City = profileReader.IsDBNull(8) ? string.Empty : profileReader.GetString(8);
+                item.State = profileReader.IsDBNull(9) ? string.Empty : profileReader.GetString(9);
+                item.Cep = profileReader.IsDBNull(10) ? string.Empty : profileReader.GetString(10);
+                item.Latitude = profileReader.IsDBNull(11) ? null : profileReader.GetDouble(11);
+                item.Longitude = profileReader.IsDBNull(12) ? null : profileReader.GetDouble(12);
+                item.IsRegistrationComplete = !profileReader.IsDBNull(14) && Convert.ToInt32(profileReader.GetValue(14), CultureInfo.InvariantCulture) == 1;
+
+                var profileUpdatedAt = TryParseNullableUtc(profileReader.IsDBNull(15) ? null : profileReader.GetString(15));
+                if (profileUpdatedAt.HasValue && profileUpdatedAt.Value > item.UpdatedAtUtc)
+                {
+                    item.UpdatedAtUtc = profileUpdatedAt.Value;
+                }
+            }
         }
 
         return output;

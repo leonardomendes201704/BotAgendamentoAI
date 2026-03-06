@@ -232,6 +232,50 @@ BEGIN
     WHERE is_open = 1;
 END;
 
+IF OBJECT_ID(N'dbo.tg_client_profiles', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_client_profiles
+    (
+        user_id BIGINT NOT NULL CONSTRAINT PK_tg_client_profiles_admin PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        full_name NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_full_name DEFAULT(N''),
+        email NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_email DEFAULT(N''),
+        cpf NVARCHAR(16) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_cpf DEFAULT(N''),
+        street NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_street DEFAULT(N''),
+        number NVARCHAR(32) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_number DEFAULT(N''),
+        complement NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_complement DEFAULT(N''),
+        neighborhood NVARCHAR(120) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_neighborhood DEFAULT(N''),
+        city NVARCHAR(120) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_city DEFAULT(N''),
+        state NVARCHAR(2) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_state DEFAULT(N''),
+        cep NVARCHAR(8) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_cep DEFAULT(N''),
+        latitude FLOAT NULL,
+        longitude FLOAT NULL,
+        is_address_confirmed BIT NOT NULL CONSTRAINT DF_tg_client_profiles_admin_is_address_confirmed DEFAULT(0),
+        phone_number NVARCHAR(32) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_phone_number DEFAULT(N''),
+        is_registration_complete BIT NOT NULL CONSTRAINT DF_tg_client_profiles_admin_is_registration_complete DEFAULT(0),
+        created_at_utc NVARCHAR(64) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_created_at DEFAULT(N''),
+        updated_at_utc NVARCHAR(64) NOT NULL CONSTRAINT DF_tg_client_profiles_admin_updated_at DEFAULT(N'')
+    );
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_client_profiles_tenant_complete_updated' AND object_id = OBJECT_ID(N'dbo.tg_client_profiles'))
+BEGIN
+    CREATE INDEX ix_tg_client_profiles_tenant_complete_updated
+    ON dbo.tg_client_profiles(tenant_id, is_registration_complete, updated_at_utc DESC);
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_client_profiles_tenant_cpf' AND object_id = OBJECT_ID(N'dbo.tg_client_profiles'))
+BEGIN
+    CREATE INDEX ix_tg_client_profiles_tenant_cpf
+    ON dbo.tg_client_profiles(tenant_id, cpf);
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_client_profiles_tenant_phone' AND object_id = OBJECT_ID(N'dbo.tg_client_profiles'))
+BEGIN
+    CREATE INDEX ix_tg_client_profiles_tenant_phone
+    ON dbo.tg_client_profiles(tenant_id, phone_number);
+END;
+
 IF OBJECT_ID(N'dbo.tg_shared_settings', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.tg_shared_settings
@@ -309,6 +353,7 @@ END;
         await CollectFromTableAsync("tg_tenant_bot_config", "tenant_id");
         await CollectFromTableAsync("tg_tenant_telegram_config", "tenant_id");
         await CollectFromTableAsync("tg_tenant_google_calendar_config", "tenant_id");
+        await CollectFromTableAsync("tg_client_profiles", "tenant_id");
         await CollectFromTableAsync("tg_Users", "TenantId");
         await CollectFromTableAsync("tg_MessagesLog", "TenantId");
         await CollectFromTableAsync("tg_human_handoff_sessions", "tenant_id");
@@ -1967,6 +2012,7 @@ END;
         }
 
         var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
 
         await using var command = connection.CreateCommand();
         command.CommandText = hasJobs
@@ -2061,6 +2107,76 @@ END;
                 CancelledJobs = reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13), CultureInfo.InvariantCulture),
                 LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(14) ? null : reader.GetValue(14))
             });
+        }
+
+        if (hasClientProfiles && output.Count > 0)
+        {
+            var byId = output.ToDictionary(x => x.Id);
+            await using var profileCommand = connection.CreateCommand();
+            profileCommand.CommandText =
+                """
+                SELECT
+                  user_id,
+                  COALESCE(full_name, ''),
+                  COALESCE(email, ''),
+                  COALESCE(cpf, ''),
+                  COALESCE(street, ''),
+                  COALESCE(number, ''),
+                  COALESCE(complement, ''),
+                  COALESCE(neighborhood, ''),
+                  COALESCE(city, ''),
+                  COALESCE(state, ''),
+                  COALESCE(cep, ''),
+                  latitude,
+                  longitude,
+                  COALESCE(phone_number, ''),
+                  COALESCE(is_registration_complete, 0),
+                  updated_at_utc
+                FROM tg_client_profiles
+                WHERE tenant_id = @tenant_id;
+                """;
+            profileCommand.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var profileReader = await profileCommand.ExecuteReaderAsync();
+            while (await profileReader.ReadAsync())
+            {
+                var userId = profileReader.IsDBNull(0) ? 0L : profileReader.GetInt64(0);
+                if (!byId.TryGetValue(userId, out var item))
+                {
+                    continue;
+                }
+
+                var fullName = profileReader.IsDBNull(1) ? string.Empty : profileReader.GetString(1);
+                var phoneNumber = profileReader.IsDBNull(13) ? string.Empty : profileReader.GetString(13);
+                if (!string.IsNullOrWhiteSpace(fullName))
+                {
+                    item.Name = fullName;
+                }
+
+                if (!string.IsNullOrWhiteSpace(phoneNumber))
+                {
+                    item.Phone = phoneNumber;
+                }
+
+                item.Email = profileReader.IsDBNull(2) ? string.Empty : profileReader.GetString(2);
+                item.Cpf = profileReader.IsDBNull(3) ? string.Empty : profileReader.GetString(3);
+                item.Street = profileReader.IsDBNull(4) ? string.Empty : profileReader.GetString(4);
+                item.Number = profileReader.IsDBNull(5) ? string.Empty : profileReader.GetString(5);
+                item.Complement = profileReader.IsDBNull(6) ? string.Empty : profileReader.GetString(6);
+                item.Neighborhood = profileReader.IsDBNull(7) ? string.Empty : profileReader.GetString(7);
+                item.City = profileReader.IsDBNull(8) ? string.Empty : profileReader.GetString(8);
+                item.State = profileReader.IsDBNull(9) ? string.Empty : profileReader.GetString(9);
+                item.Cep = profileReader.IsDBNull(10) ? string.Empty : profileReader.GetString(10);
+                item.Latitude = profileReader.IsDBNull(11) ? null : profileReader.GetDouble(11);
+                item.Longitude = profileReader.IsDBNull(12) ? null : profileReader.GetDouble(12);
+                item.IsRegistrationComplete = !profileReader.IsDBNull(14) && Convert.ToInt32(profileReader.GetValue(14), CultureInfo.InvariantCulture) == 1;
+
+                var profileUpdatedAt = TryParseNullableUtc(profileReader.IsDBNull(15) ? null : profileReader.GetValue(15));
+                if (profileUpdatedAt.HasValue && profileUpdatedAt.Value > item.UpdatedAtUtc)
+                {
+                    item.UpdatedAtUtc = profileUpdatedAt.Value;
+                }
+            }
         }
 
         return output;
@@ -2311,6 +2427,7 @@ END;
 
         var hasProviderProfiles = await TableExistsAsync(connection, "tg_ProvidersProfile");
         var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
         var hasGeocodeCache = hasJobs && await TableExistsAsync(connection, "tg_booking_geocode_cache");
 
         await using (var providerCommand = connection.CreateCommand())

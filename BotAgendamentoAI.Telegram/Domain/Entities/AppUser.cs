@@ -15,6 +15,7 @@ public sealed class AppUser
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 
+    public ClientProfile? ClientProfile { get; set; }
     public ProviderProfile? ProviderProfile { get; set; }
     public UserSession? Session { get; set; }
     public ICollection<Job> ClientJobs { get; set; } = new List<Job>();

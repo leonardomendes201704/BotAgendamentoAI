@@ -84,6 +84,7 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider, bool 
     {
         await db.Database.EnsureCreatedAsync();
         await EnsureCoreTablesSqlServer(db);
+        await EnsureClientProfilesTableSqlServer(db);
         await EnsureSharedTablesSqlServer(db);
         await EnsureGoogleCalendarTablesSqlServer(db);
         await EnsureExceptionLogsTableSqlServer(db);
@@ -93,11 +94,129 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider, bool 
     }
 
     await db.Database.MigrateAsync();
+    await EnsureClientProfilesTable(db);
     await EnsureGoogleCalendarTables(db);
     await EnsureExceptionLogsTable(db);
     await EnsureProviderJobRejectionsTable(db);
     await EnsureHumanHandoffTable(db);
     await EnsureJobContactColumns(db);
+}
+
+static async Task EnsureClientProfilesTable(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS tg_client_profiles
+    (
+        user_id INTEGER PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        full_name TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '',
+        cpf TEXT NOT NULL DEFAULT '',
+        street TEXT NOT NULL DEFAULT '',
+        number TEXT NOT NULL DEFAULT '',
+        complement TEXT NOT NULL DEFAULT '',
+        neighborhood TEXT NOT NULL DEFAULT '',
+        city TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL DEFAULT '',
+        cep TEXT NOT NULL DEFAULT '',
+        latitude REAL NULL,
+        longitude REAL NULL,
+        is_address_confirmed INTEGER NOT NULL DEFAULT 0,
+        phone_number TEXT NOT NULL DEFAULT '',
+        is_registration_complete INTEGER NOT NULL DEFAULT 0,
+        created_at_utc TEXT NOT NULL,
+        updated_at_utc TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES tg_Users(Id) ON DELETE CASCADE
+    );
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_tg_client_profiles_tenant_complete_updated
+    ON tg_client_profiles (tenant_id, is_registration_complete, updated_at_utc DESC);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_tg_client_profiles_tenant_cpf
+    ON tg_client_profiles (tenant_id, cpf);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_tg_client_profiles_tenant_phone
+    ON tg_client_profiles (tenant_id, phone_number);
+    """);
+
+    await EnsureColumnAsync(db, "tg_client_profiles", "is_address_confirmed", "INTEGER NOT NULL DEFAULT 0");
+}
+
+static async Task EnsureClientProfilesTableSqlServer(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF OBJECT_ID(N'dbo.tg_client_profiles', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.tg_client_profiles
+        (
+            user_id BIGINT NOT NULL CONSTRAINT PK_tg_client_profiles PRIMARY KEY,
+            tenant_id NVARCHAR(32) NOT NULL,
+            full_name NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_full_name DEFAULT(N''),
+            email NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_email DEFAULT(N''),
+            cpf NVARCHAR(16) NOT NULL CONSTRAINT DF_tg_client_profiles_cpf DEFAULT(N''),
+            street NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_street DEFAULT(N''),
+            number NVARCHAR(32) NOT NULL CONSTRAINT DF_tg_client_profiles_number DEFAULT(N''),
+            complement NVARCHAR(160) NOT NULL CONSTRAINT DF_tg_client_profiles_complement DEFAULT(N''),
+            neighborhood NVARCHAR(120) NOT NULL CONSTRAINT DF_tg_client_profiles_neighborhood DEFAULT(N''),
+            city NVARCHAR(120) NOT NULL CONSTRAINT DF_tg_client_profiles_city DEFAULT(N''),
+            state NVARCHAR(2) NOT NULL CONSTRAINT DF_tg_client_profiles_state DEFAULT(N''),
+            cep NVARCHAR(8) NOT NULL CONSTRAINT DF_tg_client_profiles_cep DEFAULT(N''),
+            latitude FLOAT NULL,
+            longitude FLOAT NULL,
+            is_address_confirmed BIT NOT NULL CONSTRAINT DF_tg_client_profiles_is_address_confirmed DEFAULT(0),
+            phone_number NVARCHAR(32) NOT NULL CONSTRAINT DF_tg_client_profiles_phone_number DEFAULT(N''),
+            is_registration_complete BIT NOT NULL CONSTRAINT DF_tg_client_profiles_is_registration_complete DEFAULT(0),
+            created_at_utc NVARCHAR(64) NOT NULL,
+            updated_at_utc NVARCHAR(64) NOT NULL,
+            CONSTRAINT FK_tg_client_profiles_tg_Users_user_id
+                FOREIGN KEY (user_id) REFERENCES dbo.tg_Users (Id) ON DELETE CASCADE
+        );
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_client_profiles_tenant_complete_updated' AND object_id = OBJECT_ID(N'dbo.tg_client_profiles'))
+    BEGIN
+        CREATE INDEX ix_tg_client_profiles_tenant_complete_updated
+        ON dbo.tg_client_profiles (tenant_id, is_registration_complete, updated_at_utc DESC);
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_client_profiles_tenant_cpf' AND object_id = OBJECT_ID(N'dbo.tg_client_profiles'))
+    BEGIN
+        CREATE INDEX ix_tg_client_profiles_tenant_cpf
+        ON dbo.tg_client_profiles (tenant_id, cpf);
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_client_profiles_tenant_phone' AND object_id = OBJECT_ID(N'dbo.tg_client_profiles'))
+    BEGIN
+        CREATE INDEX ix_tg_client_profiles_tenant_phone
+        ON dbo.tg_client_profiles (tenant_id, phone_number);
+    END;
+    """);
+
+    await EnsureColumnSqlServer(
+        db,
+        "tg_client_profiles",
+        "is_address_confirmed",
+        "BIT NOT NULL CONSTRAINT DF_tg_client_profiles_is_address_confirmed2 DEFAULT(0) WITH VALUES");
 }
 
 static async Task EnsureGoogleCalendarTables(BotDbContext db)

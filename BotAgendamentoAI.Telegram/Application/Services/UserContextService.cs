@@ -26,6 +26,7 @@ public sealed class UserContextService
         var tgId = from.Id;
 
         var user = await db.Users
+            .Include(x => x.ClientProfile)
             .Include(x => x.ProviderProfile)
             .Include(x => x.Session)
             .FirstOrDefaultAsync(
@@ -62,9 +63,13 @@ public sealed class UserContextService
         }
 
         var changed = false;
-        if (!string.Equals(user.Name, displayName, StringComparison.Ordinal))
+        var preferredName = string.IsNullOrWhiteSpace(user.ClientProfile?.FullName)
+            ? displayName
+            : user.ClientProfile!.FullName.Trim();
+
+        if (!string.Equals(user.Name, preferredName, StringComparison.Ordinal))
         {
-            user.Name = displayName;
+            user.Name = preferredName;
             changed = true;
         }
 
