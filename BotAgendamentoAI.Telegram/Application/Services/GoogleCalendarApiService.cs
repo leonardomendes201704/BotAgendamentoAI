@@ -101,6 +101,7 @@ public sealed class GoogleCalendarApiService
             Summary = string.IsNullOrWhiteSpace(payload.Title) ? "Agendamento" : payload.Title,
             Description = payload.Description ?? string.Empty,
             Location = payload.Location ?? string.Empty,
+            ColorId = payload.ColorId,
             Start = new EventDateTime
             {
                 DateTimeRaw = payload.StartLocal.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture),
@@ -131,6 +132,7 @@ public sealed class GoogleCalendarEventPayload
     public string Title { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
+    public string ColorId { get; set; } = string.Empty;
     public DateTimeOffset StartLocal { get; set; }
     public DateTimeOffset EndLocal { get; set; }
 }

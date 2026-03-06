@@ -178,10 +178,21 @@ public static class KeyboardFactory
 
     public static InlineKeyboardMarkup DaySelection(DateTimeOffset nowLocal)
     {
-        var rows = new List<InlineKeyboardButton[]>();
+        var days = new List<DateTime>();
         for (var i = 0; i < 7; i++)
         {
-            var date = nowLocal.Date.AddDays(i);
+            days.Add(nowLocal.Date.AddDays(i));
+        }
+
+        return DaySelection(days);
+    }
+
+    public static InlineKeyboardMarkup DaySelection(IReadOnlyList<DateTime> days)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+        foreach (var day in days)
+        {
+            var date = day.Date;
             rows.Add(new[]
             {
                 InlineKeyboardButton.WithCallbackData(date.ToString("dd/MM (ddd)"), $"C:DAY:{date:yyyyMMdd}")
@@ -194,13 +205,25 @@ public static class KeyboardFactory
 
     public static InlineKeyboardMarkup TimeSelection(string yyyymmdd)
     {
-        var slots = new[] { "08:00", "10:00", "13:00", "15:00", "18:00" };
+        var slots = new[] { "0800", "1000", "1300", "1500", "1800" };
+        return TimeSelection(yyyymmdd, slots);
+    }
+
+    public static InlineKeyboardMarkup TimeSelection(string yyyymmdd, IReadOnlyList<string> hhmmSlots)
+    {
         var rows = new List<InlineKeyboardButton[]>();
-        foreach (var slot in slots)
+        foreach (var slot in hhmmSlots)
         {
+            var digits = new string((slot ?? string.Empty).Where(char.IsDigit).ToArray());
+            if (digits.Length != 4)
+            {
+                continue;
+            }
+
+            var label = $"{digits[..2]}:{digits[2..]}";
             rows.Add(new[]
             {
-                InlineKeyboardButton.WithCallbackData(slot, $"C:TIM:{yyyymmdd}:{slot.Replace(":", string.Empty)}")
+                InlineKeyboardButton.WithCallbackData(label, $"C:TIM:{yyyymmdd}:{digits}")
             });
         }
 
@@ -304,10 +327,21 @@ public static class KeyboardFactory
 
     public static InlineKeyboardMarkup ClientRescheduleDaySelection(long jobId, DateTimeOffset nowLocal)
     {
-        var rows = new List<InlineKeyboardButton[]>();
+        var days = new List<DateTime>();
         for (var i = 0; i < 7; i++)
         {
-            var date = nowLocal.Date.AddDays(i);
+            days.Add(nowLocal.Date.AddDays(i));
+        }
+
+        return ClientRescheduleDaySelection(jobId, days);
+    }
+
+    public static InlineKeyboardMarkup ClientRescheduleDaySelection(long jobId, IReadOnlyList<DateTime> days)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+        foreach (var day in days)
+        {
+            var date = day.Date;
             rows.Add(new[]
             {
                 InlineKeyboardButton.WithCallbackData(date.ToString("dd/MM (ddd)"), $"J:{jobId}:RS:DAY:{date:yyyyMMdd}")
@@ -320,13 +354,25 @@ public static class KeyboardFactory
 
     public static InlineKeyboardMarkup ClientRescheduleTimeSelection(long jobId, string yyyymmdd)
     {
-        var slots = new[] { "08:00", "10:00", "13:00", "15:00", "18:00" };
+        var slots = new[] { "0800", "1000", "1300", "1500", "1800" };
+        return ClientRescheduleTimeSelection(jobId, yyyymmdd, slots);
+    }
+
+    public static InlineKeyboardMarkup ClientRescheduleTimeSelection(long jobId, string yyyymmdd, IReadOnlyList<string> hhmmSlots)
+    {
         var rows = new List<InlineKeyboardButton[]>();
-        foreach (var slot in slots)
+        foreach (var slot in hhmmSlots)
         {
+            var digits = new string((slot ?? string.Empty).Where(char.IsDigit).ToArray());
+            if (digits.Length != 4)
+            {
+                continue;
+            }
+
+            var label = $"{digits[..2]}:{digits[2..]}";
             rows.Add(new[]
             {
-                InlineKeyboardButton.WithCallbackData(slot, $"J:{jobId}:RS:TIM:{yyyymmdd}{slot.Replace(":", string.Empty)}")
+                InlineKeyboardButton.WithCallbackData(label, $"J:{jobId}:RS:TIM:{yyyymmdd}{digits}")
             });
         }
 

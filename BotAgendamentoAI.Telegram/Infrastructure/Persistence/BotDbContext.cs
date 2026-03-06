@@ -226,6 +226,11 @@ public sealed class BotDbContext : DbContext
             entity.Property(x => x.ServiceAccountJson).HasColumnName("service_account_json");
             entity.Property(x => x.TimeZoneId).HasColumnName("time_zone_id");
             entity.Property(x => x.DefaultDurationMinutes).HasColumnName("default_duration_minutes");
+            entity.Property(x => x.AvailabilityWindowDays).HasColumnName("availability_window_days");
+            entity.Property(x => x.AvailabilitySlotIntervalMinutes).HasColumnName("availability_slot_interval_minutes");
+            entity.Property(x => x.AvailabilityWorkdayStartHour).HasColumnName("availability_workday_start_hour");
+            entity.Property(x => x.AvailabilityWorkdayEndHour).HasColumnName("availability_workday_end_hour");
+            entity.Property(x => x.AvailabilityTodayLeadMinutes).HasColumnName("availability_today_lead_minutes");
             entity.Property(x => x.MaxAttempts).HasColumnName("max_attempts");
             entity.Property(x => x.RetryBaseSeconds).HasColumnName("retry_base_seconds");
             entity.Property(x => x.RetryMaxSeconds).HasColumnName("retry_max_seconds");

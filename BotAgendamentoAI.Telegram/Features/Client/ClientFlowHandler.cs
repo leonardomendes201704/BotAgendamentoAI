@@ -29,6 +29,7 @@ public sealed class ClientFlowHandler
     private readonly BotExceptionLogService _exceptionLog;
     private readonly ILogger<ClientFlowHandler> _logger;
     private readonly CalendarSyncQueueService? _calendarQueue;
+    private readonly AvailabilityService? _availability;
 
     public ClientFlowHandler(
         TelegramMessageSender sender,
@@ -36,7 +37,8 @@ public sealed class ClientFlowHandler
         IPhotoValidator photoValidator,
         BotExceptionLogService exceptionLog,
         ILogger<ClientFlowHandler> logger,
-        CalendarSyncQueueService? calendarQueue = null)
+        CalendarSyncQueueService? calendarQueue = null,
+        AvailabilityService? availability = null)
     {
         _sender = sender;
         _jobWorkflow = jobWorkflow;
@@ -44,6 +46,7 @@ public sealed class ClientFlowHandler
         _exceptionLog = exceptionLog;
         _logger = logger;
         _calendarQueue = calendarQueue;
+        _availability = availability;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -451,6 +454,36 @@ public sealed class ClientFlowHandler
         {
             if (route.Arg1 == "URG")
             {
+                if (_availability is not null)
+                {
+                    var request = await BuildAvailabilityRequestAsync(
+                        context,
+                        context.User.Id,
+                        null,
+                        null,
+                        false,
+                        cancellationToken);
+                    var check = await _availability.CheckSlotAvailabilityAsync(
+                        context.Db,
+                        request,
+                        DateTimeOffset.UtcNow,
+                        cancellationToken);
+                    if (!check.IsAvailable)
+                    {
+                        await _sender.SendTextAsync(
+                            context.Db,
+                            context.Bot,
+                            context.TenantId,
+                            context.User.TelegramUserId,
+                            chatId,
+                            "Voce ja possui um agendamento no periodo atual. Escolha outro horario em 'Agendar'.",
+                            KeyboardFactory.ScheduleMode(),
+                            context.Session.ActiveJobId,
+                            cancellationToken);
+                        return true;
+                    }
+                }
+
                 context.Draft.IsUrgent = true;
                 context.Draft.ScheduledAt = DateTimeOffset.UtcNow;
                 UserContextService.SaveDraft(context.Session, context.Draft);
@@ -473,9 +506,62 @@ public sealed class ClientFlowHandler
 
             if (route.Arg1 == "TOD")
             {
-                var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
-                context.Draft.IsUrgent = false;
-                context.Draft.ScheduledAt = nowLocal.Date.AddHours(Math.Max(nowLocal.Hour + 1, 9));
+                if (_availability is not null)
+                {
+                    var request = await BuildAvailabilityRequestAsync(
+                        context,
+                        context.User.Id,
+                        null,
+                        null,
+                        true,
+                        cancellationToken);
+                    var nowLocal = request.NowLocal;
+                    var dayToken = nowLocal.ToString("yyyyMMdd");
+                    var slots = await _availability.GetAvailableTimeSlotsAsync(
+                        context.Db,
+                        request,
+                        dayToken,
+                        cancellationToken);
+                    if (slots.Count == 0)
+                    {
+                        await _sender.SendTextAsync(
+                            context.Db,
+                            context.Bot,
+                            context.TenantId,
+                            context.User.TelegramUserId,
+                            chatId,
+                            "Nao encontrei horarios livres para hoje. Escolha 'Agendar' para ver os proximos dias.",
+                            KeyboardFactory.ScheduleMode(),
+                            context.Session.ActiveJobId,
+                            cancellationToken);
+                        return true;
+                    }
+
+                    var firstSlot = slots[0];
+                    if (!TryParseSchedule(dayToken, firstSlot, context.Runtime.TimeZone, out var scheduleToday))
+                    {
+                        await _sender.SendTextAsync(
+                            context.Db,
+                            context.Bot,
+                            context.TenantId,
+                            context.User.TelegramUserId,
+                            chatId,
+                            "Nao consegui montar um horario disponivel para hoje. Tente Agendar.",
+                            KeyboardFactory.ScheduleMode(),
+                            context.Session.ActiveJobId,
+                            cancellationToken);
+                        return true;
+                    }
+
+                    context.Draft.IsUrgent = false;
+                    context.Draft.ScheduledAt = scheduleToday;
+                }
+                else
+                {
+                    var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
+                    context.Draft.IsUrgent = false;
+                    context.Draft.ScheduledAt = nowLocal.Date.AddHours(Math.Max(nowLocal.Hour + 1, 9));
+                }
 
                 UserContextService.SaveDraft(context.Session, context.Draft);
                 UserContextService.SetState(context.Session, BotStates.C_PREFERENCES);
@@ -498,6 +584,39 @@ public sealed class ClientFlowHandler
             if (route.Arg1 == "CAL")
             {
                 var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
+                InlineKeyboardMarkup dayKeyboard;
+                if (_availability is not null)
+                {
+                    var request = await BuildAvailabilityRequestAsync(
+                        context,
+                        context.User.Id,
+                        null,
+                        null,
+                        true,
+                        cancellationToken);
+                    var days = await _availability.GetAvailableDaysAsync(context.Db, request, cancellationToken);
+                    if (days.Count == 0)
+                    {
+                        await _sender.SendTextAsync(
+                            context.Db,
+                            context.Bot,
+                            context.TenantId,
+                            context.User.TelegramUserId,
+                            chatId,
+                            "Nao ha horarios disponiveis para os proximos dias. Tente novamente mais tarde.",
+                            KeyboardFactory.ScheduleMode(),
+                            context.Session.ActiveJobId,
+                            cancellationToken);
+                        return true;
+                    }
+
+                    dayKeyboard = KeyboardFactory.DaySelection(days);
+                }
+                else
+                {
+                    dayKeyboard = KeyboardFactory.DaySelection(nowLocal);
+                }
+
                 await _sender.SendTextAsync(
                     context.Db,
                     context.Bot,
@@ -505,7 +624,7 @@ public sealed class ClientFlowHandler
                     context.User.TelegramUserId,
                     chatId,
                     "Selecione o dia:",
-                    KeyboardFactory.DaySelection(nowLocal),
+                    dayKeyboard,
                     context.Session.ActiveJobId,
                     cancellationToken);
 
@@ -515,6 +634,63 @@ public sealed class ClientFlowHandler
 
         if (route.Scope == "C" && route.Action == "DAY")
         {
+            if (_availability is not null)
+            {
+                if (!AvailabilityService.TryParseDayToken(route.Arg1, out _))
+                {
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        "Dia invalido. Selecione novamente.",
+                        KeyboardFactory.ScheduleMode(),
+                        context.Session.ActiveJobId,
+                        cancellationToken);
+                    return true;
+                }
+
+                var request = await BuildAvailabilityRequestAsync(
+                    context,
+                    context.User.Id,
+                    null,
+                    null,
+                    true,
+                    cancellationToken);
+                var slots = await _availability.GetAvailableTimeSlotsAsync(
+                    context.Db,
+                    request,
+                    route.Arg1,
+                    cancellationToken);
+                if (slots.Count == 0)
+                {
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        "Esse dia ficou sem horarios livres. Escolha outro dia.",
+                        KeyboardFactory.ScheduleMode(),
+                        context.Session.ActiveJobId,
+                        cancellationToken);
+                    return true;
+                }
+
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    chatId,
+                    "Agora selecione o horario:",
+                    KeyboardFactory.TimeSelection(route.Arg1, slots),
+                    context.Session.ActiveJobId,
+                    cancellationToken);
+                return true;
+            }
+
             await _sender.SendTextAsync(
                 context.Db,
                 context.Bot,
@@ -534,6 +710,44 @@ public sealed class ClientFlowHandler
             if (!TryParseSchedule(route.Arg1, route.Arg2, context.Runtime.TimeZone, out var scheduledAt))
             {
                 return true;
+            }
+
+            if (_availability is not null)
+            {
+                var request = await BuildAvailabilityRequestAsync(
+                    context,
+                    context.User.Id,
+                    null,
+                    null,
+                    true,
+                    cancellationToken);
+                var check = await _availability.CheckSlotAvailabilityAsync(
+                    context.Db,
+                    request,
+                    scheduledAt,
+                    cancellationToken);
+                if (!check.IsAvailable)
+                {
+                    var slots = await _availability.GetAvailableTimeSlotsAsync(
+                        context.Db,
+                        request,
+                        route.Arg1,
+                        cancellationToken);
+                    var keyboard = slots.Count > 0
+                        ? KeyboardFactory.TimeSelection(route.Arg1, slots)
+                        : KeyboardFactory.ScheduleMode();
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        "Esse horario ficou indisponivel. Escolha outro horario.",
+                        keyboard,
+                        context.Session.ActiveJobId,
+                        cancellationToken);
+                    return true;
+                }
             }
 
             context.Draft.IsUrgent = false;
@@ -594,6 +808,39 @@ public sealed class ClientFlowHandler
 
             if (route.Arg1 == "OK")
             {
+                if (_availability is not null && context.Draft.ScheduledAt.HasValue)
+                {
+                    var request = await BuildAvailabilityRequestAsync(
+                        context,
+                        context.User.Id,
+                        null,
+                        null,
+                        false,
+                        cancellationToken);
+                    var check = await _availability.CheckSlotAvailabilityAsync(
+                        context.Db,
+                        request,
+                        context.Draft.ScheduledAt.Value,
+                        cancellationToken);
+                    if (!check.IsAvailable)
+                    {
+                        UserContextService.SetState(context.Session, BotStates.C_SCHEDULE);
+                        await context.Db.SaveChangesAsync(cancellationToken);
+
+                        await _sender.SendTextAsync(
+                            context.Db,
+                            context.Bot,
+                            context.TenantId,
+                            context.User.TelegramUserId,
+                            chatId,
+                            "Esse horario acabou de ficar indisponivel. Escolha outro horario.",
+                            KeyboardFactory.ScheduleMode(),
+                            context.Session.ActiveJobId,
+                            cancellationToken);
+                        return true;
+                    }
+                }
+
                 if (context.Runtime.EnablePhotoValidation)
                 {
                     var validation = await _photoValidator.ValidateAsync(
@@ -620,7 +867,28 @@ public sealed class ClientFlowHandler
                     }
                 }
 
-                var job = await _jobWorkflow.ConfirmDraftAsync(context, chatId, cancellationToken);
+                Job job;
+                try
+                {
+                    job = await _jobWorkflow.ConfirmDraftAsync(context, chatId, cancellationToken);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        ex.Message,
+                        KeyboardFactory.ScheduleMode(),
+                        context.Session.ActiveJobId,
+                        cancellationToken);
+                    UserContextService.SetState(context.Session, BotStates.C_SCHEDULE);
+                    await context.Db.SaveChangesAsync(cancellationToken);
+                    return true;
+                }
+
                 context.Session.ActiveJobId = job.Id;
                 context.Session.State = BotStates.C_TRACKING;
                 context.Session.DraftJson = "{}";
@@ -1346,6 +1614,31 @@ public sealed class ClientFlowHandler
             cancellationToken);
     }
 
+    private async Task<AvailabilityRequest> BuildAvailabilityRequestAsync(
+        BotExecutionContext context,
+        long clientUserId,
+        long? providerUserId,
+        long? excludeJobId,
+        bool requireFutureSlotsOnly,
+        CancellationToken cancellationToken)
+    {
+        var rules = _availability is null
+            ? AvailabilityRules.Default
+            : await _availability.GetRulesAsync(context.Db, context.TenantId, cancellationToken);
+
+        return new AvailabilityRequest
+        {
+            TenantId = context.TenantId,
+            ClientUserId = clientUserId,
+            ProviderUserId = providerUserId,
+            ExcludeJobId = excludeJobId,
+            Rules = rules,
+            TimeZone = context.Runtime.TimeZone,
+            NowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone),
+            RequireFutureSlotsOnly = requireFutureSlotsOnly
+        };
+    }
+
     private static bool IsCepOnlyInput(string text)
     {
         var safe = (text ?? string.Empty).Trim();
@@ -1852,7 +2145,40 @@ public sealed class ClientFlowHandler
 
         if (route.Arg2 == "CAL")
         {
-            var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
+            InlineKeyboardMarkup dayKeyboard;
+            if (_availability is not null)
+            {
+                var request = await BuildAvailabilityRequestAsync(
+                    context,
+                    context.User.Id,
+                    job.ProviderUserId,
+                    job.Id,
+                    true,
+                    cancellationToken);
+                var days = await _availability.GetAvailableDaysAsync(context.Db, request, cancellationToken);
+                if (days.Count == 0)
+                {
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        "Nao ha horarios disponiveis para reagendamento nos proximos dias.",
+                        KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                        job.Id,
+                        cancellationToken);
+                    return;
+                }
+
+                dayKeyboard = KeyboardFactory.ClientRescheduleDaySelection(job.Id, days);
+            }
+            else
+            {
+                var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
+                dayKeyboard = KeyboardFactory.ClientRescheduleDaySelection(job.Id, nowLocal);
+            }
+
             await _sender.SendTextAsync(
                 context.Db,
                 context.Bot,
@@ -1860,7 +2186,7 @@ public sealed class ClientFlowHandler
                 context.User.TelegramUserId,
                 chatId,
                 $"Selecione o novo dia para o agendamento #{job.Id}:",
-                KeyboardFactory.ClientRescheduleDaySelection(job.Id, nowLocal),
+                dayKeyboard,
                 job.Id,
                 cancellationToken);
             return;
@@ -1879,6 +2205,48 @@ public sealed class ClientFlowHandler
                     chatId,
                     "Dia invalido para reagendamento.",
                     KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                    job.Id,
+                    cancellationToken);
+                return;
+            }
+
+            if (_availability is not null)
+            {
+                var request = await BuildAvailabilityRequestAsync(
+                    context,
+                    context.User.Id,
+                    job.ProviderUserId,
+                    job.Id,
+                    true,
+                    cancellationToken);
+                var slots = await _availability.GetAvailableTimeSlotsAsync(
+                    context.Db,
+                    request,
+                    dayToken,
+                    cancellationToken);
+                if (slots.Count == 0)
+                {
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        "Esse dia esta sem horarios livres para reagendamento.",
+                        KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                        job.Id,
+                        cancellationToken);
+                    return;
+                }
+
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    chatId,
+                    $"Agora selecione o novo horario para o agendamento #{job.Id}:",
+                    KeyboardFactory.ClientRescheduleTimeSelection(job.Id, dayToken, slots),
                     job.Id,
                     cancellationToken);
                 return;
@@ -1931,6 +2299,44 @@ public sealed class ClientFlowHandler
                     job.Id,
                     cancellationToken);
                 return;
+            }
+
+            if (_availability is not null)
+            {
+                var request = await BuildAvailabilityRequestAsync(
+                    context,
+                    context.User.Id,
+                    job.ProviderUserId,
+                    job.Id,
+                    true,
+                    cancellationToken);
+                var check = await _availability.CheckSlotAvailabilityAsync(
+                    context.Db,
+                    request,
+                    scheduledAt,
+                    cancellationToken);
+                if (!check.IsAvailable)
+                {
+                    var slots = await _availability.GetAvailableTimeSlotsAsync(
+                        context.Db,
+                        request,
+                        yyyymmdd,
+                        cancellationToken);
+                    var keyboard = slots.Count > 0
+                        ? KeyboardFactory.ClientRescheduleTimeSelection(job.Id, yyyymmdd, slots)
+                        : KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both);
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
+                        chatId,
+                        "Esse horario nao esta mais disponivel para reagendamento.",
+                        keyboard,
+                        job.Id,
+                        cancellationToken);
+                    return;
+                }
             }
 
             job.IsUrgent = false;

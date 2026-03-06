@@ -14,11 +14,16 @@ public sealed class JobWorkflowService
     private static readonly Regex CepRegex = new(@"\b\d{5}-?\d{3}\b", RegexOptions.Compiled);
     private readonly TelegramMessageSender _sender;
     private readonly CalendarSyncQueueService? _calendarQueue;
+    private readonly AvailabilityService? _availability;
 
-    public JobWorkflowService(TelegramMessageSender sender, CalendarSyncQueueService? calendarQueue = null)
+    public JobWorkflowService(
+        TelegramMessageSender sender,
+        CalendarSyncQueueService? calendarQueue = null,
+        AvailabilityService? availability = null)
     {
         _sender = sender;
         _calendarQueue = calendarQueue;
+        _availability = availability;
     }
 
     public async Task<IReadOnlyList<ServiceCategoryEntity>> GetCategoriesAsync(BotDbContext db, string tenantId, CancellationToken cancellationToken)
@@ -94,6 +99,32 @@ public sealed class JobWorkflowService
     {
         var draft = context.Draft;
         var now = DateTimeOffset.UtcNow;
+
+        if (_availability is not null)
+        {
+            var scheduledAt = draft.ScheduledAt ?? now;
+            var rules = await _availability.GetRulesAsync(context.Db, context.TenantId, cancellationToken);
+            var check = await _availability.CheckSlotAvailabilityAsync(
+                context.Db,
+                new AvailabilityRequest
+                {
+                    TenantId = context.TenantId,
+                    ClientUserId = context.User.Id,
+                    ProviderUserId = null,
+                    ExcludeJobId = null,
+                    Rules = rules,
+                    TimeZone = context.Runtime.TimeZone,
+                    NowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone),
+                    RequireFutureSlotsOnly = false
+                },
+                scheduledAt,
+                cancellationToken);
+
+            if (!check.IsAvailable)
+            {
+                throw new InvalidOperationException("Conflito de agenda: esse horario nao esta mais disponivel para voce.");
+            }
+        }
 
         var job = new Job
         {

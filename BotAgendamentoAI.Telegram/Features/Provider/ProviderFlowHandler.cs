@@ -16,15 +16,18 @@ public sealed class ProviderFlowHandler
     private readonly TelegramMessageSender _sender;
     private readonly JobWorkflowService _jobWorkflow;
     private readonly CalendarSyncQueueService? _calendarQueue;
+    private readonly AvailabilityService? _availability;
 
     public ProviderFlowHandler(
         TelegramMessageSender sender,
         JobWorkflowService jobWorkflow,
-        CalendarSyncQueueService? calendarQueue = null)
+        CalendarSyncQueueService? calendarQueue = null,
+        AvailabilityService? availability = null)
     {
         _sender = sender;
         _jobWorkflow = jobWorkflow;
         _calendarQueue = calendarQueue;
+        _availability = availability;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -330,6 +333,36 @@ public sealed class ProviderFlowHandler
                     context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
                     "Esse pedido ja foi aceito.", KeyboardFactory.ProviderMenu(), job.Id, cancellationToken);
                 return true;
+            }
+
+            if (_availability is not null && job.ScheduledAt.HasValue)
+            {
+                var rules = await _availability.GetRulesAsync(context.Db, context.TenantId, cancellationToken);
+                var check = await _availability.CheckSlotAvailabilityAsync(
+                    context.Db,
+                    new AvailabilityRequest
+                    {
+                        TenantId = context.TenantId,
+                        ClientUserId = job.ClientUserId,
+                        ProviderUserId = context.User.Id,
+                        ExcludeJobId = job.Id,
+                        Rules = rules,
+                        TimeZone = context.Runtime.TimeZone,
+                        NowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone),
+                        RequireFutureSlotsOnly = false
+                    },
+                    job.ScheduledAt.Value,
+                    cancellationToken);
+                if (!check.IsAvailable)
+                {
+                    await _sender.SendTextAsync(
+                        context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                        "Nao foi possivel aceitar: voce ou o cliente ja possui outro agendamento nesse horario.",
+                        KeyboardFactory.ProviderMenu(),
+                        job.Id,
+                        cancellationToken);
+                    return true;
+                }
             }
 
             job.ProviderUserId = context.User.Id;

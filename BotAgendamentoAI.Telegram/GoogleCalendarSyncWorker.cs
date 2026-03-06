@@ -17,17 +17,20 @@ public sealed class GoogleCalendarSyncWorker : BackgroundService
 
     private readonly IDbContextFactory<BotDbContext> _dbFactory;
     private readonly GoogleCalendarApiService _calendarApi;
+    private readonly AvailabilityService _availability;
     private readonly BotExceptionLogService _exceptionLog;
     private readonly ILogger<GoogleCalendarSyncWorker> _logger;
 
     public GoogleCalendarSyncWorker(
         IDbContextFactory<BotDbContext> dbFactory,
         GoogleCalendarApiService calendarApi,
+        AvailabilityService availability,
         BotExceptionLogService exceptionLog,
         ILogger<GoogleCalendarSyncWorker> logger)
     {
         _dbFactory = dbFactory;
         _calendarApi = calendarApi;
+        _availability = availability;
         _exceptionLog = exceptionLog;
         _logger = logger;
     }
@@ -196,25 +199,66 @@ public sealed class GoogleCalendarSyncWorker : BackgroundService
             throw new InvalidOperationException($"Google Calendar incompleto para tenant {item.TenantId}. Configure Calendar ID e Service Account JSON.");
         }
 
-        var link = await db.JobCalendarLinks
-            .FirstOrDefaultAsync(x => x.JobId == item.JobId && x.TenantId == item.TenantId, cancellationToken);
-
-        if (string.Equals(item.Action, CalendarSyncQueueService.CancelAction, StringComparison.OrdinalIgnoreCase))
-        {
-            await CancelEventAsync(db, config, link, cancellationToken);
-            return;
-        }
-
         var job = await db.Jobs
             .AsNoTracking()
             .Include(x => x.ClientUser)
             .Include(x => x.ProviderUser)
             .FirstOrDefaultAsync(x => x.Id == item.JobId && x.TenantId == item.TenantId, cancellationToken);
 
-        if (job is null || job.Status == JobStatus.Cancelled)
+        var link = await db.JobCalendarLinks
+            .FirstOrDefaultAsync(x => x.JobId == item.JobId && x.TenantId == item.TenantId, cancellationToken);
+
+        var cancelAction = string.Equals(item.Action, CalendarSyncQueueService.CancelAction, StringComparison.OrdinalIgnoreCase);
+        if (cancelAction || job?.Status == JobStatus.Cancelled)
+        {
+            if (job is null)
+            {
+                await CancelEventAsync(db, config, link, cancellationToken);
+                return;
+            }
+
+            if (link is null)
+            {
+                return;
+            }
+
+            var cancelPayload = BuildPayload(job, config);
+            var cancelledEventId = await _calendarApi.UpsertEventAsync(
+                config,
+                cancelPayload,
+                link.CalendarEventId,
+                cancellationToken);
+            link.CalendarEventId = cancelledEventId;
+            link.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            return;
+        }
+
+        if (job is null)
         {
             await CancelEventAsync(db, config, link, cancellationToken);
             return;
+        }
+
+        var rules = AvailabilityRules.FromConfig(config);
+        var check = await _availability.CheckSlotAvailabilityAsync(
+            db,
+            new AvailabilityRequest
+            {
+                TenantId = job.TenantId,
+                ClientUserId = job.ClientUserId,
+                ProviderUserId = job.ProviderUserId,
+                ExcludeJobId = job.Id,
+                Rules = rules,
+                TimeZone = ResolveTimeZone(config.TimeZoneId),
+                NowLocal = DateTimeOffset.UtcNow,
+                RequireFutureSlotsOnly = false
+            },
+            job.ScheduledAt ?? job.CreatedAt,
+            cancellationToken);
+        if (!check.IsAvailable)
+        {
+            throw new InvalidOperationException(
+                $"Conflito de agenda detectado para job {job.Id}. Evento do Google Calendar nao sera criado/atualizado.");
         }
 
         var payload = BuildPayload(job, config);
@@ -271,8 +315,26 @@ public sealed class GoogleCalendarSyncWorker : BackgroundService
             Title = ApplyTemplate(titleTemplate, tokens),
             Description = ApplyTemplate(descriptionTemplate, tokens),
             Location = job.AddressText ?? string.Empty,
+            ColorId = MapGoogleColorId(job.Status),
             StartLocal = startLocal,
             EndLocal = endLocal
+        };
+    }
+
+    private static string MapGoogleColorId(JobStatus status)
+    {
+        return status switch
+        {
+            JobStatus.Requested => "5",
+            JobStatus.WaitingProvider => "5",
+            JobStatus.Accepted => "9",
+            JobStatus.OnTheWay => "7",
+            JobStatus.Arrived => "6",
+            JobStatus.InProgress => "10",
+            JobStatus.Finished => "2",
+            JobStatus.Cancelled => "11",
+            JobStatus.Draft => "8",
+            _ => "8"
         };
     }
 

@@ -68,6 +68,7 @@ public sealed class ConversationDetailsViewModel
 public sealed class BookingListItem
 {
     public string Id { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
     public string CustomerPhone { get; set; } = string.Empty;
     public string CustomerName { get; set; } = string.Empty;
     public string ServiceCategory { get; set; } = string.Empty;
@@ -163,6 +164,11 @@ public sealed class BotConfigViewModel
     public bool HasGoogleCalendarServiceAccountJson { get; set; }
     public string GoogleCalendarTimeZoneId { get; set; } = "America/Sao_Paulo";
     public int GoogleCalendarDefaultDurationMinutes { get; set; } = 60;
+    public int GoogleCalendarAvailabilityWindowDays { get; set; } = 7;
+    public int GoogleCalendarAvailabilitySlotIntervalMinutes { get; set; } = 60;
+    public int GoogleCalendarAvailabilityWorkdayStartHour { get; set; } = 8;
+    public int GoogleCalendarAvailabilityWorkdayEndHour { get; set; } = 20;
+    public int GoogleCalendarAvailabilityTodayLeadMinutes { get; set; } = 30;
     public int GoogleCalendarMaxAttempts { get; set; } = 8;
     public int GoogleCalendarRetryBaseSeconds { get; set; } = 10;
     public int GoogleCalendarRetryMaxSeconds { get; set; } = 600;

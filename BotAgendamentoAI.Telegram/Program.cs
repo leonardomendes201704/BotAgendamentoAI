@@ -45,6 +45,7 @@ builder.Services.AddSingleton<UserContextService>();
 builder.Services.AddSingleton<ConversationHistoryService>();
 builder.Services.AddSingleton<TelegramMessageSender>();
 builder.Services.AddSingleton<BotExceptionLogService>();
+builder.Services.AddSingleton<AvailabilityService>();
 builder.Services.AddSingleton<CalendarSyncQueueService>();
 builder.Services.AddSingleton<GoogleCalendarApiService>();
 builder.Services.AddSingleton<JobWorkflowService>();
@@ -83,6 +84,11 @@ static async Task EnsureGoogleCalendarTables(BotDbContext db)
         service_account_json TEXT NOT NULL DEFAULT '',
         time_zone_id TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
         default_duration_minutes INTEGER NOT NULL DEFAULT 60,
+        availability_window_days INTEGER NOT NULL DEFAULT 7,
+        availability_slot_interval_minutes INTEGER NOT NULL DEFAULT 60,
+        availability_workday_start_hour INTEGER NOT NULL DEFAULT 8,
+        availability_workday_end_hour INTEGER NOT NULL DEFAULT 20,
+        availability_today_lead_minutes INTEGER NOT NULL DEFAULT 30,
         max_attempts INTEGER NOT NULL DEFAULT 8,
         retry_base_seconds INTEGER NOT NULL DEFAULT 10,
         retry_max_seconds INTEGER NOT NULL DEFAULT 600,
@@ -92,6 +98,11 @@ static async Task EnsureGoogleCalendarTables(BotDbContext db)
     );
     """);
 
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "availability_window_days", "INTEGER NOT NULL DEFAULT 7");
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "availability_slot_interval_minutes", "INTEGER NOT NULL DEFAULT 60");
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "availability_workday_start_hour", "INTEGER NOT NULL DEFAULT 8");
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "availability_workday_end_hour", "INTEGER NOT NULL DEFAULT 20");
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "availability_today_lead_minutes", "INTEGER NOT NULL DEFAULT 30");
     await EnsureColumnAsync(db, "tenant_google_calendar_config", "max_attempts", "INTEGER NOT NULL DEFAULT 8");
     await EnsureColumnAsync(db, "tenant_google_calendar_config", "retry_base_seconds", "INTEGER NOT NULL DEFAULT 10");
     await EnsureColumnAsync(db, "tenant_google_calendar_config", "retry_max_seconds", "INTEGER NOT NULL DEFAULT 600");

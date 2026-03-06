@@ -8,6 +8,11 @@ public sealed class TenantGoogleCalendarConfig
     public string ServiceAccountJson { get; set; } = string.Empty;
     public string TimeZoneId { get; set; } = "America/Sao_Paulo";
     public int DefaultDurationMinutes { get; set; } = 60;
+    public int AvailabilityWindowDays { get; set; } = 7;
+    public int AvailabilitySlotIntervalMinutes { get; set; } = 60;
+    public int AvailabilityWorkdayStartHour { get; set; } = 8;
+    public int AvailabilityWorkdayEndHour { get; set; } = 20;
+    public int AvailabilityTodayLeadMinutes { get; set; } = 30;
     public int MaxAttempts { get; set; } = 8;
     public int RetryBaseSeconds { get; set; } = 10;
     public int RetryMaxSeconds { get; set; } = 600;

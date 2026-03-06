@@ -181,6 +181,32 @@
         </div>
     </div>
 
+    <div class="row g-3 mb-3">
+        <div class="col-sm-4">
+            <label class="form-label">Janela de dias (agenda)</label>
+            <input asp-for="GoogleCalendarAvailabilityWindowDays" type="number" class="form-control" min="1" max="30" />
+        </div>
+        <div class="col-sm-4">
+            <label class="form-label">Intervalo de slot (min)</label>
+            <input asp-for="GoogleCalendarAvailabilitySlotIntervalMinutes" type="number" class="form-control" min="15" max="240" />
+        </div>
+        <div class="col-sm-4">
+            <label class="form-label">Lead hoje (min)</label>
+            <input asp-for="GoogleCalendarAvailabilityTodayLeadMinutes" type="number" class="form-control" min="0" max="720" />
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-sm-6">
+            <label class="form-label">Hora inicio expediente</label>
+            <input asp-for="GoogleCalendarAvailabilityWorkdayStartHour" type="number" class="form-control" min="0" max="23" />
+        </div>
+        <div class="col-sm-6">
+            <label class="form-label">Hora fim expediente</label>
+            <input asp-for="GoogleCalendarAvailabilityWorkdayEndHour" type="number" class="form-control" min="1" max="24" />
+        </div>
+    </div>
+
     <div class="mb-3">
         <label class="form-label">Template do titulo do evento</label>
         <input asp-for="GoogleCalendarEventTitleTemplate" class="form-control" />

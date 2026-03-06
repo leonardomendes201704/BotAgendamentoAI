@@ -129,6 +129,11 @@ CREATE TABLE IF NOT EXISTS tenant_google_calendar_config (
   service_account_json TEXT NOT NULL DEFAULT '',
   time_zone_id TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
   default_duration_minutes INTEGER NOT NULL DEFAULT 60,
+  availability_window_days INTEGER NOT NULL DEFAULT 7,
+  availability_slot_interval_minutes INTEGER NOT NULL DEFAULT 60,
+  availability_workday_start_hour INTEGER NOT NULL DEFAULT 8,
+  availability_workday_end_hour INTEGER NOT NULL DEFAULT 20,
+  availability_today_lead_minutes INTEGER NOT NULL DEFAULT 30,
   max_attempts INTEGER NOT NULL DEFAULT 8,
   retry_base_seconds INTEGER NOT NULL DEFAULT 10,
   retry_max_seconds INTEGER NOT NULL DEFAULT 600,
@@ -166,6 +171,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText = AdminSchemaSql;
         await command.ExecuteNonQueryAsync();
 
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "availability_window_days", "INTEGER NOT NULL DEFAULT 7");
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "availability_slot_interval_minutes", "INTEGER NOT NULL DEFAULT 60");
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "availability_workday_start_hour", "INTEGER NOT NULL DEFAULT 8");
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "availability_workday_end_hour", "INTEGER NOT NULL DEFAULT 20");
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "availability_today_lead_minutes", "INTEGER NOT NULL DEFAULT 30");
         await EnsureColumnAsync(connection, "tenant_google_calendar_config", "max_attempts", "INTEGER NOT NULL DEFAULT 8");
         await EnsureColumnAsync(connection, "tenant_google_calendar_config", "retry_base_seconds", "INTEGER NOT NULL DEFAULT 10");
         await EnsureColumnAsync(connection, "tenant_google_calendar_config", "retry_max_seconds", "INTEGER NOT NULL DEFAULT 600");
@@ -1052,6 +1062,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 output.Add(new BookingListItem
                 {
                     Id = reader.GetString(0),
+                    Status = "Legacy",
                     CustomerPhone = reader.GetString(1),
                     CustomerName = reader.GetString(2),
                     ServiceCategory = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
@@ -1079,6 +1090,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     j.ScheduledAt,
                     j.AddressText,
                     j.CreatedAt,
+                    j.Status,
                     c.Name,
                     c.Phone,
                     c.TelegramUserId,
@@ -1105,6 +1117,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     j.ScheduledAt,
                     j.AddressText,
                     j.CreatedAt,
+                    j.Status,
                     c.Name,
                     c.Phone,
                     c.TelegramUserId,
@@ -1127,6 +1140,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     j.ScheduledAt,
                     j.AddressText,
                     j.CreatedAt,
+                    j.Status,
                     '',
                     '',
                     NULL,
@@ -1147,8 +1161,8 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             {
                 var createdAtUtc = ParseUtc(reader.IsDBNull(5) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(5));
                 var scheduledAtRaw = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
-                var customerPhone = reader.IsDBNull(7) ? string.Empty : reader.GetString(7);
-                var telegramUserId = reader.IsDBNull(8) ? 0L : reader.GetInt64(8);
+                var customerPhone = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
+                var telegramUserId = reader.IsDBNull(9) ? 0L : reader.GetInt64(9);
                 if (string.IsNullOrWhiteSpace(customerPhone))
                 {
                     customerPhone = telegramUserId > 0 ? $"tg:{telegramUserId}" : string.Empty;
@@ -1157,16 +1171,17 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 output.Add(new BookingListItem
                 {
                     Id = $"job:{reader.GetInt64(0)}",
+                    Status = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
                     CustomerPhone = customerPhone,
-                    CustomerName = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                    CustomerName = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
                     ServiceCategory = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
                     ServiceTitle = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                     StartLocal = ParseLocalOrUtcDateTime(scheduledAtRaw, createdAtUtc),
                     DurationMinutes = 60,
                     Address = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
-                    Latitude = reader.IsDBNull(10) ? null : reader.GetDouble(10),
-                    Longitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
-                    TechnicianName = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                    Latitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
+                    Longitude = reader.IsDBNull(12) ? null : reader.GetDouble(12),
+                    TechnicianName = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
                     CreatedAtUtc = createdAtUtc
                 });
             }
@@ -1616,6 +1631,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 service_account_json,
                 time_zone_id,
                 default_duration_minutes,
+                availability_window_days,
+                availability_slot_interval_minutes,
+                availability_workday_start_hour,
+                availability_workday_end_hour,
+                availability_today_lead_minutes,
                 max_attempts,
                 retry_base_seconds,
                 retry_max_seconds,
@@ -1637,11 +1657,16 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 model.GoogleCalendarServiceAccountJson = string.Empty;
                 model.GoogleCalendarTimeZoneId = reader.IsDBNull(3) ? "America/Sao_Paulo" : reader.GetString(3);
                 model.GoogleCalendarDefaultDurationMinutes = ClampGoogleCalendarDuration(reader.IsDBNull(4) ? 60 : reader.GetInt32(4));
-                model.GoogleCalendarMaxAttempts = ClampGoogleCalendarMaxAttempts(reader.IsDBNull(5) ? 8 : reader.GetInt32(5));
-                model.GoogleCalendarRetryBaseSeconds = ClampGoogleCalendarRetryBaseSeconds(reader.IsDBNull(6) ? 10 : reader.GetInt32(6));
-                model.GoogleCalendarRetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(reader.IsDBNull(7) ? 600 : reader.GetInt32(7));
-                model.GoogleCalendarEventTitleTemplate = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
-                model.GoogleCalendarEventDescriptionTemplate = reader.IsDBNull(9) ? string.Empty : reader.GetString(9);
+                model.GoogleCalendarAvailabilityWindowDays = ClampGoogleCalendarAvailabilityWindowDays(reader.IsDBNull(5) ? 7 : reader.GetInt32(5));
+                model.GoogleCalendarAvailabilitySlotIntervalMinutes = ClampGoogleCalendarAvailabilitySlotIntervalMinutes(reader.IsDBNull(6) ? 60 : reader.GetInt32(6));
+                model.GoogleCalendarAvailabilityWorkdayStartHour = ClampGoogleCalendarAvailabilityWorkdayStartHour(reader.IsDBNull(7) ? 8 : reader.GetInt32(7));
+                model.GoogleCalendarAvailabilityWorkdayEndHour = ClampGoogleCalendarAvailabilityWorkdayEndHour(reader.IsDBNull(8) ? 20 : reader.GetInt32(8), model.GoogleCalendarAvailabilityWorkdayStartHour);
+                model.GoogleCalendarAvailabilityTodayLeadMinutes = ClampGoogleCalendarAvailabilityTodayLeadMinutes(reader.IsDBNull(9) ? 30 : reader.GetInt32(9));
+                model.GoogleCalendarMaxAttempts = ClampGoogleCalendarMaxAttempts(reader.IsDBNull(10) ? 8 : reader.GetInt32(10));
+                model.GoogleCalendarRetryBaseSeconds = ClampGoogleCalendarRetryBaseSeconds(reader.IsDBNull(11) ? 10 : reader.GetInt32(11));
+                model.GoogleCalendarRetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(reader.IsDBNull(12) ? 600 : reader.GetInt32(12));
+                model.GoogleCalendarEventTitleTemplate = reader.IsDBNull(13) ? string.Empty : reader.GetString(13);
+                model.GoogleCalendarEventDescriptionTemplate = reader.IsDBNull(14) ? string.Empty : reader.GetString(14);
             }
         }
 
@@ -1877,6 +1902,13 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 ? "America/Sao_Paulo"
                 : input.GoogleCalendarTimeZoneId.Trim(),
             DefaultDurationMinutes = ClampGoogleCalendarDuration(input.GoogleCalendarDefaultDurationMinutes),
+            AvailabilityWindowDays = ClampGoogleCalendarAvailabilityWindowDays(input.GoogleCalendarAvailabilityWindowDays),
+            AvailabilitySlotIntervalMinutes = ClampGoogleCalendarAvailabilitySlotIntervalMinutes(input.GoogleCalendarAvailabilitySlotIntervalMinutes),
+            AvailabilityWorkdayStartHour = ClampGoogleCalendarAvailabilityWorkdayStartHour(input.GoogleCalendarAvailabilityWorkdayStartHour),
+            AvailabilityWorkdayEndHour = ClampGoogleCalendarAvailabilityWorkdayEndHour(
+                input.GoogleCalendarAvailabilityWorkdayEndHour,
+                ClampGoogleCalendarAvailabilityWorkdayStartHour(input.GoogleCalendarAvailabilityWorkdayStartHour)),
+            AvailabilityTodayLeadMinutes = ClampGoogleCalendarAvailabilityTodayLeadMinutes(input.GoogleCalendarAvailabilityTodayLeadMinutes),
             MaxAttempts = ClampGoogleCalendarMaxAttempts(input.GoogleCalendarMaxAttempts),
             RetryBaseSeconds = ClampGoogleCalendarRetryBaseSeconds(input.GoogleCalendarRetryBaseSeconds),
             RetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(input.GoogleCalendarRetryMaxSeconds),
@@ -1942,6 +1974,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 service_account_json,
                 time_zone_id,
                 default_duration_minutes,
+                availability_window_days,
+                availability_slot_interval_minutes,
+                availability_workday_start_hour,
+                availability_workday_end_hour,
+                availability_today_lead_minutes,
                 max_attempts,
                 retry_base_seconds,
                 retry_max_seconds,
@@ -1957,6 +1994,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 @service_account_json,
                 @time_zone_id,
                 @default_duration_minutes,
+                @availability_window_days,
+                @availability_slot_interval_minutes,
+                @availability_workday_start_hour,
+                @availability_workday_end_hour,
+                @availability_today_lead_minutes,
                 @max_attempts,
                 @retry_base_seconds,
                 @retry_max_seconds,
@@ -1970,6 +2012,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 service_account_json = excluded.service_account_json,
                 time_zone_id = excluded.time_zone_id,
                 default_duration_minutes = excluded.default_duration_minutes,
+                availability_window_days = excluded.availability_window_days,
+                availability_slot_interval_minutes = excluded.availability_slot_interval_minutes,
+                availability_workday_start_hour = excluded.availability_workday_start_hour,
+                availability_workday_end_hour = excluded.availability_workday_end_hour,
+                availability_today_lead_minutes = excluded.availability_today_lead_minutes,
                 max_attempts = excluded.max_attempts,
                 retry_base_seconds = excluded.retry_base_seconds,
                 retry_max_seconds = excluded.retry_max_seconds,
@@ -1983,6 +2030,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             command.Parameters.AddWithValue("@service_account_json", googleCalendar.ServiceAccountJson);
             command.Parameters.AddWithValue("@time_zone_id", googleCalendar.TimeZoneId);
             command.Parameters.AddWithValue("@default_duration_minutes", googleCalendar.DefaultDurationMinutes);
+            command.Parameters.AddWithValue("@availability_window_days", googleCalendar.AvailabilityWindowDays);
+            command.Parameters.AddWithValue("@availability_slot_interval_minutes", googleCalendar.AvailabilitySlotIntervalMinutes);
+            command.Parameters.AddWithValue("@availability_workday_start_hour", googleCalendar.AvailabilityWorkdayStartHour);
+            command.Parameters.AddWithValue("@availability_workday_end_hour", googleCalendar.AvailabilityWorkdayEndHour);
+            command.Parameters.AddWithValue("@availability_today_lead_minutes", googleCalendar.AvailabilityTodayLeadMinutes);
             command.Parameters.AddWithValue("@max_attempts", googleCalendar.MaxAttempts);
             command.Parameters.AddWithValue("@retry_base_seconds", googleCalendar.RetryBaseSeconds);
             command.Parameters.AddWithValue("@retry_max_seconds", googleCalendar.RetryMaxSeconds);
@@ -2393,6 +2445,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             HasGoogleCalendarServiceAccountJson = false,
             GoogleCalendarTimeZoneId = "America/Sao_Paulo",
             GoogleCalendarDefaultDurationMinutes = 60,
+            GoogleCalendarAvailabilityWindowDays = 7,
+            GoogleCalendarAvailabilitySlotIntervalMinutes = 60,
+            GoogleCalendarAvailabilityWorkdayStartHour = 8,
+            GoogleCalendarAvailabilityWorkdayEndHour = 20,
+            GoogleCalendarAvailabilityTodayLeadMinutes = 30,
             GoogleCalendarMaxAttempts = 8,
             GoogleCalendarRetryBaseSeconds = 10,
             GoogleCalendarRetryMaxSeconds = 600,
@@ -2437,6 +2494,25 @@ CREATE TABLE IF NOT EXISTS shared_settings (
 
     private static int ClampGoogleCalendarDuration(int value)
         => Math.Clamp(value, 15, 720);
+
+    private static int ClampGoogleCalendarAvailabilityWindowDays(int value)
+        => Math.Clamp(value, 1, 30);
+
+    private static int ClampGoogleCalendarAvailabilitySlotIntervalMinutes(int value)
+        => Math.Clamp(value, 15, 240);
+
+    private static int ClampGoogleCalendarAvailabilityWorkdayStartHour(int value)
+        => Math.Clamp(value, 0, 23);
+
+    private static int ClampGoogleCalendarAvailabilityWorkdayEndHour(int value, int startHour)
+    {
+        var safeStart = ClampGoogleCalendarAvailabilityWorkdayStartHour(startHour);
+        var safeEnd = Math.Clamp(value, 1, 24);
+        return safeEnd <= safeStart ? Math.Min(24, safeStart + 1) : safeEnd;
+    }
+
+    private static int ClampGoogleCalendarAvailabilityTodayLeadMinutes(int value)
+        => Math.Clamp(value, 0, 720);
 
     private static int ClampGoogleCalendarMaxAttempts(int value)
         => Math.Clamp(value, 1, 30);
@@ -3287,6 +3363,11 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         public string ServiceAccountJson { get; set; } = string.Empty;
         public string TimeZoneId { get; set; } = "America/Sao_Paulo";
         public int DefaultDurationMinutes { get; set; } = 60;
+        public int AvailabilityWindowDays { get; set; } = 7;
+        public int AvailabilitySlotIntervalMinutes { get; set; } = 60;
+        public int AvailabilityWorkdayStartHour { get; set; } = 8;
+        public int AvailabilityWorkdayEndHour { get; set; } = 20;
+        public int AvailabilityTodayLeadMinutes { get; set; } = 30;
         public int MaxAttempts { get; set; } = 8;
         public int RetryBaseSeconds { get; set; } = 10;
         public int RetryMaxSeconds { get; set; } = 600;

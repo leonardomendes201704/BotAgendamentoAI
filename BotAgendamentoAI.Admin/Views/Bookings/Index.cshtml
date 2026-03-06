@@ -3,6 +3,48 @@
     ViewData["Title"] = "Agendamentos";
     var limit = (int?)ViewData["Limit"] ?? 200;
     var tenants = ViewData["Tenants"] as IReadOnlyList<string> ?? Array.Empty<string>();
+
+    static string StatusLabel(string status)
+    {
+        return (status ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "REQUESTED" => "Solicitado",
+            "WAITINGPROVIDER" => "Aguardando prestador",
+            "ACCEPTED" => "Aceito",
+            "ONTHEWAY" => "A caminho",
+            "ARRIVED" => "Prestador chegou",
+            "INPROGRESS" => "Em andamento",
+            "FINISHED" => "Finalizado",
+            "CANCELLED" => "Cancelado",
+            "DRAFT" => "Rascunho",
+            "LEGACY" => "Legacy",
+            _ => string.IsNullOrWhiteSpace(status) ? "Sem status" : status
+        };
+    }
+
+    static string StatusColorHex(string status)
+    {
+        return (status ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "REQUESTED" => "#f6bf26",
+            "WAITINGPROVIDER" => "#f6bf26",
+            "ACCEPTED" => "#3f51b5",
+            "ONTHEWAY" => "#039be5",
+            "ARRIVED" => "#f4511e",
+            "INPROGRESS" => "#0b8043",
+            "FINISHED" => "#33b679",
+            "CANCELLED" => "#d50000",
+            "DRAFT" => "#616161",
+            "LEGACY" => "#616161",
+            _ => "#616161"
+        };
+    }
+
+    static string StatusTextColor(string status)
+    {
+        var code = (status ?? string.Empty).Trim().ToUpperInvariant();
+        return code is "REQUESTED" or "WAITINGPROVIDER" ? "#212529" : "#ffffff";
+    }
 }
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -26,6 +68,7 @@
         <table class="table table-sm table-hover m-0">
             <thead>
                 <tr>
+                    <th>Status</th>
                     <th>Categoria</th>
                     <th>Servico</th>
                     <th>Cliente</th>
@@ -41,6 +84,11 @@
             @foreach (var item in Model.Bookings)
             {
                 <tr>
+                    <td>
+                        <span class="badge" style="background-color:@StatusColorHex(item.Status); color:@StatusTextColor(item.Status);">
+                            @StatusLabel(item.Status)
+                        </span>
+                    </td>
                     <td>@item.ServiceCategory</td>
                     <td>@item.ServiceTitle</td>
                     <td>@item.CustomerName</td>
