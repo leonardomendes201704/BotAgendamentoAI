@@ -6,6 +6,7 @@ using BotAgendamentoAI.Telegram.Application.Services;
 using BotAgendamentoAI.Telegram.Domain.Entities;
 using BotAgendamentoAI.Telegram.Domain.Enums;
 using BotAgendamentoAI.Telegram.Domain.Fsm;
+using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using BotAgendamentoAI.Telegram.TelegramCompat;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types;
@@ -25,15 +26,21 @@ public sealed class ClientFlowHandler
     private readonly TelegramMessageSender _sender;
     private readonly JobWorkflowService _jobWorkflow;
     private readonly IPhotoValidator _photoValidator;
+    private readonly BotExceptionLogService _exceptionLog;
+    private readonly ILogger<ClientFlowHandler> _logger;
 
     public ClientFlowHandler(
         TelegramMessageSender sender,
         JobWorkflowService jobWorkflow,
-        IPhotoValidator photoValidator)
+        IPhotoValidator photoValidator,
+        BotExceptionLogService exceptionLog,
+        ILogger<ClientFlowHandler> logger)
     {
         _sender = sender;
         _jobWorkflow = jobWorkflow;
         _photoValidator = photoValidator;
+        _exceptionLog = exceptionLog;
+        _logger = logger;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -274,6 +281,21 @@ public sealed class ClientFlowHandler
                 chatJobId,
                 cancellationToken);
             return true;
+        }
+
+        if (route.Scope == "J" && long.TryParse(route.Action, out var jobId))
+        {
+            if (route.Arg1 == "CAN")
+            {
+                await HandleClientJobCancelAsync(context, chatId, jobId, cancellationToken);
+                return true;
+            }
+
+            if (route.Arg1 == "RS")
+            {
+                await HandleClientJobRescheduleAsync(context, chatId, jobId, route, cancellationToken);
+                return true;
+            }
         }
 
         if (route.Scope == "C" && route.Action == "CAT")
@@ -619,24 +641,24 @@ public sealed class ClientFlowHandler
 
         if (route.Scope == "R")
         {
-            if (!long.TryParse(route.Action, out var jobId) || !int.TryParse(route.Arg1, out var stars))
+            if (!long.TryParse(route.Action, out var ratingJobId) || !int.TryParse(route.Arg1, out var stars))
             {
                 return true;
             }
 
             stars = Math.Clamp(stars, 1, 5);
-            var job = await context.Db.Jobs.FirstOrDefaultAsync(x => x.Id == jobId && x.ClientUserId == context.User.Id, cancellationToken);
+            var job = await context.Db.Jobs.FirstOrDefaultAsync(x => x.Id == ratingJobId && x.ClientUserId == context.User.Id, cancellationToken);
             if (job is null || !job.ProviderUserId.HasValue)
             {
                 return true;
             }
 
-            var already = await context.Db.Ratings.AnyAsync(x => x.JobId == jobId, cancellationToken);
+            var already = await context.Db.Ratings.AnyAsync(x => x.JobId == ratingJobId, cancellationToken);
             if (!already)
             {
                 context.Db.Ratings.Add(new Rating
                 {
-                    JobId = jobId,
+                    JobId = ratingJobId,
                     ClientUserId = context.User.Id,
                     ProviderUserId = job.ProviderUserId.Value,
                     Stars = stars,
@@ -654,7 +676,7 @@ public sealed class ClientFlowHandler
                 chatId,
                 "Obrigado pela avaliacao!",
                 KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
-                jobId,
+                ratingJobId,
                 cancellationToken);
 
             return true;
@@ -709,14 +731,16 @@ public sealed class ClientFlowHandler
         var safeOffset = Math.Max(0, offset);
         const int pageSize = 5;
 
-        var total = await context.Db.Jobs
-            .AsNoTracking()
-            .CountAsync(x => x.ClientUserId == context.User.Id, cancellationToken);
-
-        var jobs = await context.Db.Jobs
+        var jobsQuery = context.Db.Jobs
             .AsNoTracking()
             .Where(x => x.ClientUserId == context.User.Id)
-            .OrderByDescending(x => x.CreatedAt)
+            .Where(x => x.Status != JobStatus.Cancelled);
+
+        var total = await jobsQuery
+            .CountAsync(cancellationToken);
+
+        var jobs = await jobsQuery
+            .OrderByDescending(x => x.Id)
             .Skip(safeOffset)
             .Take(pageSize)
             .ToListAsync(cancellationToken);
@@ -739,25 +763,8 @@ public sealed class ClientFlowHandler
 
         foreach (var job in jobs)
         {
-            var status = job.Status.ToString();
-            var when = job.IsUrgent
-                ? "Urgente"
-                : (job.ScheduledAt.HasValue
-                    ? TimeZoneInfo.ConvertTime(job.ScheduledAt.Value, context.Runtime.TimeZone).ToString("dd/MM/yyyy HH:mm")
-                    : "Nao definido");
-
-            var text = $"#{job.Id} | {job.Category}\nStatus: {status}\nQuando: {when}";
-            InlineKeyboardMarkup? keyboard = null;
-            if (CanOpenChat(job.Status, job.ProviderUserId.HasValue))
-            {
-                keyboard = new InlineKeyboardMarkup(new[]
-                {
-                    new[]
-                    {
-                        InlineKeyboardButton.WithCallbackData("Chat", $"J:{job.Id}:CHAT")
-                    }
-                });
-            }
+            var text = BuildClientJobCard(job, context.Runtime.TimeZone);
+            var keyboard = BuildClientJobActions(job);
 
             await _sender.SendTextAsync(
                 context.Db,
@@ -796,6 +803,46 @@ public sealed class ClientFlowHandler
                 null,
                 cancellationToken);
         }
+    }
+
+    private static string BuildClientJobCard(Job job, TimeZoneInfo timeZone)
+    {
+        var when = job.IsUrgent
+            ? "Urgente"
+            : (job.ScheduledAt.HasValue
+                ? TimeZoneInfo.ConvertTime(job.ScheduledAt.Value, timeZone).ToString("dd/MM/yyyy HH:mm")
+                : "Nao definido");
+
+        var status = FormatJobStatus(job.Status);
+
+        var providerStatus = job.ProviderUserId.HasValue ? "Atribuido" : "Aguardando atribuicao";
+        var address = string.IsNullOrWhiteSpace(job.AddressText) ? "Nao informado" : job.AddressText.Trim();
+        var description = FormatCardField(job.Description, 180, "Nao informada");
+
+        return
+            $"📋 Agendamento #{job.Id}\n" +
+            $"Categoria: {job.Category}\n" +
+            $"Descricao: {description}\n" +
+            $"Status: {status}\n" +
+            $"Quando: {when}\n" +
+            $"Prestador: {providerStatus}\n" +
+            $"Endereco: {address}";
+    }
+
+    private static string FormatCardField(string? value, int maxLength, string fallback)
+    {
+        var safe = (value ?? string.Empty).Trim();
+        if (safe.Length == 0)
+        {
+            return fallback;
+        }
+
+        if (safe.Length <= maxLength)
+        {
+            return safe;
+        }
+
+        return safe[..maxLength].TrimEnd() + "...";
     }
 
     public async Task StartWizardAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
@@ -1005,6 +1052,8 @@ public sealed class ClientFlowHandler
             var geoNote = exactGeoResolved
                 ? "Localizacao geocodificada com endereco completo."
                 : "Nao localizei o numero exato; vou usar localizacao aproximada do CEP.";
+            
+            geoNote = "";
 
             await _sender.SendTextAsync(
                 context.Db,
@@ -1117,15 +1166,44 @@ public sealed class ClientFlowHandler
                 return;
 
             case "MY":
+            case "2":
+            case "AGENDA":
+            case "BOOK":
+            case "BOOKINGS":
+            case "SCHEDULE":
+            case "SCHEDULES":
                 try
                 {
                     await SendMyJobsAsync(context, chatId, 0, cancellationToken);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    await SendClientHomeMenuAsync(
-                        context,
+                    _logger.LogError(
+                        ex,
+                        "Falha ao carregar agendamentos do cliente. tenant={Tenant} userId={UserId} telegramUserId={TelegramUserId}",
+                        context.TenantId,
+                        context.User.Id,
+                        context.User.TelegramUserId);
+
+                    await _exceptionLog.TryLogAsync(
+                        context.Db,
+                        context.TenantId,
+                        "ClientFlowHandler.HandleHomeCallbackAsync.C_HOME_MY",
+                        ex,
+                        context.User.TelegramUserId,
+                        context.User.Id,
+                        context.Session.ActiveJobId,
+                        $"action={action};state={context.Session.State}",
+                        cancellationToken);
+
+                    await _sender.SendTextAsync(
+                        context.Db,
+                        context.Bot,
+                        context.TenantId,
+                        context.User.TelegramUserId,
                         chatId,
+                        "Nao consegui carregar seus agendamentos agora. Tente novamente em instantes.",
+                        KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
                         context.Session.ActiveJobId,
                         cancellationToken);
                 }
@@ -1625,6 +1703,278 @@ public sealed class ClientFlowHandler
         return status is JobStatus.Accepted or JobStatus.OnTheWay or JobStatus.Arrived or JobStatus.InProgress;
     }
 
+    private static bool CanCancelClientJob(JobStatus status)
+        => status is not JobStatus.Cancelled and not JobStatus.Finished;
+
+    private static bool CanRescheduleClientJob(JobStatus status)
+        => status is JobStatus.WaitingProvider or JobStatus.Requested or JobStatus.Accepted;
+
+    private static InlineKeyboardMarkup? BuildClientJobActions(Job job)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+        var managementButtons = new List<InlineKeyboardButton>();
+
+        if (CanRescheduleClientJob(job.Status))
+        {
+            managementButtons.Add(InlineKeyboardButton.WithCallbackData("Re-agendar", $"J:{job.Id}:RS:CAL"));
+        }
+
+        if (CanCancelClientJob(job.Status))
+        {
+            managementButtons.Add(InlineKeyboardButton.WithCallbackData("Cancelar Pedido", $"J:{job.Id}:CAN"));
+        }
+
+        if (managementButtons.Count > 0)
+        {
+            rows.Add(managementButtons.ToArray());
+        }
+
+        if (CanOpenChat(job.Status, job.ProviderUserId.HasValue))
+        {
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Abrir chat", $"J:{job.Id}:CHAT")
+            });
+        }
+
+        return rows.Count == 0 ? null : new InlineKeyboardMarkup(rows);
+    }
+
+    private async Task HandleClientJobCancelAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        long jobId,
+        CancellationToken cancellationToken)
+    {
+        var job = await context.Db.Jobs
+            .FirstOrDefaultAsync(x => x.Id == jobId && x.ClientUserId == context.User.Id, cancellationToken);
+        if (job is null)
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                "Nao encontrei esse agendamento para cancelar.",
+                KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
+        if (!CanCancelClientJob(job.Status))
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                $"Nao e possivel cancelar o agendamento #{job.Id} no status atual ({FormatJobStatus(job.Status)}).",
+                KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                job.Id,
+                cancellationToken);
+            return;
+        }
+
+        job.Status = JobStatus.Cancelled;
+        job.UpdatedAt = DateTimeOffset.UtcNow;
+        if (context.Session.ActiveJobId == job.Id)
+        {
+            context.Session.IsChatActive = false;
+            context.Session.ChatPeerUserId = null;
+            context.Session.ChatJobId = null;
+            context.Session.State = BotStates.C_TRACKING;
+            context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            $"Agendamento #{job.Id} cancelado com sucesso.",
+            KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+            job.Id,
+            cancellationToken);
+    }
+
+    private async Task HandleClientJobRescheduleAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        long jobId,
+        CallbackRoute route,
+        CancellationToken cancellationToken)
+    {
+        var job = await context.Db.Jobs
+            .FirstOrDefaultAsync(x => x.Id == jobId && x.ClientUserId == context.User.Id, cancellationToken);
+        if (job is null)
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                "Nao encontrei esse agendamento para reagendar.",
+                KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
+        if (!CanRescheduleClientJob(job.Status))
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                $"Nao e possivel reagendar o agendamento #{job.Id} no status atual ({FormatJobStatus(job.Status)}).",
+                KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                job.Id,
+                cancellationToken);
+            return;
+        }
+
+        if (route.Arg2 == "CAL")
+        {
+            var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                $"Selecione o novo dia para o agendamento #{job.Id}:",
+                KeyboardFactory.ClientRescheduleDaySelection(job.Id, nowLocal),
+                job.Id,
+                cancellationToken);
+            return;
+        }
+
+        if (route.Arg2 == "DAY")
+        {
+            var dayToken = route.Arg3;
+            if (string.IsNullOrWhiteSpace(dayToken) || dayToken.Length != 8 || !dayToken.All(char.IsDigit))
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    chatId,
+                    "Dia invalido para reagendamento.",
+                    KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                    job.Id,
+                    cancellationToken);
+                return;
+            }
+
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                $"Agora selecione o novo horario para o agendamento #{job.Id}:",
+                KeyboardFactory.ClientRescheduleTimeSelection(job.Id, dayToken),
+                job.Id,
+                cancellationToken);
+            return;
+        }
+
+        if (route.Arg2 == "TIM")
+        {
+            var token = (route.Arg3 ?? string.Empty).Trim();
+            var digits = new string(token.Where(char.IsDigit).ToArray());
+            if (digits.Length != 12)
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    chatId,
+                    "Horario invalido para reagendamento.",
+                    KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                    job.Id,
+                    cancellationToken);
+                return;
+            }
+
+            var yyyymmdd = digits[..8];
+            var hhmm = digits[8..];
+            if (!TryParseSchedule(yyyymmdd, hhmm, context.Runtime.TimeZone, out var scheduledAt))
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    chatId,
+                    "Nao consegui interpretar a nova data/hora.",
+                    KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                    job.Id,
+                    cancellationToken);
+                return;
+            }
+
+            job.IsUrgent = false;
+            job.ScheduledAt = scheduledAt;
+            job.UpdatedAt = DateTimeOffset.UtcNow;
+            context.Session.ActiveJobId = job.Id;
+            context.Session.State = BotStates.C_TRACKING;
+            context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                $"Agendamento #{job.Id} reagendado para {TimeZoneInfo.ConvertTime(scheduledAt, context.Runtime.TimeZone):dd/MM/yyyy HH:mm}.",
+                KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                job.Id,
+                cancellationToken);
+            return;
+        }
+
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            "Opcao de reagendamento invalida.",
+            KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+            job.Id,
+            cancellationToken);
+    }
+
+    private static string FormatJobStatus(JobStatus status)
+    {
+        return status switch
+        {
+            JobStatus.Draft => "Rascunho",
+            JobStatus.Requested => "Solicitado",
+            JobStatus.WaitingProvider => "Aguardando prestador",
+            JobStatus.Accepted => "Aceito",
+            JobStatus.OnTheWay => "A caminho",
+            JobStatus.Arrived => "Prestador chegou",
+            JobStatus.InProgress => "Em andamento",
+            JobStatus.Finished => "Finalizado",
+            JobStatus.Cancelled => "Cancelado",
+            _ => status.ToString()
+        };
+    }
+
     private async Task SendCategorySelectionAsync(
         BotExecutionContext context,
         ChatId chatId,
@@ -1673,15 +2023,58 @@ public sealed class ClientFlowHandler
             return text;
         }
 
-        return text switch
+        var safe = (text ?? string.Empty).Trim();
+        var menuNumber = TryGetLeadingMenuNumber(safe);
+        if (menuNumber.HasValue)
         {
-            "1" => MenuTexts.ClientRequestService,
-            "2" => MenuTexts.ClientMyBookings,
-            "3" => MenuTexts.ClientFavorites,
-            "4" => MenuTexts.ClientHelp,
-            "5" => MenuTexts.ClientSwitchToProvider,
-            _ => text
+            return menuNumber.Value switch
+            {
+                1 => MenuTexts.ClientRequestService,
+                2 => MenuTexts.ClientMyBookings,
+                3 => MenuTexts.ClientFavorites,
+                4 => MenuTexts.ClientHelp,
+                5 => MenuTexts.ClientSwitchToProvider,
+                _ => safe
+            };
+        }
+
+        return safe switch
+        {
+            MenuTexts.ClientRequestService => MenuTexts.ClientRequestService,
+            MenuTexts.ClientMyBookings => MenuTexts.ClientMyBookings,
+            MenuTexts.ClientFavorites => MenuTexts.ClientFavorites,
+            MenuTexts.ClientHelp => MenuTexts.ClientHelp,
+            MenuTexts.ClientSwitchToProvider => MenuTexts.ClientSwitchToProvider,
+            _ => safe
         };
+    }
+
+    private static int? TryGetLeadingMenuNumber(string text)
+    {
+        var safe = (text ?? string.Empty).Trim();
+        if (safe.Length == 0 || !char.IsDigit(safe[0]))
+        {
+            return null;
+        }
+
+        var index = 0;
+        while (index < safe.Length && char.IsDigit(safe[index]))
+        {
+            index++;
+        }
+
+        if (!int.TryParse(safe[..index], out var parsed))
+        {
+            return null;
+        }
+
+        if (index == safe.Length)
+        {
+            return parsed;
+        }
+
+        var separator = safe[index];
+        return separator is ' ' or '-' or '.' or ')' or ':' ? parsed : null;
     }
 
     private static bool IsClientMenuState(string state)

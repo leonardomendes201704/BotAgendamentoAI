@@ -31,7 +31,7 @@ public sealed class TelegramMessageSender
         var sent = await bot.SendMessage(
             chatId: chatId,
             text: text,
-            parseMode: ParseMode.Html,
+            parseMode: ParseMode.Default,
             replyMarkup: replyMarkup,
             cancellationToken: cancellationToken);
 
@@ -64,7 +64,7 @@ public sealed class TelegramMessageSender
             chatId: chatId,
             photo: InputFile.FromString(fileId),
             caption: caption,
-            parseMode: ParseMode.Html,
+            parseMode: ParseMode.Default,
             replyMarkup: buttons,
             cancellationToken: cancellationToken);
 
@@ -97,8 +97,7 @@ public sealed class TelegramMessageSender
         {
             media.Add(new InputMediaPhoto(InputFile.FromString(fileIds[i]))
             {
-                Caption = i == 0 ? caption : null,
-                ParseMode = ParseMode.Html
+                Caption = i == 0 ? caption : null
             });
         }
 

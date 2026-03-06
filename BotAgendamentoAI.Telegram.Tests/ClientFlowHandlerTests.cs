@@ -1,9 +1,13 @@
 using BotAgendamentoAI.Telegram.Application.Services;
 using BotAgendamentoAI.Telegram.Application.Callback;
+using BotAgendamentoAI.Telegram.Domain.Entities;
+using BotAgendamentoAI.Telegram.Domain.Enums;
 using BotAgendamentoAI.Telegram.Domain.Fsm;
 using BotAgendamentoAI.Telegram.Features.Client;
 using BotAgendamentoAI.Telegram.Tests.TestDoubles;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.EntityFrameworkCore;
 
 namespace BotAgendamentoAI.Telegram.Tests;
 
@@ -22,7 +26,8 @@ public sealed class ClientFlowHandlerTests
         var sender = new TelegramMessageSender(history);
         var workflow = new JobWorkflowService(sender);
         var photoValidator = new StubPhotoValidator();
-        var sut = new ClientFlowHandler(sender, workflow, photoValidator);
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
 
         var dirtyDraft = new UserDraft
         {
@@ -67,7 +72,8 @@ public sealed class ClientFlowHandlerTests
         var sender = new TelegramMessageSender(history);
         var workflow = new JobWorkflowService(sender);
         var photoValidator = new StubPhotoValidator();
-        var sut = new ClientFlowHandler(sender, workflow, photoValidator);
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
         var context = TestContextFactory.BuildExecutionContext(db, bot, user);
 
         var parsed = CallbackDataRouter.TryParse("J:42:CHAT:EXIT", out var route);
@@ -105,7 +111,8 @@ public sealed class ClientFlowHandlerTests
         var sender = new TelegramMessageSender(history);
         var workflow = new JobWorkflowService(sender);
         var photoValidator = new StubPhotoValidator();
-        var sut = new ClientFlowHandler(sender, workflow, photoValidator);
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
         var context = TestContextFactory.BuildExecutionContext(db, bot, user);
 
         var parsed = CallbackDataRouter.TryParse("C:HOME:MY", out var route);
@@ -128,6 +135,273 @@ public sealed class ClientFlowHandlerTests
     }
 
     [Fact]
+    public async Task HandleText_ClientHomeNumberedMyBookings_ShouldReturnNoBookingsMessage()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var message = new Message
+        {
+            Chat = new Chat { Id = user.TelegramUserId },
+            From = new User { Id = user.TelegramUserId, FirstName = "User" },
+            Text = "2 - Meus agendamentos"
+        };
+
+        await sut.HandleTextAsync(context, message, CancellationToken.None);
+
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("nao possui agendamentos", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HandleCallback_ClientHomeNumericMyBookings_ShouldReturnNoBookingsMessage()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var parsed = CallbackDataRouter.TryParse("C:HOME:2", out var route);
+        Assert.True(parsed);
+
+        var callback = new CallbackQuery
+        {
+            Id = "cb-home-2",
+            Data = "C:HOME:2",
+            Message = new Message
+            {
+                Chat = new Chat { Id = user.TelegramUserId }
+            }
+        };
+
+        var handled = await sut.HandleCallbackAsync(context, route, callback, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("nao possui agendamentos", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HandleCallback_ClientHomeMyBookings_WithJobs_ShouldRenderCardText()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+
+        db.Jobs.Add(new Job
+        {
+            TenantId = user.TenantId,
+            ClientUserId = user.Id,
+            Category = "Ar Condicionado",
+            Description = "Nao gela",
+            Status = JobStatus.WaitingProvider,
+            IsUrgent = false,
+            ScheduledAt = DateTimeOffset.UtcNow.AddHours(2),
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var parsed = CallbackDataRouter.TryParse("C:HOME:MY", out var route);
+        Assert.True(parsed);
+
+        var callback = new CallbackQuery
+        {
+            Id = "cb-home-my-cards",
+            Data = "C:HOME:MY",
+            Message = new Message
+            {
+                Chat = new Chat { Id = user.TelegramUserId }
+            }
+        };
+
+        var handled = await sut.HandleCallbackAsync(context, route, callback, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("Agendamento #", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("Descricao: Nao gela", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HandleCallback_ClientJobCancel_ShouldSetCancelledStatus()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+
+        var job = new Job
+        {
+            TenantId = user.TenantId,
+            ClientUserId = user.Id,
+            Category = "Alvenaria",
+            Description = "Cancelar teste",
+            Status = JobStatus.WaitingProvider,
+            IsUrgent = false,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        db.Jobs.Add(job);
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var parsed = CallbackDataRouter.TryParse($"J:{job.Id}:CAN", out var route);
+        Assert.True(parsed);
+
+        var callback = new CallbackQuery
+        {
+            Id = "cb-job-cancel",
+            Data = $"J:{job.Id}:CAN",
+            Message = new Message
+            {
+                Chat = new Chat { Id = user.TelegramUserId }
+            }
+        };
+
+        var handled = await sut.HandleCallbackAsync(context, route, callback, CancellationToken.None);
+        Assert.True(handled);
+
+        var stored = await db.Jobs.FirstAsync(x => x.Id == job.Id);
+        Assert.Equal(JobStatus.Cancelled, stored.Status);
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("cancelado com sucesso", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HandleCallback_ClientJobRescheduleTim_ShouldUpdateScheduledAt()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+
+        var job = new Job
+        {
+            TenantId = user.TenantId,
+            ClientUserId = user.Id,
+            Category = "Alvenaria",
+            Description = "Reagendar teste",
+            Status = JobStatus.WaitingProvider,
+            IsUrgent = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        db.Jobs.Add(job);
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var parsed = CallbackDataRouter.TryParse($"J:{job.Id}:RS:TIM:203012311000", out var route);
+        Assert.True(parsed);
+
+        var callback = new CallbackQuery
+        {
+            Id = "cb-job-rs",
+            Data = $"J:{job.Id}:RS:TIM:203012311000",
+            Message = new Message
+            {
+                Chat = new Chat { Id = user.TelegramUserId }
+            }
+        };
+
+        var handled = await sut.HandleCallbackAsync(context, route, callback, CancellationToken.None);
+        Assert.True(handled);
+
+        var stored = await db.Jobs.FirstAsync(x => x.Id == job.Id);
+        Assert.False(stored.IsUrgent);
+        Assert.Equal(new DateTimeOffset(2030, 12, 31, 10, 0, 0, TimeSpan.Zero), stored.ScheduledAt);
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("reagendado", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HandleCallback_ClientHomeMyBookings_WithOnlyCancelledJobs_ShouldReturnNoBookingsMessage()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+
+        db.Jobs.Add(new Job
+        {
+            TenantId = user.TenantId,
+            ClientUserId = user.Id,
+            Category = "Alvenaria",
+            Description = "Pedido cancelado",
+            Status = JobStatus.Cancelled,
+            IsUrgent = false,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var parsed = CallbackDataRouter.TryParse("C:HOME:MY", out var route);
+        Assert.True(parsed);
+
+        var callback = new CallbackQuery
+        {
+            Id = "cb-home-my-cancelled-only",
+            Data = "C:HOME:MY",
+            Message = new Message
+            {
+                Chat = new Chat { Id = user.TelegramUserId }
+            }
+        };
+
+        var handled = await sut.HandleCallbackAsync(context, route, callback, CancellationToken.None);
+        Assert.True(handled);
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("nao possui agendamentos", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(bot.SentTexts, x => x.Text.Contains("Agendamento #", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task HandleText_UnknownOnHome_ShouldRepeatClientMenu()
     {
         await using var db = TestContextFactory.CreateDb();
@@ -140,7 +414,8 @@ public sealed class ClientFlowHandlerTests
         var sender = new TelegramMessageSender(history);
         var workflow = new JobWorkflowService(sender);
         var photoValidator = new StubPhotoValidator();
-        var sut = new ClientFlowHandler(sender, workflow, photoValidator);
+        var exceptionLog = new BotExceptionLogService(NullLogger<BotExceptionLogService>.Instance);
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator, exceptionLog, NullLogger<ClientFlowHandler>.Instance);
         var context = TestContextFactory.BuildExecutionContext(db, bot, user);
 
         var message = new Message
@@ -155,3 +430,5 @@ public sealed class ClientFlowHandlerTests
         Assert.Contains(bot.SentTexts, x => string.Equals(x.Text, "Menu", StringComparison.Ordinal));
     }
 }
+
+

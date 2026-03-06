@@ -43,6 +43,7 @@ builder.Services.AddSingleton<TenantConfigService>();
 builder.Services.AddSingleton<UserContextService>();
 builder.Services.AddSingleton<ConversationHistoryService>();
 builder.Services.AddSingleton<TelegramMessageSender>();
+builder.Services.AddSingleton<BotExceptionLogService>();
 builder.Services.AddSingleton<JobWorkflowService>();
 builder.Services.AddSingleton<IPhotoValidator, StubPhotoValidator>();
 builder.Services.AddSingleton<ChatMediatorService>();
@@ -62,6 +63,40 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider)
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<BotDbContext>>();
     await using var db = await factory.CreateDbContextAsync();
     await db.Database.MigrateAsync();
+    await EnsureExceptionLogsTable(db);
+}
+
+static async Task EnsureExceptionLogsTable(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS exception_logs
+    (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        exception_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        stack_trace TEXT NOT NULL,
+        telegram_user_id INTEGER NULL,
+        app_user_id INTEGER NULL,
+        related_job_id INTEGER NULL,
+        context_payload TEXT NULL,
+        created_at_utc TEXT NOT NULL
+    );
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_exception_logs_tenant_created
+    ON exception_logs (tenant_id, created_at_utc DESC);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_exception_logs_tg_user_created
+    ON exception_logs (telegram_user_id, created_at_utc DESC);
+    """);
 }
 
 static TimeZoneInfo ResolveTimeZone(string preferredId)

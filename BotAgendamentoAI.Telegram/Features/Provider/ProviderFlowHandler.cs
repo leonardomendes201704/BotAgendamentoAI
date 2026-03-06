@@ -706,7 +706,7 @@ public sealed class ProviderFlowHandler
         var query = context.Db.Jobs
             .AsNoTracking()
             .Where(x => x.TenantId == context.TenantId && x.Status == JobStatus.WaitingProvider)
-            .OrderByDescending(x => x.CreatedAt);
+            .OrderByDescending(x => x.Id);
 
         var total = await query.CountAsync(cancellationToken);
         var jobs = await query.Skip(safeOffset).Take(pageSize).ToListAsync(cancellationToken);
@@ -774,7 +774,7 @@ public sealed class ProviderFlowHandler
         var query = context.Db.Jobs
             .AsNoTracking()
             .Where(x => x.ProviderUserId == context.User.Id && x.Status != JobStatus.Cancelled && x.Status != JobStatus.Finished)
-            .OrderByDescending(x => x.UpdatedAt);
+            .OrderByDescending(x => x.Id);
 
         var total = await query.CountAsync(cancellationToken);
         var jobs = await query.Skip(safeOffset).Take(pageSize).ToListAsync(cancellationToken);
@@ -848,7 +848,7 @@ public sealed class ProviderFlowHandler
 
         var query = context.Db.ProviderPortfolioPhotos.AsNoTracking()
             .Where(x => x.ProviderUserId == context.User.Id)
-            .OrderByDescending(x => x.CreatedAt);
+            .OrderByDescending(x => x.Id);
 
         var total = await query.CountAsync(cancellationToken);
         var photos = await query
@@ -887,7 +887,7 @@ public sealed class ProviderFlowHandler
 
         var query = context.Db.ProviderPortfolioPhotos.AsNoTracking()
             .Where(x => x.ProviderUserId == context.User.Id)
-            .OrderByDescending(x => x.CreatedAt);
+            .OrderByDescending(x => x.Id);
 
         var total = await query.CountAsync(cancellationToken);
         var photos = await query.Skip(safeOffset).Take(pageSize).ToListAsync(cancellationToken);

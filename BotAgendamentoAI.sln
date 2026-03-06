@@ -1,10 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.13.35931.197
+# Visual Studio Version 18
+VisualStudioVersion = 18.2.11408.102 d18.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BotAgendamentoAI", "BotAgendamentoAI.csproj", "{F023EEA4-DB25-2A94-F059-44C2C5CFD500}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BotAgendamentoAI.Admin", "BotAgendamentoAI.Admin\BotAgendamentoAI.Admin.csproj", "{BE190FD2-0FF0-4762-86DE-0CFADA914941}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BotAgendamentoAI.Telegram", "BotAgendamentoAI.Telegram\BotAgendamentoAI.Telegram.csproj", "{0EE76A66-FEDA-4536-AEAA-C34D22158785}"
@@ -21,18 +19,6 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Debug|x64.Build.0 = Debug|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Debug|x86.Build.0 = Debug|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Release|Any CPU.Build.0 = Release|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Release|x64.ActiveCfg = Release|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Release|x64.Build.0 = Release|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Release|x86.ActiveCfg = Release|Any CPU
-		{F023EEA4-DB25-2A94-F059-44C2C5CFD500}.Release|x86.Build.0 = Release|Any CPU
 		{BE190FD2-0FF0-4762-86DE-0CFADA914941}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{BE190FD2-0FF0-4762-86DE-0CFADA914941}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{BE190FD2-0FF0-4762-86DE-0CFADA914941}.Debug|x64.ActiveCfg = Debug|Any CPU

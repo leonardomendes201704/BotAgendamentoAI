@@ -302,6 +302,38 @@ public static class KeyboardFactory
         });
     }
 
+    public static InlineKeyboardMarkup ClientRescheduleDaySelection(long jobId, DateTimeOffset nowLocal)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+        for (var i = 0; i < 7; i++)
+        {
+            var date = nowLocal.Date.AddDays(i);
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData(date.ToString("dd/MM (ddd)"), $"J:{jobId}:RS:DAY:{date:yyyyMMdd}")
+            });
+        }
+
+        rows.Add(NavigationRow());
+        return new InlineKeyboardMarkup(rows);
+    }
+
+    public static InlineKeyboardMarkup ClientRescheduleTimeSelection(long jobId, string yyyymmdd)
+    {
+        var slots = new[] { "08:00", "10:00", "13:00", "15:00", "18:00" };
+        var rows = new List<InlineKeyboardButton[]>();
+        foreach (var slot in slots)
+        {
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData(slot, $"J:{jobId}:RS:TIM:{yyyymmdd}{slot.Replace(":", string.Empty)}")
+            });
+        }
+
+        rows.Add(NavigationRow());
+        return new InlineKeyboardMarkup(rows);
+    }
+
     public static InlineKeyboardMarkup Rating(long jobId)
     {
         return new InlineKeyboardMarkup(new[]

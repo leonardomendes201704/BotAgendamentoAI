@@ -76,7 +76,7 @@ public sealed class ConversationHistoryService
             query = db.MessagesLog
                 .AsNoTracking()
                 .Where(x => x.TenantId == tenant && x.RelatedJobId == relatedJobId.Value)
-                .OrderByDescending(x => x.CreatedAt)
+                .OrderByDescending(x => x.Id)
                 .Take(safeLimit);
         }
         else
@@ -85,7 +85,7 @@ public sealed class ConversationHistoryService
             query = db.MessagesLog
                 .AsNoTracking()
                 .Where(x => x.TenantId == tenant && x.TelegramUserId == telegramUserId && x.CreatedAt >= since)
-                .OrderByDescending(x => x.CreatedAt)
+                .OrderByDescending(x => x.Id)
                 .Take(safeLimit);
         }
 
