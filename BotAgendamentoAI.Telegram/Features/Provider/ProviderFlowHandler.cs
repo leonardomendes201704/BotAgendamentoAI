@@ -25,6 +25,7 @@ public sealed class ProviderFlowHandler
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
     {
         var text = (message.Text ?? string.Empty).Trim();
+        var normalizedText = NormalizeProviderMenuInput(text, context.Session.State);
 
         if (text.Equals(MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase)
             || text.Equals(MenuTexts.Back, StringComparison.OrdinalIgnoreCase))
@@ -33,25 +34,25 @@ public sealed class ProviderFlowHandler
             return;
         }
 
-        if (text.Equals(MenuTexts.ProviderAvailableJobs, StringComparison.OrdinalIgnoreCase))
+        if (normalizedText.Equals(MenuTexts.ProviderAvailableJobs, StringComparison.OrdinalIgnoreCase))
         {
             await SendFeedAsync(context, message.Chat.Id, 0, cancellationToken);
             return;
         }
 
-        if (text.Equals(MenuTexts.ProviderAgenda, StringComparison.OrdinalIgnoreCase))
+        if (normalizedText.Equals(MenuTexts.ProviderAgenda, StringComparison.OrdinalIgnoreCase))
         {
             await SendAgendaAsync(context, message.Chat.Id, 0, cancellationToken);
             return;
         }
 
-        if (text.Equals(MenuTexts.ProviderProfile, StringComparison.OrdinalIgnoreCase))
+        if (normalizedText.Equals(MenuTexts.ProviderProfile, StringComparison.OrdinalIgnoreCase))
         {
             await SendProfileAsync(context, message.Chat.Id, cancellationToken);
             return;
         }
 
-        if (text.Equals(MenuTexts.ProviderPortfolio, StringComparison.OrdinalIgnoreCase))
+        if (normalizedText.Equals(MenuTexts.ProviderPortfolio, StringComparison.OrdinalIgnoreCase))
         {
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
@@ -59,13 +60,13 @@ public sealed class ProviderFlowHandler
             return;
         }
 
-        if (text.Equals(MenuTexts.ProviderSettings, StringComparison.OrdinalIgnoreCase))
+        if (normalizedText.Equals(MenuTexts.ProviderSettings, StringComparison.OrdinalIgnoreCase))
         {
             await ToggleAvailabilityAsync(context, message.Chat.Id, cancellationToken);
             return;
         }
 
-        if (text.Equals(MenuTexts.ProviderSwitchToClient, StringComparison.OrdinalIgnoreCase)
+        if (normalizedText.Equals(MenuTexts.ProviderSwitchToClient, StringComparison.OrdinalIgnoreCase)
             && context.User.Role == UserRole.Both)
         {
             context.Session.State = BotStates.C_HOME;
@@ -79,7 +80,10 @@ public sealed class ProviderFlowHandler
 
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, message.Chat.Id,
-                BotMessages.ClientHomeMenu(), KeyboardFactory.ClientMenu(), null, cancellationToken);
+                BotMessages.ClientHomeMenu(context.User.Role == UserRole.Both),
+                KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                null,
+                cancellationToken);
             return;
         }
 
@@ -1026,4 +1030,29 @@ public sealed class ProviderFlowHandler
 
     private static bool CanOpenChat(JobStatus status)
         => status is JobStatus.Accepted or JobStatus.OnTheWay or JobStatus.Arrived or JobStatus.InProgress;
+
+    private static string NormalizeProviderMenuInput(string text, string state)
+    {
+        if (!IsProviderMenuState(state))
+        {
+            return text;
+        }
+
+        return text switch
+        {
+            "1" => MenuTexts.ProviderAvailableJobs,
+            "2" => MenuTexts.ProviderAgenda,
+            "3" => MenuTexts.ProviderProfile,
+            "4" => MenuTexts.ProviderPortfolio,
+            "5" => MenuTexts.ProviderSettings,
+            "6" => MenuTexts.ProviderSwitchToClient,
+            _ => text
+        };
+    }
+
+    private static bool IsProviderMenuState(string state)
+        => string.Equals(state, BotStates.P_HOME, StringComparison.Ordinal)
+           || string.Equals(state, BotStates.P_ACTIVE_JOB, StringComparison.Ordinal)
+           || string.Equals(state, BotStates.P_FEED, StringComparison.Ordinal)
+           || string.Equals(state, BotStates.NONE, StringComparison.Ordinal);
 }

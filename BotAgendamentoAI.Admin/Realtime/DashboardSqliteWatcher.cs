@@ -93,38 +93,91 @@ public sealed class DashboardSqliteWatcher : BackgroundService
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
 
-        await MergeLongWatermarksAsync(
-            connection,
-            """
-            SELECT tenant_id, MAX(id)
-            FROM conversation_messages
-            GROUP BY tenant_id;
-            """,
-            output,
-            static (watermark, value) => watermark.MaxMessageId = value,
-            cancellationToken);
+        if (await TableExistsAsync(connection, "conversation_messages", cancellationToken))
+        {
+            await MergeLongWatermarksAsync(
+                connection,
+                """
+                SELECT tenant_id, MAX(id)
+                FROM conversation_messages
+                GROUP BY tenant_id;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxLegacyMessageId = value,
+                cancellationToken);
+        }
 
-        await MergeLongWatermarksAsync(
-            connection,
-            """
-            SELECT tenant_id, MAX(rowid)
-            FROM bookings
-            GROUP BY tenant_id;
-            """,
-            output,
-            static (watermark, value) => watermark.MaxBookingRowId = value,
-            cancellationToken);
+        if (await TableExistsAsync(connection, "MessagesLog", cancellationToken))
+        {
+            await MergeLongWatermarksAsync(
+                connection,
+                """
+                SELECT TenantId, MAX(Id)
+                FROM MessagesLog
+                GROUP BY TenantId;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxTelegramMessageId = value,
+                cancellationToken);
+        }
 
-        await MergeTextWatermarksAsync(
-            connection,
-            """
-            SELECT tenant_id, MAX(updated_at_utc)
-            FROM conversation_state
-            GROUP BY tenant_id;
-            """,
-            output,
-            static (watermark, value) => watermark.MaxStateUpdatedAtUtc = value,
-            cancellationToken);
+        if (await TableExistsAsync(connection, "bookings", cancellationToken))
+        {
+            await MergeLongWatermarksAsync(
+                connection,
+                """
+                SELECT tenant_id, MAX(rowid)
+                FROM bookings
+                GROUP BY tenant_id;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxBookingRowId = value,
+                cancellationToken);
+        }
+
+        if (await TableExistsAsync(connection, "Jobs", cancellationToken))
+        {
+            await MergeLongWatermarksAsync(
+                connection,
+                """
+                SELECT TenantId, MAX(Id)
+                FROM Jobs
+                GROUP BY TenantId;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxJobId = value,
+                cancellationToken);
+        }
+
+        if (await TableExistsAsync(connection, "conversation_state", cancellationToken))
+        {
+            await MergeTextWatermarksAsync(
+                connection,
+                """
+                SELECT tenant_id, MAX(updated_at_utc)
+                FROM conversation_state
+                GROUP BY tenant_id;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxStateUpdatedAtUtc = value,
+                cancellationToken);
+        }
+
+        if (await TableExistsAsync(connection, "UserSessions", cancellationToken)
+            && await TableExistsAsync(connection, "Users", cancellationToken))
+        {
+            await MergeTextWatermarksAsync(
+                connection,
+                """
+                SELECT u.TenantId, MAX(s.UpdatedAt)
+                FROM UserSessions s
+                INNER JOIN Users u ON u.Id = s.UserId
+                GROUP BY u.TenantId;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxSessionUpdatedAtUtc = value,
+                cancellationToken);
+        }
 
         return output;
     }
@@ -147,6 +200,25 @@ public sealed class DashboardSqliteWatcher : BackgroundService
             var watermark = GetOrCreate(destination, tenantId);
             apply(watermark, value);
         }
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = @table_name
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@table_name", tableName);
+        var scalar = await command.ExecuteScalarAsync(cancellationToken);
+        return scalar is not null && scalar is not DBNull;
     }
 
     private static async Task MergeTextWatermarksAsync(
@@ -201,40 +273,46 @@ public sealed class DashboardSqliteWatcher : BackgroundService
             return Path.GetFullPath(envPath);
         }
 
-        var candidates = new[]
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..",
+            "bin", "Debug", "net9.0", "data", "bot.db"));
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
         {
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "bot.db")),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "bin", "Debug", "net9.0", "data", "bot.db")),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "bin", "Debug", "net9.0", "data", "bot.db"))
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            Directory.CreateDirectory(directory);
         }
 
-        return candidates[0];
+        return path;
     }
 
     private sealed class TenantWatermark
     {
-        public long MaxMessageId { get; set; }
+        public long MaxLegacyMessageId { get; set; }
+        public long MaxTelegramMessageId { get; set; }
         public long MaxBookingRowId { get; set; }
+        public long MaxJobId { get; set; }
         public string MaxStateUpdatedAtUtc { get; set; } = string.Empty;
+        public string MaxSessionUpdatedAtUtc { get; set; } = string.Empty;
 
         public bool IsNewerThan(TenantWatermark? previous)
         {
             if (previous is null)
             {
-                return MaxMessageId > 0 || MaxBookingRowId > 0 || !string.IsNullOrWhiteSpace(MaxStateUpdatedAtUtc);
+                return MaxLegacyMessageId > 0
+                       || MaxTelegramMessageId > 0
+                       || MaxBookingRowId > 0
+                       || MaxJobId > 0
+                       || !string.IsNullOrWhiteSpace(MaxStateUpdatedAtUtc)
+                       || !string.IsNullOrWhiteSpace(MaxSessionUpdatedAtUtc);
             }
 
-            return MaxMessageId > previous.MaxMessageId
+            return MaxLegacyMessageId > previous.MaxLegacyMessageId
+                   || MaxTelegramMessageId > previous.MaxTelegramMessageId
                    || MaxBookingRowId > previous.MaxBookingRowId
-                   || string.CompareOrdinal(MaxStateUpdatedAtUtc, previous.MaxStateUpdatedAtUtc) > 0;
+                   || MaxJobId > previous.MaxJobId
+                   || string.CompareOrdinal(MaxStateUpdatedAtUtc, previous.MaxStateUpdatedAtUtc) > 0
+                   || string.CompareOrdinal(MaxSessionUpdatedAtUtc, previous.MaxSessionUpdatedAtUtc) > 0;
         }
     }
 }

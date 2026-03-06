@@ -169,3 +169,24 @@
         <button type="submit" class="btn btn-outline-danger" @(Model.TelegramUsers.Count == 0 ? "disabled" : null)>Resetar memoria do usuario</button>
     </div>
 </form>
+
+<form method="post" asp-action="ResetTenantOperationalData" class="card card-body mt-3">
+    @Html.AntiForgeryToken()
+    <input type="hidden" name="tenantId" value="@Model.TenantId" />
+
+    <h2 class="h5">Reset geral do tenant</h2>
+    <p class="text-muted mb-2">
+        Limpa todos os dados operacionais do tenant atual (conversas, estados, logs, agendamentos/jobs, usuarios/sessoes).
+        As configuracoes sao preservadas (menus/mensagens, token Telegram, OpenAI API Key, catalogo de servicos/categorias).
+    </p>
+
+    <div class="alert alert-warning py-2 mb-3">
+        Esta acao e irreversivel.
+    </div>
+
+    <div>
+        <button type="submit" class="btn btn-danger" onclick="return confirm('Confirmar reset geral do tenant @Model.TenantId? Esta acao nao pode ser desfeita.');">
+            Reset geral (manter configuracoes)
+        </button>
+    </div>
+</form>

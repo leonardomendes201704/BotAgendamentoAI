@@ -69,6 +69,13 @@ public sealed class ChatMediatorService
             return true;
         }
 
+        if (ShouldReleaseToMenu(incoming.Text))
+        {
+            Stop(session, UserContextService.HomeStateForRole(sender.Role));
+            await db.SaveChangesAsync(cancellationToken);
+            return false;
+        }
+
         var peer = await db.Users
             .Include(x => x.Session)
             .FirstOrDefaultAsync(
@@ -178,5 +185,39 @@ public sealed class ChatMediatorService
         return sessionState.StartsWith("P_", StringComparison.OrdinalIgnoreCase)
             ? $"Prestador {name}"
             : $"Cliente {name}";
+    }
+
+    private static bool ShouldReleaseToMenu(string? text)
+    {
+        var safe = (text ?? string.Empty).Trim();
+        if (safe.Length == 0)
+        {
+            return false;
+        }
+
+        if (string.Equals(safe, "/menu", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(safe, "menu", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(safe, MenuTexts.Back, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(safe, MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (safe is "1" or "2" or "3" or "4" or "5" or "6")
+        {
+            return true;
+        }
+
+        return string.Equals(safe, MenuTexts.ClientRequestService, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ClientMyBookings, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ClientFavorites, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ClientHelp, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ClientSwitchToProvider, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ProviderAvailableJobs, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ProviderAgenda, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ProviderProfile, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ProviderPortfolio, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ProviderSettings, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(safe, MenuTexts.ProviderSwitchToClient, StringComparison.OrdinalIgnoreCase);
     }
 }

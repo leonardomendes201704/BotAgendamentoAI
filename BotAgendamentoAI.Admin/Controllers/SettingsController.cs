@@ -57,4 +57,24 @@ public sealed class SettingsController : Controller
 
         return RedirectToAction(nameof(Index), new { tenant });
     }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> ResetTenantOperationalData(string tenantId)
+    {
+        var tenant = string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
+        var result = await _repository.ResetTenantOperationalDataAsync(tenant);
+
+        TempData["StatusMessage"] =
+            $"Reset geral concluido no tenant {tenant}. " +
+            $"Legacy msgs: {result.LegacyConversationMessagesDeleted}, " +
+            $"Legacy state: {result.LegacyConversationStateDeleted}, " +
+            $"Legacy bookings: {result.LegacyBookingsDeleted}, " +
+            $"Legacy geocode: {result.LegacyBookingGeocodeCacheDeleted}, " +
+            $"TG logs: {result.TelegramMessagesDeleted}, " +
+            $"TG jobs: {result.TelegramJobsDeleted}, " +
+            $"TG users: {result.TelegramUsersDeleted}.";
+
+        return RedirectToAction(nameof(Index), new { tenant });
+    }
 }

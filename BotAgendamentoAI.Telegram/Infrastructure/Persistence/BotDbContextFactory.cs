@@ -20,21 +20,22 @@ public sealed class BotDbContextFactory : IDesignTimeDbContextFactory<BotDbConte
             return Path.GetFullPath(configuredPath);
         }
 
-        var candidates = new[]
+        var envPath = Environment.GetEnvironmentVariable("BOT_DB_PATH");
+        if (!string.IsNullOrWhiteSpace(envPath))
         {
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "bot.db")),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "bin", "Debug", "net8.0", "data", "bot.db")),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "bin", "Debug", "net8.0", "data", "bot.db"))
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            return Path.GetFullPath(envPath);
         }
 
-        return candidates[0];
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..",
+            "bin", "Debug", "net9.0", "data", "bot.db"));
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        return path;
     }
 }

@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types.Enums;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types.InputFiles;
@@ -11,7 +12,8 @@ public sealed class TelegramApiClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     private readonly HttpClient _httpClient;
@@ -154,6 +156,15 @@ public sealed class TelegramApiClient
             var parsed = TryDeserialize<T>(responseText);
             if (parsed is not null)
             {
+                if (!parsed.Ok)
+                {
+                    _logger.LogWarning(
+                        "Telegram API retornou erro em {Method}. code={Code} desc={Desc}",
+                        methodName,
+                        parsed.ErrorCode,
+                        parsed.Description);
+                }
+
                 return parsed;
             }
 

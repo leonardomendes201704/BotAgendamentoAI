@@ -42,9 +42,11 @@ public sealed class TelegramSendMessageRequest
     public string Text { get; set; } = string.Empty;
 
     [JsonPropertyName("parse_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParseMode { get; set; }
 
     [JsonPropertyName("reply_markup")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? ReplyMarkup { get; set; }
 }
 
@@ -57,12 +59,15 @@ public sealed class TelegramSendPhotoRequest
     public string Photo { get; set; } = string.Empty;
 
     [JsonPropertyName("caption")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Caption { get; set; }
 
     [JsonPropertyName("parse_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParseMode { get; set; }
 
     [JsonPropertyName("reply_markup")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? ReplyMarkup { get; set; }
 }
 
@@ -84,9 +89,11 @@ public sealed class TelegramMediaItem
     public string Media { get; set; } = string.Empty;
 
     [JsonPropertyName("caption")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Caption { get; set; }
 
     [JsonPropertyName("parse_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParseMode { get; set; }
 }
 
@@ -108,6 +115,7 @@ public sealed class TelegramAnswerCallbackRequest
     public string CallbackQueryId { get; set; } = string.Empty;
 
     [JsonPropertyName("text")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Text { get; set; }
 
     [JsonPropertyName("show_alert")]

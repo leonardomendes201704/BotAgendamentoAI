@@ -71,7 +71,8 @@ public sealed class MarketplaceBotOrchestrator
     {
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var from = ResolveFromUser(message);
-        var user = await _userContextService.EnsureUserAsync(db, tenantId, from, cancellationToken);
+        var userResult = await _userContextService.EnsureUserAsync(db, tenantId, from, cancellationToken);
+        var user = userResult.User;
 
         user.Session ??= new Domain.Entities.UserSession
         {
@@ -82,7 +83,7 @@ public sealed class MarketplaceBotOrchestrator
         };
 
         if (UserContextService.IsSessionExpired(user.Session, runtime.SessionExpiryMinutes)
-            && user.Session.State is not BotStates.C_HOME and not BotStates.P_HOME and not BotStates.NONE)
+            && user.Session.State is not BotStates.C_HOME and not BotStates.P_HOME and not BotStates.NONE and not BotStates.U_ROLE_REQUIRED)
         {
             UserContextService.ResetSession(user.Session, UserContextService.HomeStateForRole(user.Role));
             await db.SaveChangesAsync(cancellationToken);
@@ -94,7 +95,9 @@ public sealed class MarketplaceBotOrchestrator
                 user.TelegramUserId,
                 message.Chat.Id,
                 BotMessages.StateExpired,
-                user.Role == UserRole.Provider ? KeyboardFactory.ProviderMenu() : KeyboardFactory.ClientMenu(),
+                user.Role == UserRole.Provider
+                    ? KeyboardFactory.ProviderMenu()
+                    : KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
                 null,
                 cancellationToken);
         }
@@ -111,20 +114,6 @@ public sealed class MarketplaceBotOrchestrator
             user.Session.ActiveJobId,
             cancellationToken);
 
-        _ = await _historyService.LoadContextAsync(
-            db,
-            tenantId,
-            user.TelegramUserId,
-            user.Session.ActiveJobId,
-            runtime.HistoryLimitPerContext,
-            cancellationToken);
-
-        if (await _chatMediator.TryHandleChatMessageAsync(db, botClient, tenantId, user, message, cancellationToken))
-        {
-            await db.SaveChangesAsync(cancellationToken);
-            return;
-        }
-
         if (string.Equals(message.Text?.Trim(), "/start", StringComparison.OrdinalIgnoreCase))
         {
             await _sender.SendTextAsync(
@@ -137,6 +126,42 @@ public sealed class MarketplaceBotOrchestrator
                 KeyboardFactory.RoleChoice(),
                 null,
                 cancellationToken);
+            return;
+        }
+
+        if (userResult.IsNewUser || string.Equals(user.Session.State, BotStates.U_ROLE_REQUIRED, StringComparison.Ordinal))
+        {
+            await _sender.SendTextAsync(
+                db,
+                botClient,
+                tenantId,
+                user.TelegramUserId,
+                message.Chat.Id,
+                BotMessages.WelcomeRoleChoice(),
+                KeyboardFactory.RoleChoice(),
+                null,
+                cancellationToken);
+            return;
+        }
+
+        try
+        {
+            _ = await _historyService.LoadContextAsync(
+                db,
+                tenantId,
+                user.TelegramUserId,
+                user.Session.ActiveJobId,
+                runtime.HistoryLimitPerContext,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Falha ao carregar contexto tenant={Tenant} user={UserId}", tenantId, user.TelegramUserId);
+        }
+
+        if (await _chatMediator.TryHandleChatMessageAsync(db, botClient, tenantId, user, message, cancellationToken))
+        {
+            await db.SaveChangesAsync(cancellationToken);
             return;
         }
 
@@ -194,7 +219,8 @@ public sealed class MarketplaceBotOrchestrator
             Username = ""
         };
 
-        var user = await _userContextService.EnsureUserAsync(db, tenantId, from, cancellationToken);
+        var userResult = await _userContextService.EnsureUserAsync(db, tenantId, from, cancellationToken);
+        var user = userResult.User;
         user.Session ??= new Domain.Entities.UserSession
         {
             UserId = user.Id,
@@ -232,6 +258,27 @@ public sealed class MarketplaceBotOrchestrator
 
         var context = BuildContext(tenantId, db, botClient, user, runtime);
 
+        if (route.Scope == "C" && route.Action == "HOME")
+        {
+            var handledClientHome = await _clientFlow.HandleCallbackAsync(context, route, callback, cancellationToken);
+            if (!handledClientHome)
+            {
+                await _sender.SendTextAsync(
+                    db,
+                    botClient,
+                    tenantId,
+                    user.TelegramUserId,
+                    chatId,
+                    BotMessages.ClientHomeMenu(user.Role == UserRole.Both),
+                    KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
+                    user.Session.ActiveJobId,
+                    cancellationToken);
+            }
+
+            await botClient.AnswerCallbackQuery(callback.Id, null, false, cancellationToken);
+            return;
+        }
+
         if (route.Scope == "J"
             && long.TryParse(route.Action, out var jobId)
             && route.Arg1 == "CHAT"
@@ -263,7 +310,9 @@ public sealed class MarketplaceBotOrchestrator
                 user.TelegramUserId,
                 chatId,
                 BotMessages.UnknownCommand,
-                IsProviderMode(user) ? KeyboardFactory.ProviderMenu() : KeyboardFactory.ClientMenu(),
+                IsProviderMode(user)
+                    ? KeyboardFactory.ProviderMenu()
+                    : KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
                 user.Session.ActiveJobId,
                 cancellationToken);
         }
@@ -335,8 +384,8 @@ public sealed class MarketplaceBotOrchestrator
                 tenantId,
                 user.TelegramUserId,
                 chatId,
-                BotMessages.ClientHomeMenu(),
-                KeyboardFactory.ClientMenu(),
+                BotMessages.ClientHomeMenu(user.Role == UserRole.Both),
+                KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
                 null,
                 cancellationToken);
         }

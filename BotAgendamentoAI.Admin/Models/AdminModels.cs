@@ -75,6 +75,8 @@ public sealed class BookingListItem
     public DateTime StartLocal { get; set; }
     public int DurationMinutes { get; set; }
     public string Address { get; set; } = string.Empty;
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
     public string TechnicianName { get; set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; set; }
 }
@@ -172,4 +174,20 @@ public sealed class TelegramMemoryResetResult
     public int TelegramMessagesDeleted { get; set; }
     public int LegacyConversationMessagesDeleted { get; set; }
     public int LegacyConversationStateDeleted { get; set; }
+}
+
+public sealed class TenantOperationalResetResult
+{
+    public int LegacyConversationMessagesDeleted { get; set; }
+    public int LegacyConversationStateDeleted { get; set; }
+    public int LegacyBookingsDeleted { get; set; }
+    public int LegacyBookingGeocodeCacheDeleted { get; set; }
+    public int TelegramJobPhotosDeleted { get; set; }
+    public int TelegramRatingsDeleted { get; set; }
+    public int TelegramMessagesDeleted { get; set; }
+    public int TelegramJobsDeleted { get; set; }
+    public int TelegramProviderPortfolioDeleted { get; set; }
+    public int TelegramUserSessionsDeleted { get; set; }
+    public int TelegramProviderProfilesDeleted { get; set; }
+    public int TelegramUsersDeleted { get; set; }
 }

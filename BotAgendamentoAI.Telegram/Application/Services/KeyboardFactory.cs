@@ -37,6 +37,39 @@ public static class KeyboardFactory
         };
     }
 
+    public static InlineKeyboardMarkup ClientHomeActions(bool allowSwitchToProvider)
+    {
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("1 - Pedir servico", "C:HOME:REQ")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("2 - Meus agendamentos", "C:HOME:MY")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("3 - Favoritos", "C:HOME:FAV")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("4 - Ajuda", "C:HOME:HLP")
+            }
+        };
+
+        if (allowSwitchToProvider)
+        {
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("5 - Trocar para Prestador", "C:HOME:SWP")
+            });
+        }
+
+        return new InlineKeyboardMarkup(rows);
+    }
+
     public static ReplyKeyboardMarkup ProviderMenu()
     {
         return new ReplyKeyboardMarkup(new[]
@@ -94,6 +127,36 @@ public static class KeyboardFactory
             IsPersistent = true,
             OneTimeKeyboard = false
         };
+    }
+
+    public static ReplyKeyboardMarkup CepRequestKeyboard()
+    {
+        return new ReplyKeyboardMarkup(new[]
+        {
+            new KeyboardButton[]
+            {
+                new KeyboardButton(MenuTexts.Back),
+                new KeyboardButton(MenuTexts.Cancel)
+            }
+        })
+        {
+            ResizeKeyboard = true,
+            IsPersistent = true,
+            OneTimeKeyboard = false
+        };
+    }
+
+    public static InlineKeyboardMarkup AddressConfirmation()
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Correto", "C:ADDR:OK"),
+                InlineKeyboardButton.WithCallbackData("Alterar", "C:ADDR:EDIT")
+            },
+            NavigationRow()
+        });
     }
 
     public static InlineKeyboardMarkup ScheduleMode()

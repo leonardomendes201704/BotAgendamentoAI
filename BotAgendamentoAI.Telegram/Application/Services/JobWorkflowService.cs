@@ -134,7 +134,7 @@ public sealed class JobWorkflowService
             context.User.TelegramUserId,
             clientChatId,
             BotMessages.WaitingProvider(),
-            KeyboardFactory.ClientMenu(),
+            KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
             job.Id,
             cancellationToken);
 

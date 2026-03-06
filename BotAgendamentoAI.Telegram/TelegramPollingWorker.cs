@@ -118,7 +118,22 @@ public sealed class TelegramPollingWorker : BackgroundService
         foreach (var update in updates.OrderBy(x => x.UpdateId))
         {
             maxUpdateId = Math.Max(maxUpdateId, update.UpdateId);
-            await _orchestrator.HandleUpdateAsync(config.TenantId, client, update, _runtime, cancellationToken);
+            try
+            {
+                await _orchestrator.HandleUpdateAsync(config.TenantId, client, update, _runtime, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Erro processando update tenant={Tenant} updateId={UpdateId}. Update sera ignorado para evitar loop.",
+                    config.TenantId,
+                    update.UpdateId);
+            }
         }
 
         if (maxUpdateId > config.LastUpdateId)

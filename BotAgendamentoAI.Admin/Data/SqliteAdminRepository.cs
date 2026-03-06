@@ -161,10 +161,15 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        async Task CollectAsync(string sql)
+        async Task CollectFromTableAsync(string tableName, string tenantColumn)
         {
+            if (!await TableExistsAsync(connection, tableName))
+            {
+                return;
+            }
+
             await using var command = connection.CreateCommand();
-            command.CommandText = sql;
+            command.CommandText = $"SELECT DISTINCT {tenantColumn} FROM {tableName};";
             await using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
@@ -179,11 +184,13 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             }
         }
 
-        await CollectAsync("SELECT DISTINCT tenant_id FROM conversation_messages;");
-        await CollectAsync("SELECT DISTINCT tenant_id FROM bookings;");
-        await CollectAsync("SELECT DISTINCT tenant_id FROM conversation_state;");
-        await CollectAsync("SELECT DISTINCT tenant_id FROM tenant_bot_config;");
-        await CollectAsync("SELECT DISTINCT tenant_id FROM tenant_telegram_config;");
+        await CollectFromTableAsync("conversation_messages", "tenant_id");
+        await CollectFromTableAsync("bookings", "tenant_id");
+        await CollectFromTableAsync("conversation_state", "tenant_id");
+        await CollectFromTableAsync("tenant_bot_config", "tenant_id");
+        await CollectFromTableAsync("tenant_telegram_config", "tenant_id");
+        await CollectFromTableAsync("Users", "TenantId");
+        await CollectFromTableAsync("MessagesLog", "TenantId");
 
         if (tenants.Count == 0)
         {
@@ -205,64 +212,197 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var totalIncomingConversations = await QueryIntAsync(connection,
-            """
-            SELECT COUNT(DISTINCT phone)
-            FROM conversation_messages
-            WHERE tenant_id = @tenant_id
-              AND role = 'user'
-              AND direction = 'in'
-              AND created_at_utc >= @from_utc
-              AND created_at_utc <= @to_utc;
-            """,
-            ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+        var hasLegacyMessages = await TableExistsAsync(connection, "conversation_messages");
+        var hasMessagesLog = await TableExistsAsync(connection, "MessagesLog");
+        var hasLegacyBookings = await TableExistsAsync(connection, "bookings");
+        var hasJobs = await TableExistsAsync(connection, "Jobs");
+        var hasUsers = await TableExistsAsync(connection, "Users");
+        var hasLegacyState = await TableExistsAsync(connection, "conversation_state");
 
-        var totalMessages = await QueryIntAsync(connection,
-            """
-            SELECT COUNT(*)
-            FROM conversation_messages
-            WHERE tenant_id = @tenant_id
-              AND created_at_utc >= @from_utc
-              AND created_at_utc <= @to_utc;
-            """,
-            ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+        var incomingConversationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var convertedConversationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var totalMessages = 0;
+        var createdBookings = 0;
 
-        var createdBookings = await QueryIntAsync(connection,
-            """
-            SELECT COUNT(*)
-            FROM bookings
-            WHERE tenant_id = @tenant_id
-              AND created_at_utc >= @from_utc
-              AND created_at_utc <= @to_utc;
-            """,
-            ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+        if (hasLegacyMessages)
+        {
+            totalMessages += await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM conversation_messages
+                WHERE tenant_id = @tenant_id
+                  AND created_at_utc >= @from_utc
+                  AND created_at_utc <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
 
-        var convertedPhones = await QueryIntAsync(connection,
-            """
-            SELECT COUNT(DISTINCT customer_phone)
-            FROM bookings
-            WHERE tenant_id = @tenant_id
-              AND created_at_utc >= @from_utc
-              AND created_at_utc <= @to_utc;
-            """,
-            ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+            await using var inboundLegacyCommand = connection.CreateCommand();
+            inboundLegacyCommand.CommandText =
+                """
+                SELECT DISTINCT phone
+                FROM conversation_messages
+                WHERE tenant_id = @tenant_id
+                  AND role = 'user'
+                  AND lower(direction) = 'in'
+                  AND created_at_utc >= @from_utc
+                  AND created_at_utc <= @to_utc;
+                """;
+            inboundLegacyCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            inboundLegacyCommand.Parameters.AddWithValue("@from_utc", fromText);
+            inboundLegacyCommand.Parameters.AddWithValue("@to_utc", nowText);
 
-        var humanHandoffOpen = await QueryIntAsync(connection,
-            """
-            SELECT COUNT(*)
-            FROM conversation_state
-            WHERE tenant_id = @tenant_id
-              AND (
-                json_extract(slots_json, '$.menuContext') = 'human_handoff'
-                OR json_extract(slots_json, '$.pending') = 'human_handoff'
-              );
-            """,
-            ("@tenant_id", tenant));
+            await using var reader = await inboundLegacyCommand.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    incomingConversationKeys.Add($"legacy:{reader.GetString(0)}");
+                }
+            }
+        }
+
+        if (hasMessagesLog)
+        {
+            totalMessages += await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM MessagesLog
+                WHERE TenantId = @tenant_id
+                  AND CreatedAt >= @from_utc
+                  AND CreatedAt <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+
+            await using var inboundTelegramCommand = connection.CreateCommand();
+            inboundTelegramCommand.CommandText =
+                """
+                SELECT DISTINCT TelegramUserId
+                FROM MessagesLog
+                WHERE TenantId = @tenant_id
+                  AND lower(Direction) = 'in'
+                  AND CreatedAt >= @from_utc
+                  AND CreatedAt <= @to_utc;
+                """;
+            inboundTelegramCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            inboundTelegramCommand.Parameters.AddWithValue("@from_utc", fromText);
+            inboundTelegramCommand.Parameters.AddWithValue("@to_utc", nowText);
+
+            await using var reader = await inboundTelegramCommand.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    incomingConversationKeys.Add($"tg:{reader.GetInt64(0)}");
+                }
+            }
+        }
+
+        if (hasLegacyBookings)
+        {
+            createdBookings += await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM bookings
+                WHERE tenant_id = @tenant_id
+                  AND created_at_utc >= @from_utc
+                  AND created_at_utc <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+
+            await using var convertedLegacyCommand = connection.CreateCommand();
+            convertedLegacyCommand.CommandText =
+                """
+                SELECT DISTINCT customer_phone
+                FROM bookings
+                WHERE tenant_id = @tenant_id
+                  AND created_at_utc >= @from_utc
+                  AND created_at_utc <= @to_utc;
+                """;
+            convertedLegacyCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            convertedLegacyCommand.Parameters.AddWithValue("@from_utc", fromText);
+            convertedLegacyCommand.Parameters.AddWithValue("@to_utc", nowText);
+
+            await using var reader = await convertedLegacyCommand.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    convertedConversationKeys.Add($"legacy:{reader.GetString(0)}");
+                }
+            }
+        }
+
+        if (hasJobs)
+        {
+            createdBookings += await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM Jobs
+                WHERE TenantId = @tenant_id
+                  AND Status <> 'Draft'
+                  AND CreatedAt >= @from_utc
+                  AND CreatedAt <= @to_utc;
+                """,
+                ("@tenant_id", tenant), ("@from_utc", fromText), ("@to_utc", nowText));
+
+            await using var convertedJobsCommand = connection.CreateCommand();
+            convertedJobsCommand.CommandText = hasUsers
+                ? """
+                  SELECT DISTINCT COALESCE(u.TelegramUserId, 0), j.ClientUserId
+                  FROM Jobs j
+                  LEFT JOIN Users u
+                    ON u.Id = j.ClientUserId
+                   AND u.TenantId = j.TenantId
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                    AND j.CreatedAt >= @from_utc
+                    AND j.CreatedAt <= @to_utc;
+                  """
+                : """
+                  SELECT DISTINCT 0, j.ClientUserId
+                  FROM Jobs j
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                    AND j.CreatedAt >= @from_utc
+                    AND j.CreatedAt <= @to_utc;
+                  """;
+            convertedJobsCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            convertedJobsCommand.Parameters.AddWithValue("@from_utc", fromText);
+            convertedJobsCommand.Parameters.AddWithValue("@to_utc", nowText);
+
+            await using var reader = await convertedJobsCommand.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var telegramUserId = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
+                if (telegramUserId > 0)
+                {
+                    convertedConversationKeys.Add($"tg:{telegramUserId}");
+                }
+            }
+        }
+
+        var humanHandoffOpen = 0;
+        if (hasLegacyState)
+        {
+            humanHandoffOpen = await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM conversation_state
+                WHERE tenant_id = @tenant_id
+                  AND (
+                    json_extract(slots_json, '$.menuContext') = 'human_handoff'
+                    OR json_extract(slots_json, '$.pending') = 'human_handoff'
+                  );
+                """,
+                ("@tenant_id", tenant));
+        }
 
         var recentConversations = await GetConversationThreadsAsync(tenant, 20);
         var recentBookings = await GetBookingsAsync(tenant, 20);
         var mapPins = await GetDashboardMapPinsAsync(tenant, null, 300);
 
+        var totalIncomingConversations = incomingConversationKeys.Count;
+        var convertedPhones = convertedConversationKeys.Count;
         var conversionRate = totalIncomingConversations == 0
             ? 0m
             : Math.Round(convertedPhones * 100m / totalIncomingConversations, 2);
@@ -294,31 +434,56 @@ CREATE TABLE IF NOT EXISTS shared_settings (
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+        var hasLegacyBookings = await TableExistsAsync(connection, "bookings");
+        var hasGeocodeCache = await TableExistsAsync(connection, "booking_geocode_cache");
+        var hasJobs = await TableExistsAsync(connection, "Jobs");
+        var hasUsers = await TableExistsAsync(connection, "Users");
 
-        await using (var command = connection.CreateCommand())
+        if (hasLegacyBookings)
         {
-            command.CommandText =
-            """
-            SELECT
-              b.id,
-              b.tenant_id,
-              b.service_category,
-              b.service_title,
-              b.customer_phone,
-              b.address,
-              b.start_local,
-              b.created_at_utc,
-              g.latitude,
-              g.longitude,
-              g.status,
-              g.retry_after_utc
-            FROM bookings b
-            LEFT JOIN booking_geocode_cache g ON g.booking_id = b.id
-            WHERE b.tenant_id = @tenant_id
-              AND (@since_utc IS NULL OR b.created_at_utc >= @since_utc)
-            ORDER BY b.created_at_utc DESC
-            LIMIT @limit;
-            """;
+            await using var command = connection.CreateCommand();
+            command.CommandText = hasGeocodeCache
+                ? """
+                  SELECT
+                    b.id,
+                    b.tenant_id,
+                    b.service_category,
+                    b.service_title,
+                    b.customer_phone,
+                    b.address,
+                    b.start_local,
+                    b.created_at_utc,
+                    g.latitude,
+                    g.longitude,
+                    g.status,
+                    g.retry_after_utc
+                  FROM bookings b
+                  LEFT JOIN booking_geocode_cache g ON g.booking_id = b.id
+                  WHERE b.tenant_id = @tenant_id
+                    AND (@since_utc IS NULL OR b.created_at_utc >= @since_utc)
+                  ORDER BY b.created_at_utc DESC
+                  LIMIT @limit;
+                  """
+                : """
+                  SELECT
+                    b.id,
+                    b.tenant_id,
+                    b.service_category,
+                    b.service_title,
+                    b.customer_phone,
+                    b.address,
+                    b.start_local,
+                    b.created_at_utc,
+                    NULL,
+                    NULL,
+                    '',
+                    NULL
+                  FROM bookings b
+                  WHERE b.tenant_id = @tenant_id
+                    AND (@since_utc IS NULL OR b.created_at_utc >= @since_utc)
+                  ORDER BY b.created_at_utc DESC
+                  LIMIT @limit;
+                  """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@since_utc", sinceUtc.HasValue ? ToUtcText(sinceUtc.Value) : (object)DBNull.Value);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -344,13 +509,150 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             }
         }
 
+        if (hasJobs)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = hasUsers
+                ? """
+                  SELECT
+                    j.Id,
+                    j.TenantId,
+                    j.Category,
+                    j.Description,
+                    u.Phone,
+                    u.TelegramUserId,
+                    j.ClientUserId,
+                    COALESCE(j.AddressText, ''),
+                    COALESCE(j.ScheduledAt, j.CreatedAt),
+                    j.CreatedAt,
+                    j.Latitude,
+                    j.Longitude
+                  FROM Jobs j
+                  LEFT JOIN Users u
+                    ON u.Id = j.ClientUserId
+                   AND u.TenantId = j.TenantId
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                    AND (@since_utc IS NULL OR j.CreatedAt >= @since_utc)
+                  ORDER BY j.CreatedAt DESC
+                  LIMIT @limit;
+                  """
+                : """
+                  SELECT
+                    j.Id,
+                    j.TenantId,
+                    j.Category,
+                    j.Description,
+                    NULL,
+                    NULL,
+                    j.ClientUserId,
+                    COALESCE(j.AddressText, ''),
+                    COALESCE(j.ScheduledAt, j.CreatedAt),
+                    j.CreatedAt,
+                    j.Latitude,
+                    j.Longitude
+                  FROM Jobs j
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                    AND (@since_utc IS NULL OR j.CreatedAt >= @since_utc)
+                  ORDER BY j.CreatedAt DESC
+                  LIMIT @limit;
+                  """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@since_utc", sinceUtc.HasValue ? ToUtcText(sinceUtc.Value) : (object)DBNull.Value);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var telegramUserId = reader.IsDBNull(5) ? 0L : reader.GetInt64(5);
+                var clientUserId = reader.IsDBNull(6) ? 0L : reader.GetInt64(6);
+                var customerPhone = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                if (string.IsNullOrWhiteSpace(customerPhone))
+                {
+                    customerPhone = telegramUserId > 0 ? $"tg:{telegramUserId}" : $"user:{clientUserId}";
+                }
+
+                var scheduledRaw = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
+                var createdAtRaw = reader.IsDBNull(9) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(9);
+                var createdAtUtc = ParseUtc(createdAtRaw);
+
+                var row = new DashboardMapRow
+                {
+                    BookingId = $"job:{reader.GetInt64(0)}",
+                    TenantId = reader.IsDBNull(1) ? tenant : reader.GetString(1),
+                    ServiceCategory = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    ServiceTitle = TrimPreview(reader.IsDBNull(3) ? string.Empty : reader.GetString(3)),
+                    CustomerPhone = customerPhone,
+                    Address = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    StartLocal = ParseLocalOrUtcDateTime(scheduledRaw, createdAtUtc),
+                    CreatedAtUtc = createdAtUtc,
+                    Latitude = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                    Longitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
+                    GeocodeStatus = string.Empty,
+                    RetryAfterUtc = null
+                };
+
+                if ((!row.Latitude.HasValue || !row.Longitude.HasValue)
+                    && TryExtractCoordinatesFromText(row.Address, out var extractedLat, out var extractedLng))
+                {
+                    row.Latitude = extractedLat;
+                    row.Longitude = extractedLng;
+                    row.GeocodeStatus = "ok";
+                    row.RetryAfterUtc = null;
+                }
+
+                if ((!row.Latitude.HasValue || !row.Longitude.HasValue) && hasGeocodeCache)
+                {
+                    var cached = await TryGetGeocodeCacheAsync(connection, row.BookingId, row.TenantId);
+                    if (cached.Latitude.HasValue && cached.Longitude.HasValue)
+                    {
+                        row.Latitude = cached.Latitude;
+                        row.Longitude = cached.Longitude;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(cached.Status))
+                    {
+                        row.GeocodeStatus = cached.Status;
+                        row.RetryAfterUtc = cached.RetryAfterUtc;
+                    }
+                }
+
+                rows.Add(row);
+            }
+        }
+
+        rows = rows
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToList();
+
         var geocodeAttempts = 0;
-        const int maxGeocodeAttemptsPerRequest = 10;
+        const int maxGeocodeAttemptsPerRequest = 25;
 
         foreach (var row in rows)
         {
             if (row.Latitude.HasValue && row.Longitude.HasValue)
             {
+                continue;
+            }
+
+            if (TryExtractCoordinatesFromText(row.Address, out var parsedLat, out var parsedLng))
+            {
+                row.Latitude = parsedLat;
+                row.Longitude = parsedLng;
+                row.GeocodeStatus = "ok";
+                row.RetryAfterUtc = null;
+
+                if (hasGeocodeCache)
+                {
+                    await UpsertGeocodeCacheAsync(connection, row, null);
+                }
+
+                if (hasJobs && TryParseJobBookingId(row.BookingId, out var parsedJobId))
+                {
+                    await UpdateJobCoordinatesAsync(connection, row.TenantId, parsedJobId, parsedLat, parsedLng);
+                }
+
                 continue;
             }
 
@@ -376,6 +678,16 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 row.Longitude = geocodeResult.Longitude;
                 row.GeocodeStatus = "ok";
                 row.RetryAfterUtc = null;
+
+                if (hasJobs && TryParseJobBookingId(row.BookingId, out var geocodedJobId))
+                {
+                    await UpdateJobCoordinatesAsync(
+                        connection,
+                        row.TenantId,
+                        geocodedJobId,
+                        geocodeResult.Latitude.Value,
+                        geocodeResult.Longitude.Value);
+                }
             }
             else
             {
@@ -383,7 +695,10 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                 row.RetryAfterUtc = nowUtc.AddMinutes(isRecentBooking ? 3 : 20);
             }
 
-            await UpsertGeocodeCacheAsync(connection, row, geocodeResult.ErrorMessage);
+            if (hasGeocodeCache)
+            {
+                await UpsertGeocodeCacheAsync(connection, row, geocodeResult.ErrorMessage);
+            }
         }
 
         var output = rows
@@ -415,47 +730,152 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT
-                t.phone,
-                t.last_message_at_utc,
-                COALESCE(last_msg.content, '') AS last_content,
-                COALESCE(json_extract(cs.slots_json, '$.menuContext'), '') AS menu_context
-            FROM (
-                SELECT phone, MAX(created_at_utc) AS last_message_at_utc
-                FROM conversation_messages
-                WHERE tenant_id = @tenant_id
-                GROUP BY phone
-                ORDER BY last_message_at_utc DESC
-                LIMIT @limit
-            ) t
-            LEFT JOIN conversation_messages last_msg
-                ON last_msg.tenant_id = @tenant_id
-               AND last_msg.phone = t.phone
-               AND last_msg.created_at_utc = t.last_message_at_utc
-            LEFT JOIN conversation_state cs
-                ON cs.tenant_id = @tenant_id
-               AND cs.phone = t.phone
-            ORDER BY t.last_message_at_utc DESC;
-            """;
-        command.Parameters.AddWithValue("@tenant_id", tenant);
-        command.Parameters.AddWithValue("@limit", safeLimit);
+        var hasLegacyMessages = await TableExistsAsync(connection, "conversation_messages");
+        var hasLegacyState = await TableExistsAsync(connection, "conversation_state");
+        var hasMessagesLog = await TableExistsAsync(connection, "MessagesLog");
+        var hasUsers = await TableExistsAsync(connection, "Users");
+        var hasUserSessions = await TableExistsAsync(connection, "UserSessions");
 
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        if (hasLegacyMessages)
         {
-            var menuContext = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
-            output.Add(new ConversationThreadSummary
+            await using var command = connection.CreateCommand();
+            command.CommandText = hasLegacyState
+                ? """
+                  SELECT
+                      t.phone,
+                      t.last_message_at_utc,
+                      COALESCE(last_msg.content, '') AS last_content,
+                      COALESCE(json_extract(cs.slots_json, '$.menuContext'), '') AS menu_context
+                  FROM (
+                      SELECT phone, MAX(created_at_utc) AS last_message_at_utc
+                      FROM conversation_messages
+                      WHERE tenant_id = @tenant_id
+                      GROUP BY phone
+                      ORDER BY last_message_at_utc DESC
+                      LIMIT @limit
+                  ) t
+                  LEFT JOIN conversation_messages last_msg
+                      ON last_msg.tenant_id = @tenant_id
+                     AND last_msg.phone = t.phone
+                     AND last_msg.created_at_utc = t.last_message_at_utc
+                  LEFT JOIN conversation_state cs
+                      ON cs.tenant_id = @tenant_id
+                     AND cs.phone = t.phone
+                  ORDER BY t.last_message_at_utc DESC;
+                  """
+                : """
+                  SELECT
+                      t.phone,
+                      t.last_message_at_utc,
+                      COALESCE(last_msg.content, '') AS last_content,
+                      ''
+                  FROM (
+                      SELECT phone, MAX(created_at_utc) AS last_message_at_utc
+                      FROM conversation_messages
+                      WHERE tenant_id = @tenant_id
+                      GROUP BY phone
+                      ORDER BY last_message_at_utc DESC
+                      LIMIT @limit
+                  ) t
+                  LEFT JOIN conversation_messages last_msg
+                      ON last_msg.tenant_id = @tenant_id
+                     AND last_msg.phone = t.phone
+                     AND last_msg.created_at_utc = t.last_message_at_utc
+                  ORDER BY t.last_message_at_utc DESC;
+                  """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                Phone = reader.GetString(0),
-                LastMessageAtUtc = ParseUtc(reader.GetString(1)),
-                LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
-                MenuContext = menuContext,
-                IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
-            });
+                var menuContext = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                output.Add(new ConversationThreadSummary
+                {
+                    Phone = reader.GetString(0),
+                    LastMessageAtUtc = ParseUtc(reader.GetString(1)),
+                    LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
+                    MenuContext = menuContext,
+                    IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
+                });
+            }
         }
+
+        if (hasMessagesLog)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = hasUsers && hasUserSessions
+                ? """
+                  SELECT
+                      m.TelegramUserId,
+                      m.CreatedAt,
+                      COALESCE(m.Text, '') AS last_text,
+                      COALESCE(s.State, '') AS menu_context
+                  FROM MessagesLog m
+                  INNER JOIN (
+                      SELECT TelegramUserId, MAX(Id) AS LastId
+                      FROM MessagesLog
+                      WHERE TenantId = @tenant_id
+                      GROUP BY TelegramUserId
+                  ) t ON t.LastId = m.Id
+                  LEFT JOIN Users u
+                      ON u.TenantId = @tenant_id
+                     AND u.TelegramUserId = m.TelegramUserId
+                  LEFT JOIN UserSessions s
+                      ON s.UserId = u.Id
+                  WHERE m.TenantId = @tenant_id
+                  ORDER BY m.CreatedAt DESC
+                  LIMIT @limit;
+                  """
+                : """
+                  SELECT
+                      m.TelegramUserId,
+                      m.CreatedAt,
+                      COALESCE(m.Text, '') AS last_text,
+                      ''
+                  FROM MessagesLog m
+                  INNER JOIN (
+                      SELECT TelegramUserId, MAX(Id) AS LastId
+                      FROM MessagesLog
+                      WHERE TenantId = @tenant_id
+                      GROUP BY TelegramUserId
+                  ) t ON t.LastId = m.Id
+                  WHERE m.TenantId = @tenant_id
+                  ORDER BY m.CreatedAt DESC
+                  LIMIT @limit;
+                  """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var telegramUserId = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
+                if (telegramUserId <= 0)
+                {
+                    continue;
+                }
+
+                var menuContext = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                output.Add(new ConversationThreadSummary
+                {
+                    Phone = $"tg:{telegramUserId}",
+                    LastMessageAtUtc = ParseUtc(reader.IsDBNull(1) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(1)),
+                    LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
+                    MenuContext = menuContext,
+                    IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
+                });
+            }
+        }
+
+        output = output
+            .GroupBy(x => x.Phone, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(x => x.LastMessageAtUtc)
+                .First())
+            .OrderByDescending(x => x.LastMessageAtUtc)
+            .Take(safeLimit)
+            .ToList();
 
         return output;
     }
@@ -466,37 +886,80 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var tenant = NormalizeTenant(tenantId);
         var normalizedPhone = phone.Trim();
         var safeLimit = Math.Clamp(limit, 1, 1000);
+        var isTelegramThread = normalizedPhone.StartsWith("tg:", StringComparison.OrdinalIgnoreCase);
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT id, direction, role, content, tool_name, tool_call_id, created_at_utc
-            FROM conversation_messages
-            WHERE tenant_id = @tenant_id
-              AND phone = @phone
-            ORDER BY created_at_utc DESC, id DESC
-            LIMIT @limit;
-            """;
-        command.Parameters.AddWithValue("@tenant_id", tenant);
-        command.Parameters.AddWithValue("@phone", normalizedPhone);
-        command.Parameters.AddWithValue("@limit", safeLimit);
-
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        var hasMessagesLog = await TableExistsAsync(connection, "MessagesLog");
+        if (isTelegramThread && hasMessagesLog && TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
         {
-            output.Add(new ConversationMessageItem
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT Id, Direction, MessageType, Text, CreatedAt
+                FROM MessagesLog
+                WHERE TenantId = @tenant_id
+                  AND TelegramUserId = @telegram_user_id
+                ORDER BY CreatedAt DESC, Id DESC
+                LIMIT @limit;
+                """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                Id = reader.GetInt64(0),
-                Direction = reader.GetString(1),
-                Role = reader.GetString(2),
-                Content = reader.GetString(3),
-                ToolName = reader.IsDBNull(4) ? null : reader.GetString(4),
-                ToolCallId = reader.IsDBNull(5) ? null : reader.GetString(5),
-                CreatedAtUtc = ParseUtc(reader.GetString(6))
-            });
+                var direction = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                var role = string.Equals(direction, "Out", StringComparison.OrdinalIgnoreCase)
+                    ? "assistant"
+                    : "user";
+
+                output.Add(new ConversationMessageItem
+                {
+                    Id = reader.GetInt64(0),
+                    Direction = direction,
+                    Role = role,
+                    Content = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                    ToolName = null,
+                    ToolCallId = null,
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(4))
+                });
+            }
+        }
+
+        var hasLegacyMessages = await TableExistsAsync(connection, "conversation_messages");
+        if (output.Count == 0 && hasLegacyMessages)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, direction, role, content, tool_name, tool_call_id, created_at_utc
+                FROM conversation_messages
+                WHERE tenant_id = @tenant_id
+                  AND phone = @phone
+                ORDER BY created_at_utc DESC, id DESC
+                LIMIT @limit;
+                """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@phone", normalizedPhone);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                output.Add(new ConversationMessageItem
+                {
+                    Id = reader.GetInt64(0),
+                    Direction = reader.GetString(1),
+                    Role = reader.GetString(2),
+                    Content = reader.GetString(3),
+                    ToolName = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    ToolCallId = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    CreatedAtUtc = ParseUtc(reader.GetString(6))
+                });
+            }
         }
 
         output.Reverse();
@@ -512,37 +975,187 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT id, customer_phone, customer_name, service_category, service_title, start_local, duration_minutes, address, technician_name, created_at_utc
-            FROM bookings
-            WHERE tenant_id = @tenant_id
-            ORDER BY created_at_utc DESC
-            LIMIT @limit;
-            """;
-        command.Parameters.AddWithValue("@tenant_id", tenant);
-        command.Parameters.AddWithValue("@limit", safeLimit);
+        var hasLegacyBookings = await TableExistsAsync(connection, "bookings");
+        var hasGeocodeCache = await TableExistsAsync(connection, "booking_geocode_cache");
+        var hasJobs = await TableExistsAsync(connection, "Jobs");
+        var hasUsers = await TableExistsAsync(connection, "Users");
 
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        if (hasLegacyBookings)
         {
-            output.Add(new BookingListItem
+            await using var command = connection.CreateCommand();
+            command.CommandText = hasGeocodeCache
+                ? """
+                  SELECT
+                    b.id,
+                    b.customer_phone,
+                    b.customer_name,
+                    b.service_category,
+                    b.service_title,
+                    b.start_local,
+                    b.duration_minutes,
+                    b.address,
+                    b.technician_name,
+                    b.created_at_utc,
+                    g.latitude,
+                    g.longitude
+                  FROM bookings b
+                  LEFT JOIN booking_geocode_cache g ON g.booking_id = b.id
+                  WHERE b.tenant_id = @tenant_id
+                  ORDER BY b.created_at_utc DESC
+                  LIMIT @limit;
+                  """
+                : """
+                  SELECT
+                    b.id,
+                    b.customer_phone,
+                    b.customer_name,
+                    b.service_category,
+                    b.service_title,
+                    b.start_local,
+                    b.duration_minutes,
+                    b.address,
+                    b.technician_name,
+                    b.created_at_utc,
+                    NULL,
+                    NULL
+                  FROM bookings b
+                  WHERE b.tenant_id = @tenant_id
+                  ORDER BY b.created_at_utc DESC
+                  LIMIT @limit;
+                  """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                Id = reader.GetString(0),
-                CustomerPhone = reader.GetString(1),
-                CustomerName = reader.GetString(2),
-                ServiceCategory = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
-                ServiceTitle = reader.GetString(4),
-                StartLocal = ParseLocalDateTime(reader.GetString(5)),
-                DurationMinutes = reader.GetInt32(6),
-                Address = reader.GetString(7),
-                TechnicianName = reader.GetString(8),
-                CreatedAtUtc = ParseUtc(reader.GetString(9))
-            });
+                output.Add(new BookingListItem
+                {
+                    Id = reader.GetString(0),
+                    CustomerPhone = reader.GetString(1),
+                    CustomerName = reader.GetString(2),
+                    ServiceCategory = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                    ServiceTitle = reader.GetString(4),
+                    StartLocal = ParseLocalDateTime(reader.GetString(5)),
+                    DurationMinutes = reader.GetInt32(6),
+                    Address = reader.GetString(7),
+                    Latitude = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                    Longitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
+                    TechnicianName = reader.GetString(8),
+                    CreatedAtUtc = ParseUtc(reader.GetString(9))
+                });
+            }
         }
 
-        return output;
+        if (hasJobs)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = hasUsers && hasGeocodeCache
+                ? """
+                  SELECT
+                    j.Id,
+                    j.Category,
+                    j.Description,
+                    j.ScheduledAt,
+                    j.AddressText,
+                    j.CreatedAt,
+                    c.Name,
+                    c.Phone,
+                    c.TelegramUserId,
+                    p.Name,
+                    COALESCE(j.Latitude, g.latitude),
+                    COALESCE(j.Longitude, g.longitude)
+                  FROM Jobs j
+                  LEFT JOIN Users c ON c.Id = j.ClientUserId
+                  LEFT JOIN Users p ON p.Id = j.ProviderUserId
+                  LEFT JOIN booking_geocode_cache g
+                    ON g.booking_id = ('job:' || j.Id)
+                   AND g.tenant_id = j.TenantId
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                  ORDER BY j.CreatedAt DESC
+                  LIMIT @limit;
+                  """
+                : hasUsers
+                ? """
+                  SELECT
+                    j.Id,
+                    j.Category,
+                    j.Description,
+                    j.ScheduledAt,
+                    j.AddressText,
+                    j.CreatedAt,
+                    c.Name,
+                    c.Phone,
+                    c.TelegramUserId,
+                    p.Name,
+                    j.Latitude,
+                    j.Longitude
+                  FROM Jobs j
+                  LEFT JOIN Users c ON c.Id = j.ClientUserId
+                  LEFT JOIN Users p ON p.Id = j.ProviderUserId
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                  ORDER BY j.CreatedAt DESC
+                  LIMIT @limit;
+                  """
+                : """
+                  SELECT
+                    j.Id,
+                    j.Category,
+                    j.Description,
+                    j.ScheduledAt,
+                    j.AddressText,
+                    j.CreatedAt,
+                    '',
+                    '',
+                    NULL,
+                    '',
+                    j.Latitude,
+                    j.Longitude
+                  FROM Jobs j
+                  WHERE j.TenantId = @tenant_id
+                    AND j.Status <> 'Draft'
+                  ORDER BY j.CreatedAt DESC
+                  LIMIT @limit;
+                  """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var createdAtUtc = ParseUtc(reader.IsDBNull(5) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(5));
+                var scheduledAtRaw = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                var customerPhone = reader.IsDBNull(7) ? string.Empty : reader.GetString(7);
+                var telegramUserId = reader.IsDBNull(8) ? 0L : reader.GetInt64(8);
+                if (string.IsNullOrWhiteSpace(customerPhone))
+                {
+                    customerPhone = telegramUserId > 0 ? $"tg:{telegramUserId}" : string.Empty;
+                }
+
+                output.Add(new BookingListItem
+                {
+                    Id = $"job:{reader.GetInt64(0)}",
+                    CustomerPhone = customerPhone,
+                    CustomerName = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                    ServiceCategory = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    ServiceTitle = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
+                    StartLocal = ParseLocalOrUtcDateTime(scheduledAtRaw, createdAtUtc),
+                    DurationMinutes = 60,
+                    Address = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                    Latitude = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                    Longitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
+                    TechnicianName = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                    CreatedAtUtc = createdAtUtc
+                });
+            }
+        }
+
+        return output
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Take(safeLimit)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<CategoryItem>> GetCategoriesAsync(string tenantId)
@@ -985,50 +1598,146 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var tenant = NormalizeTenant(tenantId);
         var safeLimit = Math.Clamp(limit, 1, 1000);
         var output = new List<TelegramUserOption>();
+        var knownIds = new HashSet<long>();
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        if (!await TableExistsAsync(connection, "Users"))
+        if (await TableExistsAsync(connection, "Users"))
         {
-            return output;
-        }
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+            """
+            SELECT TelegramUserId, Name, Username, Role
+            FROM Users
+            WHERE TenantId = @tenant_id
+            ORDER BY UpdatedAt DESC
+            LIMIT @limit;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
 
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-        """
-        SELECT TelegramUserId, Name, Username, Role
-        FROM Users
-        WHERE TenantId = @tenant_id
-        ORDER BY UpdatedAt DESC
-        LIMIT @limit;
-        """;
-        command.Parameters.AddWithValue("@tenant_id", tenant);
-        command.Parameters.AddWithValue("@limit", safeLimit);
-
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-        {
-            var telegramUserId = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
-            if (telegramUserId <= 0)
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                continue;
+                var telegramUserId = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
+                if (telegramUserId <= 0 || !knownIds.Add(telegramUserId))
+                {
+                    continue;
+                }
+
+                var name = reader.IsDBNull(1) ? "Usuario Telegram" : reader.GetString(1).Trim();
+                var username = reader.IsDBNull(2) ? string.Empty : reader.GetString(2).Trim();
+                var role = reader.IsDBNull(3) ? string.Empty : reader.GetString(3).Trim();
+                var usernameText = string.IsNullOrWhiteSpace(username) ? string.Empty : $" @{username}";
+                var roleText = string.IsNullOrWhiteSpace(role) ? string.Empty : $" [{role}]";
+
+                output.Add(new TelegramUserOption
+                {
+                    TelegramUserId = telegramUserId,
+                    DisplayLabel = $"{name}{usernameText} ({telegramUserId}){roleText}"
+                });
             }
-
-            var name = reader.IsDBNull(1) ? "Usuario" : reader.GetString(1).Trim();
-            var username = reader.IsDBNull(2) ? string.Empty : reader.GetString(2).Trim();
-            var role = reader.IsDBNull(3) ? string.Empty : reader.GetString(3).Trim();
-            var usernameText = string.IsNullOrWhiteSpace(username) ? string.Empty : $" @{username}";
-            var roleText = string.IsNullOrWhiteSpace(role) ? string.Empty : $" [{role}]";
-
-            output.Add(new TelegramUserOption
-            {
-                TelegramUserId = telegramUserId,
-                DisplayLabel = $"{name}{usernameText} ({telegramUserId}){roleText}"
-            });
         }
 
-        return output;
+        if (await TableExistsAsync(connection, "MessagesLog"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+            """
+            SELECT TelegramUserId, MAX(CreatedAt) AS last_seen
+            FROM MessagesLog
+            WHERE TenantId = @tenant_id
+            GROUP BY TelegramUserId
+            ORDER BY last_seen DESC
+            LIMIT @limit;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var telegramUserId = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
+                if (telegramUserId <= 0 || !knownIds.Add(telegramUserId))
+                {
+                    continue;
+                }
+
+                output.Add(new TelegramUserOption
+                {
+                    TelegramUserId = telegramUserId,
+                    DisplayLabel = $"Usuario Telegram ({telegramUserId}) [logs]"
+                });
+            }
+        }
+
+        if (await TableExistsAsync(connection, "conversation_messages"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+            """
+            SELECT phone, MAX(created_at_utc) AS last_seen
+            FROM conversation_messages
+            WHERE tenant_id = @tenant_id
+              AND phone LIKE 'tg:%'
+            GROUP BY phone
+            ORDER BY last_seen DESC
+            LIMIT @limit;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var rawPhone = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (!TryParseTelegramUserId(rawPhone, out var telegramUserId) || !knownIds.Add(telegramUserId))
+                {
+                    continue;
+                }
+
+                output.Add(new TelegramUserOption
+                {
+                    TelegramUserId = telegramUserId,
+                    DisplayLabel = $"Usuario Telegram ({telegramUserId}) [legacy]"
+                });
+            }
+        }
+
+        if (await TableExistsAsync(connection, "conversation_state"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+            """
+            SELECT phone
+            FROM conversation_state
+            WHERE tenant_id = @tenant_id
+              AND phone LIKE 'tg:%'
+            ORDER BY updated_at_utc DESC
+            LIMIT @limit;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@limit", safeLimit);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var rawPhone = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (!TryParseTelegramUserId(rawPhone, out var telegramUserId) || !knownIds.Add(telegramUserId))
+                {
+                    continue;
+                }
+
+                output.Add(new TelegramUserOption
+                {
+                    TelegramUserId = telegramUserId,
+                    DisplayLabel = $"Usuario Telegram ({telegramUserId}) [legacy]"
+                });
+            }
+        }
+
+        return output.Take(safeLimit).ToList();
     }
 
     public async Task SaveBotConfigAsync(BotConfigViewModel input)
@@ -1153,6 +1862,8 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var hasMessagesLog = await TableExistsAsync(connection, "MessagesLog", transaction);
         var hasLegacyMessages = await TableExistsAsync(connection, "conversation_messages", transaction);
         var hasLegacyState = await TableExistsAsync(connection, "conversation_state", transaction);
+        var phone = safeUserId.ToString(CultureInfo.InvariantCulture);
+        var prefixedPhone = $"tg:{phone}";
 
         if (hasUsers)
         {
@@ -1191,7 +1902,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     command.CommandText =
                     """
                     UPDATE UserSessions
-                    SET State = 'NONE',
+                    SET State = 'U_ROLE_REQUIRED',
                         DraftJson = '{}',
                         ActiveJobId = NULL,
                         ChatJobId = NULL,
@@ -1205,6 +1916,59 @@ CREATE TABLE IF NOT EXISTS shared_settings (
                     result.SessionsReset += await command.ExecuteNonQueryAsync();
                 }
             }
+        }
+
+        if (!result.FoundUser && hasMessagesLog)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+            """
+            SELECT 1
+            FROM MessagesLog
+            WHERE TenantId = @tenant_id
+              AND TelegramUserId = @telegram_user_id
+            LIMIT 1;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@telegram_user_id", safeUserId);
+            result.FoundUser = await command.ExecuteScalarAsync() is not null;
+        }
+
+        if (!result.FoundUser && hasLegacyMessages)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+            """
+            SELECT 1
+            FROM conversation_messages
+            WHERE tenant_id = @tenant_id
+              AND (phone = @phone OR phone = @prefixed_phone)
+            LIMIT 1;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@phone", phone);
+            command.Parameters.AddWithValue("@prefixed_phone", prefixedPhone);
+            result.FoundUser = await command.ExecuteScalarAsync() is not null;
+        }
+
+        if (!result.FoundUser && hasLegacyState)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+            """
+            SELECT 1
+            FROM conversation_state
+            WHERE tenant_id = @tenant_id
+              AND (phone = @phone OR phone = @prefixed_phone)
+            LIMIT 1;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@phone", phone);
+            command.Parameters.AddWithValue("@prefixed_phone", prefixedPhone);
+            result.FoundUser = await command.ExecuteScalarAsync() is not null;
         }
 
         if (clearHistory && hasMessagesLog)
@@ -1221,9 +1985,6 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             command.Parameters.AddWithValue("@telegram_user_id", safeUserId);
             result.TelegramMessagesDeleted = await command.ExecuteNonQueryAsync();
         }
-
-        var phone = safeUserId.ToString(CultureInfo.InvariantCulture);
-        var prefixedPhone = $"tg:{phone}";
 
         if (clearHistory && hasLegacyMessages)
         {
@@ -1255,6 +2016,195 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             command.Parameters.AddWithValue("@phone", phone);
             command.Parameters.AddWithValue("@prefixed_phone", prefixedPhone);
             result.LegacyConversationStateDeleted = await command.ExecuteNonQueryAsync();
+        }
+
+        if (!result.FoundUser &&
+            (result.SessionsReset > 0
+             || result.TelegramMessagesDeleted > 0
+             || result.LegacyConversationMessagesDeleted > 0
+             || result.LegacyConversationStateDeleted > 0))
+        {
+            result.FoundUser = true;
+        }
+
+        await transaction.CommitAsync();
+        return result;
+    }
+
+    public async Task<TenantOperationalResetResult> ResetTenantOperationalDataAsync(string tenantId)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var result = new TenantOperationalResetResult();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+
+        var hasLegacyMessages = await TableExistsAsync(connection, "conversation_messages", transaction);
+        var hasLegacyState = await TableExistsAsync(connection, "conversation_state", transaction);
+        var hasLegacyBookings = await TableExistsAsync(connection, "bookings", transaction);
+        var hasLegacyGeocode = await TableExistsAsync(connection, "booking_geocode_cache", transaction);
+
+        var hasUsers = await TableExistsAsync(connection, "Users", transaction);
+        var hasProviderProfiles = await TableExistsAsync(connection, "ProvidersProfile", transaction);
+        var hasProviderPortfolio = await TableExistsAsync(connection, "ProviderPortfolioPhotos", transaction);
+        var hasJobs = await TableExistsAsync(connection, "Jobs", transaction);
+        var hasJobPhotos = await TableExistsAsync(connection, "JobPhotos", transaction);
+        var hasRatings = await TableExistsAsync(connection, "Ratings", transaction);
+        var hasMessagesLog = await TableExistsAsync(connection, "MessagesLog", transaction);
+        var hasUserSessions = await TableExistsAsync(connection, "UserSessions", transaction);
+
+        async Task<int> ExecuteAsync(string sql, params (string Name, object Value)[] parameters)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+            foreach (var parameter in parameters)
+            {
+                command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+            }
+
+            return await command.ExecuteNonQueryAsync();
+        }
+
+        if (hasLegacyMessages)
+        {
+            result.LegacyConversationMessagesDeleted = await ExecuteAsync(
+                """
+                DELETE FROM conversation_messages
+                WHERE tenant_id = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasLegacyState)
+        {
+            result.LegacyConversationStateDeleted = await ExecuteAsync(
+                """
+                DELETE FROM conversation_state
+                WHERE tenant_id = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasLegacyGeocode)
+        {
+            result.LegacyBookingGeocodeCacheDeleted = await ExecuteAsync(
+                """
+                DELETE FROM booking_geocode_cache
+                WHERE tenant_id = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasLegacyBookings)
+        {
+            result.LegacyBookingsDeleted = await ExecuteAsync(
+                """
+                DELETE FROM bookings
+                WHERE tenant_id = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasJobPhotos && hasJobs)
+        {
+            result.TelegramJobPhotosDeleted = await ExecuteAsync(
+                """
+                DELETE FROM JobPhotos
+                WHERE JobId IN (
+                    SELECT Id
+                    FROM Jobs
+                    WHERE TenantId = @tenant_id
+                );
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasRatings && hasJobs)
+        {
+            result.TelegramRatingsDeleted = await ExecuteAsync(
+                """
+                DELETE FROM Ratings
+                WHERE JobId IN (
+                    SELECT Id
+                    FROM Jobs
+                    WHERE TenantId = @tenant_id
+                );
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasMessagesLog)
+        {
+            result.TelegramMessagesDeleted = await ExecuteAsync(
+                """
+                DELETE FROM MessagesLog
+                WHERE TenantId = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasJobs)
+        {
+            result.TelegramJobsDeleted = await ExecuteAsync(
+                """
+                DELETE FROM Jobs
+                WHERE TenantId = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasProviderPortfolio && hasUsers)
+        {
+            result.TelegramProviderPortfolioDeleted = await ExecuteAsync(
+                """
+                DELETE FROM ProviderPortfolioPhotos
+                WHERE ProviderUserId IN (
+                    SELECT Id
+                    FROM Users
+                    WHERE TenantId = @tenant_id
+                );
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasUserSessions && hasUsers)
+        {
+            result.TelegramUserSessionsDeleted = await ExecuteAsync(
+                """
+                DELETE FROM UserSessions
+                WHERE UserId IN (
+                    SELECT Id
+                    FROM Users
+                    WHERE TenantId = @tenant_id
+                );
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasProviderProfiles && hasUsers)
+        {
+            result.TelegramProviderProfilesDeleted = await ExecuteAsync(
+                """
+                DELETE FROM ProvidersProfile
+                WHERE UserId IN (
+                    SELECT Id
+                    FROM Users
+                    WHERE TenantId = @tenant_id
+                );
+                """,
+                ("@tenant_id", tenant));
+        }
+
+        if (hasUsers)
+        {
+            result.TelegramUsersDeleted = await ExecuteAsync(
+                """
+                DELETE FROM Users
+                WHERE TenantId = @tenant_id;
+                """,
+                ("@tenant_id", tenant));
         }
 
         await transaction.CommitAsync();
@@ -1330,7 +2280,22 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             return GeocodeResult.Fail("Endereco vazio.");
         }
 
-        var candidates = BuildAddressGeocodeCandidates(safeAddress);
+        var candidates = BuildAddressGeocodeCandidates(safeAddress).ToList();
+        if (TryNormalizeCepOnly(safeAddress, out var cep))
+        {
+            var awesomeByCep = await TryGeocodeByAwesomeCepAsync(cep);
+            if (awesomeByCep.Success)
+            {
+                return awesomeByCep;
+            }
+
+            var viaCepAddress = await TryResolveAddressByCepAsync(cep);
+            if (!string.IsNullOrWhiteSpace(viaCepAddress))
+            {
+                candidates.Insert(0, viaCepAddress);
+            }
+        }
+
         string? lastError = null;
         foreach (var candidate in candidates)
         {
@@ -1341,6 +2306,15 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             }
 
             lastError = result.ErrorMessage;
+        }
+
+        if (TryExtractCepFromText(safeAddress, out var cepFromText))
+        {
+            var awesomeFallback = await TryGeocodeByAwesomeCepAsync(cepFromText);
+            if (awesomeFallback.Success)
+            {
+                return awesomeFallback;
+            }
         }
 
         return GeocodeResult.Fail(lastError ?? "Nenhum resultado.");
@@ -1445,6 +2419,189 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         return output;
     }
 
+    private static bool TryNormalizeCepOnly(string rawAddress, out string cep)
+    {
+        cep = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawAddress))
+        {
+            return false;
+        }
+
+        var safe = rawAddress.Trim();
+        foreach (var ch in safe)
+        {
+            if (!char.IsDigit(ch) && ch != '-' && !char.IsWhiteSpace(ch))
+            {
+                return false;
+            }
+        }
+
+        var digits = new string(safe.Where(char.IsDigit).ToArray());
+        if (digits.Length != 8)
+        {
+            return false;
+        }
+
+        cep = digits;
+        return true;
+    }
+
+    private static bool TryExtractCepFromText(string rawAddress, out string cep)
+    {
+        cep = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawAddress))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(rawAddress, @"\b\d{5}-?\d{3}\b");
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var digits = new string(match.Value.Where(char.IsDigit).ToArray());
+        if (digits.Length != 8)
+        {
+            return false;
+        }
+
+        cep = digits;
+        return true;
+    }
+
+    private static async Task<GeocodeResult> TryGeocodeByAwesomeCepAsync(string cep)
+    {
+        if (string.IsNullOrWhiteSpace(cep) || cep.Length != 8)
+        {
+            return GeocodeResult.Fail("CEP invalido para AwesomeAPI.");
+        }
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync($"https://cep.awesomeapi.com.br/json/{cep}");
+            if (!response.IsSuccessStatusCode)
+            {
+                return GeocodeResult.Fail($"AwesomeAPI HTTP {(int)response.StatusCode}");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(payloadText);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return GeocodeResult.Fail("AwesomeAPI payload invalido.");
+            }
+
+            var root = document.RootElement;
+            var latText = root.TryGetProperty("lat", out var latProp) ? latProp.GetString() : null;
+            var lngText = root.TryGetProperty("lng", out var lngProp) ? lngProp.GetString() : null;
+
+            if (string.IsNullOrWhiteSpace(latText) || string.IsNullOrWhiteSpace(lngText))
+            {
+                return GeocodeResult.Fail("AwesomeAPI sem lat/lng.");
+            }
+
+            if (!double.TryParse(
+                    latText.Replace(',', '.'),
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var lat)
+                || !double.TryParse(
+                    lngText.Replace(',', '.'),
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var lng))
+            {
+                return GeocodeResult.Fail("AwesomeAPI lat/lng invalidos.");
+            }
+
+            return GeocodeResult.Ok(lat, lng);
+        }
+        catch (Exception ex)
+        {
+            return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<string?> TryResolveAddressByCepAsync(string cep)
+    {
+        if (string.IsNullOrWhiteSpace(cep))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync($"https://viacep.com.br/ws/{cep}/json/");
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var payload = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (root.TryGetProperty("erro", out var erroProperty)
+                && erroProperty.ValueKind == JsonValueKind.True)
+            {
+                return null;
+            }
+
+            var logradouro = root.TryGetProperty("logradouro", out var logradouroProp)
+                ? (logradouroProp.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+            var bairro = root.TryGetProperty("bairro", out var bairroProp)
+                ? (bairroProp.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+            var localidade = root.TryGetProperty("localidade", out var localidadeProp)
+                ? (localidadeProp.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+            var uf = root.TryGetProperty("uf", out var ufProp)
+                ? (ufProp.GetString() ?? string.Empty).Trim().ToUpperInvariant()
+                : string.Empty;
+
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(logradouro))
+            {
+                parts.Add(logradouro);
+            }
+
+            if (!string.IsNullOrWhiteSpace(bairro))
+            {
+                parts.Add(bairro);
+            }
+
+            if (!string.IsNullOrWhiteSpace(localidade) && !string.IsNullOrWhiteSpace(uf))
+            {
+                parts.Add($"{localidade} - {uf}");
+            }
+            else if (!string.IsNullOrWhiteSpace(localidade))
+            {
+                parts.Add(localidade);
+            }
+            else if (!string.IsNullOrWhiteSpace(uf))
+            {
+                parts.Add(uf);
+            }
+
+            if (parts.Count == 0)
+            {
+                return null;
+            }
+
+            return string.Join(", ", parts);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static async Task UpsertGeocodeCacheAsync(SqliteConnection connection, DashboardMapRow row, string? errorMessage)
     {
         await using var command = connection.CreateCommand();
@@ -1474,6 +2631,112 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.Parameters.AddWithValue("@geocoded_at_utc", ToUtcText(DateTimeOffset.UtcNow));
         command.Parameters.AddWithValue("@retry_after_utc", row.RetryAfterUtc.HasValue ? ToUtcText(row.RetryAfterUtc.Value) : (object)DBNull.Value);
         await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<(double? Latitude, double? Longitude, string Status, DateTimeOffset? RetryAfterUtc)> TryGetGeocodeCacheAsync(
+        SqliteConnection connection,
+        string bookingId,
+        string tenantId)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT latitude, longitude, status, retry_after_utc
+            FROM booking_geocode_cache
+            WHERE booking_id = @booking_id
+              AND tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@booking_id", bookingId);
+        command.Parameters.AddWithValue("@tenant_id", tenantId);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            return (null, null, string.Empty, null);
+        }
+
+        double? latitude = reader.IsDBNull(0) ? null : reader.GetDouble(0);
+        double? longitude = reader.IsDBNull(1) ? null : reader.GetDouble(1);
+        var status = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+        var retryAfterUtc = TryParseNullableUtc(reader.IsDBNull(3) ? null : reader.GetString(3));
+        return (latitude, longitude, status, retryAfterUtc);
+    }
+
+    private static async Task UpdateJobCoordinatesAsync(
+        SqliteConnection connection,
+        string tenantId,
+        long jobId,
+        double latitude,
+        double longitude)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE Jobs
+            SET Latitude = @latitude,
+                Longitude = @longitude
+            WHERE Id = @job_id
+              AND TenantId = @tenant_id
+              AND (Latitude IS NULL OR Longitude IS NULL);
+            """;
+        command.Parameters.AddWithValue("@job_id", jobId);
+        command.Parameters.AddWithValue("@tenant_id", tenantId);
+        command.Parameters.AddWithValue("@latitude", latitude);
+        command.Parameters.AddWithValue("@longitude", longitude);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static bool TryParseJobBookingId(string bookingId, out long jobId)
+    {
+        jobId = 0;
+        if (string.IsNullOrWhiteSpace(bookingId)
+            || !bookingId.StartsWith("job:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return long.TryParse(
+            bookingId[4..],
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out jobId)
+            && jobId > 0;
+    }
+
+    private static bool TryExtractCoordinatesFromText(string? text, out double latitude, out double longitude)
+    {
+        latitude = 0d;
+        longitude = 0d;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var safe = text.Trim();
+        var latMatch = Regex.Match(
+            safe,
+            @"(?i)\b(?:lat|latitude)\s*[:=]\s*(-?\d{1,2}(?:[.,]\d+)?)");
+        var lngMatch = Regex.Match(
+            safe,
+            @"(?i)\b(?:lng|lon|longitude)\s*[:=]\s*(-?\d{1,3}(?:[.,]\d+)?)");
+
+        if (!latMatch.Success || !lngMatch.Success)
+        {
+            return false;
+        }
+
+        var latText = latMatch.Groups[1].Value.Replace(',', '.');
+        var lngText = lngMatch.Groups[1].Value.Replace(',', '.');
+
+        if (!double.TryParse(latText, NumberStyles.Float, CultureInfo.InvariantCulture, out latitude)
+            || !double.TryParse(lngText, NumberStyles.Float, CultureInfo.InvariantCulture, out longitude))
+        {
+            return false;
+        }
+
+        return latitude is >= -90 and <= 90 && longitude is >= -180 and <= 180;
     }
 
     private static DateTimeOffset? TryParseNullableUtc(string? value)
@@ -1707,6 +2970,31 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             : DateTime.MinValue;
     }
 
+    private static DateTime ParseLocalOrUtcDateTime(string value, DateTimeOffset fallbackUtc)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallbackUtc.ToLocalTime().DateTime;
+        }
+
+        if (DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var offsetValue))
+        {
+            return offsetValue.ToLocalTime().DateTime;
+        }
+
+        var parsedLocal = ParseLocalDateTime(value);
+        if (parsedLocal != DateTime.MinValue)
+        {
+            return parsedLocal;
+        }
+
+        return fallbackUtc.ToLocalTime().DateTime;
+    }
+
     private static DateTimeOffset ParseUtc(string value)
     {
         return DateTimeOffset.TryParse(
@@ -1737,22 +3025,35 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             return Path.GetFullPath(envPath);
         }
 
-        var candidates = new[]
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..",
+            "bin", "Debug", "net9.0", "data", "bot.db"));
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
         {
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "bot.db")),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "bin", "Debug", "net9.0", "data", "bot.db")),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "bin", "Debug", "net9.0", "data", "bot.db"))
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            Directory.CreateDirectory(directory);
         }
 
-        return candidates[0];
+        return path;
+    }
+
+    private static bool TryParseTelegramUserId(string? rawValue, out long telegramUserId)
+    {
+        telegramUserId = 0L;
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return false;
+        }
+
+        var value = rawValue.Trim();
+        if (value.StartsWith("tg:", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value[3..].Trim();
+        }
+
+        return long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out telegramUserId)
+               && telegramUserId > 0;
     }
 
     private const string OpenAiApiKeySettingKey = "openai_api_key";

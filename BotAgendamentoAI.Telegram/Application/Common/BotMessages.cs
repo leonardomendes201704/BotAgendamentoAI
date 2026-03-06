@@ -9,11 +9,18 @@ public static class BotMessages
     public static string WelcomeRoleChoice()
         => "Bem-vindo ao ConsertaPraMim! Voce e Cliente ou Prestador?";
 
-    public static string ClientHomeMenu()
-        => "Menu Cliente:\nEscolha uma opcao:";
+    public static string ClientHomeMenu(bool allowSwitchToProvider)
+        => "Menu";
 
     public static string ProviderHomeMenu()
-        => "Menu Prestador:\nEscolha uma opcao:";
+        => "Menu Prestador:\n" +
+           "1 - Pedidos disponiveis\n" +
+           "2 - Minha agenda\n" +
+           "3 - Meu perfil\n" +
+           "4 - Portfolio\n" +
+           "5 - Configuracoes\n" +
+           "6 - Trocar para Cliente\n\n" +
+           "Escolha uma opcao:";
 
     public static string AskCategory()
         => "1/7 - Qual categoria do servico?";
@@ -25,7 +32,7 @@ public static class BotMessages
         => "3/7 - Envie fotos do problema. Quando terminar, toque em 'Concluir fotos'.";
 
     public static string AskLocation()
-        => "4/7 - Envie sua localizacao ou digite o endereco com CEP.";
+        => "4/7 - Envie apenas o CEP do local de atendimento (8 digitos, com ou sem hifen).";
 
     public static string AskSchedule()
         => "5/7 - Quando voce precisa do servico?";
@@ -52,7 +59,7 @@ public static class BotMessages
         => "Chat encerrado.";
 
     public static string NeedAddressWithCep()
-        => "Endereco invalido. Envie um endereco com CEP (8 digitos).";
+        => "Entrada invalida. Envie apenas o CEP com 8 digitos (ex.: 11704-150).";
 
     public static string InvalidFinishFormat()
         => "Formato invalido. Envie: valor | observacoes\nEx: 180.00 | troca de capacitor e limpeza.";

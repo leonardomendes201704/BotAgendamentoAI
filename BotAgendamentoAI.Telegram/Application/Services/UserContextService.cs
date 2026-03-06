@@ -9,12 +9,14 @@ namespace BotAgendamentoAI.Telegram.Application.Services;
 
 public sealed class UserContextService
 {
+    public sealed record EnsureUserResult(AppUser User, bool IsNewUser);
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
     };
 
-    public async Task<AppUser> EnsureUserAsync(
+    public async Task<EnsureUserResult> EnsureUserAsync(
         BotDbContext db,
         string tenantId,
         global::BotAgendamentoAI.Telegram.TelegramCompat.Types.User from,
@@ -48,7 +50,7 @@ public sealed class UserContextService
                 UpdatedAt = now,
                 Session = new UserSession
                 {
-                    State = BotStates.NONE,
+                    State = BotStates.U_ROLE_REQUIRED,
                     DraftJson = "{}",
                     UpdatedAt = now
                 }
@@ -56,7 +58,7 @@ public sealed class UserContextService
 
             db.Users.Add(user);
             await db.SaveChangesAsync(cancellationToken);
-            return user;
+            return new EnsureUserResult(user, true);
         }
 
         var changed = false;
@@ -96,7 +98,7 @@ public sealed class UserContextService
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        return user;
+        return new EnsureUserResult(user, false);
     }
 
     public static bool IsSessionExpired(UserSession? session, int expiryMinutes)

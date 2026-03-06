@@ -91,26 +91,15 @@ static string ResolveDatabasePath(string? configuredPath)
         return Path.GetFullPath(envPath);
     }
 
-    var candidates = new[]
+    var path = Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory,
+        "..", "..", "..", "..",
+        "bin", "Debug", "net9.0", "data", "bot.db"));
+    var directory = Path.GetDirectoryName(path);
+    if (!string.IsNullOrWhiteSpace(directory))
     {
-        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "bot.db")),
-        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "bin", "Debug", "net8.0", "data", "bot.db")),
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "bin", "Debug", "net8.0", "data", "bot.db"))
-    };
-
-    foreach (var candidate in candidates)
-    {
-        if (File.Exists(candidate))
-        {
-            return candidate;
-        }
+        Directory.CreateDirectory(directory);
     }
 
-    var folder = Path.GetDirectoryName(candidates[0]);
-    if (!string.IsNullOrWhiteSpace(folder))
-    {
-        Directory.CreateDirectory(folder);
-    }
-
-    return candidates[0];
+    return path;
 }

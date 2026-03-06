@@ -32,7 +32,7 @@ public sealed class HttpTelegramBotClient : ITelegramBotClient
             replyMarkup,
             cancellationToken);
 
-        return response.Result ?? new Message { Chat = new Chat { Id = chatId.Identifier } };
+        return EnsureResult(response, "sendMessage") ?? new Message { Chat = new Chat { Id = chatId.Identifier } };
     }
 
     public async Task<Message> SendPhoto(
@@ -52,7 +52,7 @@ public sealed class HttpTelegramBotClient : ITelegramBotClient
             replyMarkup,
             cancellationToken);
 
-        return response.Result ?? new Message { Chat = new Chat { Id = chatId.Identifier } };
+        return EnsureResult(response, "sendPhoto") ?? new Message { Chat = new Chat { Id = chatId.Identifier } };
     }
 
     public async Task<IReadOnlyList<Message>> SendMediaGroup(
@@ -66,7 +66,7 @@ public sealed class HttpTelegramBotClient : ITelegramBotClient
             media,
             cancellationToken);
 
-        return response.Result ?? new List<Message>();
+        return EnsureResult(response, "sendMediaGroup") ?? new List<Message>();
     }
 
     public async Task<Message> SendLocation(
@@ -82,7 +82,7 @@ public sealed class HttpTelegramBotClient : ITelegramBotClient
             longitude,
             cancellationToken);
 
-        return response.Result ?? new Message { Chat = new Chat { Id = chatId.Identifier } };
+        return EnsureResult(response, "sendLocation") ?? new Message { Chat = new Chat { Id = chatId.Identifier } };
     }
 
     public async Task AnswerCallbackQuery(
@@ -91,11 +91,26 @@ public sealed class HttpTelegramBotClient : ITelegramBotClient
         bool showAlert = false,
         CancellationToken cancellationToken = default)
     {
-        await _apiClient.AnswerCallbackQueryAsync(
+        var response = await _apiClient.AnswerCallbackQueryAsync(
             _botToken,
             callbackQueryId,
             text,
             showAlert,
             cancellationToken);
+
+        if (!response.Ok)
+        {
+            throw new InvalidOperationException($"Telegram answerCallbackQuery falhou: {response.Description ?? "sem descricao"}");
+        }
+    }
+
+    private static T? EnsureResult<T>(TelegramApiResponse<T> response, string methodName)
+    {
+        if (!response.Ok)
+        {
+            throw new InvalidOperationException($"Telegram {methodName} falhou: {response.Description ?? "sem descricao"}");
+        }
+
+        return response.Result;
     }
 }

@@ -30,6 +30,8 @@
                     <th>Servico</th>
                     <th>Cliente</th>
                     <th>Telefone</th>
+                    <th>Endereco</th>
+                    <th>Geo (lat,lng)</th>
                     <th>Inicio</th>
                     <th>Duracao</th>
                     <th>Tecnico</th>
@@ -43,6 +45,17 @@
                     <td>@item.ServiceTitle</td>
                     <td>@item.CustomerName</td>
                     <td>@item.CustomerPhone</td>
+                    <td>@item.Address</td>
+                    <td>
+                        @if (item.Latitude.HasValue && item.Longitude.HasValue)
+                        {
+                            @($"{item.Latitude.Value:0.000000}, {item.Longitude.Value:0.000000}")
+                        }
+                        else
+                        {
+                            <span class="text-muted">sem geocode</span>
+                        }
+                    </td>
                     <td>@item.StartLocal.ToString("dd/MM/yyyy HH:mm")</td>
                     <td>@item.DurationMinutes min</td>
                     <td>@item.TechnicianName</td>

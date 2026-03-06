@@ -7,6 +7,9 @@ public sealed class UserDraft
     public List<string> PhotoFileIds { get; set; } = new();
     public string? AddressText { get; set; }
     public string? Cep { get; set; }
+    public string? AddressBaseFromCep { get; set; }
+    public bool WaitingAddressNumber { get; set; }
+    public bool WaitingAddressConfirmation { get; set; }
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }
     public bool IsUrgent { get; set; }

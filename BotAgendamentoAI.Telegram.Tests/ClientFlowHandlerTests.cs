@@ -91,4 +91,67 @@ public sealed class ClientFlowHandlerTests
         Assert.Null(context.Session.ChatJobId);
         Assert.Equal(BotStates.C_TRACKING, context.Session.State);
     }
+
+    [Fact]
+    public async Task HandleCallback_ClientHomeMyBookings_ShouldReturnNoBookingsMessage()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var parsed = CallbackDataRouter.TryParse("C:HOME:MY", out var route);
+        Assert.True(parsed);
+
+        var callback = new CallbackQuery
+        {
+            Id = "cb-home-my",
+            Data = "C:HOME:MY",
+            Message = new Message
+            {
+                Chat = new Chat { Id = user.TelegramUserId }
+            }
+        };
+
+        var handled = await sut.HandleCallbackAsync(context, route, callback, CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Contains(bot.SentTexts, x => x.Text.Contains("nao possui agendamentos", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HandleText_UnknownOnHome_ShouldRepeatClientMenu()
+    {
+        await using var db = TestContextFactory.CreateDb();
+        var user = TestContextFactory.BuildUser(state: BotStates.C_HOME);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var bot = new FakeTelegramBotClient();
+        var history = new ConversationHistoryService();
+        var sender = new TelegramMessageSender(history);
+        var workflow = new JobWorkflowService(sender);
+        var photoValidator = new StubPhotoValidator();
+        var sut = new ClientFlowHandler(sender, workflow, photoValidator);
+        var context = TestContextFactory.BuildExecutionContext(db, bot, user);
+
+        var message = new Message
+        {
+            Chat = new Chat { Id = user.TelegramUserId },
+            From = new User { Id = user.TelegramUserId, FirstName = "User" },
+            Text = "texto aleatorio"
+        };
+
+        await sut.HandleTextAsync(context, message, CancellationToken.None);
+
+        Assert.Contains(bot.SentTexts, x => string.Equals(x.Text, "Menu", StringComparison.Ordinal));
+    }
 }
