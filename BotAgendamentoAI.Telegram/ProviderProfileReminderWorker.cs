@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using BotAgendamentoAI.Telegram.Application.Services;
 using BotAgendamentoAI.Telegram.Domain.Entities;
@@ -12,32 +13,35 @@ namespace BotAgendamentoAI.Telegram;
 
 public sealed class ProviderProfileReminderWorker : BackgroundService
 {
-    private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan ReminderResendCooldown = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan WorkerTickInterval = TimeSpan.FromMinutes(1);
 
     private readonly TenantConfigService _tenantConfigService;
     private readonly IDbContextFactory<BotDbContext> _dbFactory;
     private readonly TelegramApiClient _apiClient;
     private readonly TelegramMessageSender _sender;
+    private readonly ProviderReminderSettingsService _settingsService;
     private readonly ILogger<ProviderProfileReminderWorker> _logger;
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSweepByTenant = new(StringComparer.OrdinalIgnoreCase);
 
     public ProviderProfileReminderWorker(
         TenantConfigService tenantConfigService,
         IDbContextFactory<BotDbContext> dbFactory,
         TelegramApiClient apiClient,
         TelegramMessageSender sender,
+        ProviderReminderSettingsService settingsService,
         ILogger<ProviderProfileReminderWorker> logger)
     {
         _tenantConfigService = tenantConfigService;
         _dbFactory = dbFactory;
         _apiClient = apiClient;
         _sender = sender;
+        _settingsService = settingsService;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Worker de lembrete de perfil do prestador iniciado. Intervalo={IntervalMinutes}min", SweepInterval.TotalMinutes);
+        _logger.LogInformation("Worker de lembrete de perfil do prestador iniciado. Tick={TickMinutes}min", WorkerTickInterval.TotalMinutes);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -54,7 +58,7 @@ public sealed class ProviderProfileReminderWorker : BackgroundService
                 _logger.LogError(ex, "Falha no sweep do worker de lembrete de perfil.");
             }
 
-            await Task.Delay(SweepInterval, stoppingToken);
+            await Task.Delay(WorkerTickInterval, stoppingToken);
         }
     }
 
@@ -80,7 +84,21 @@ public sealed class ProviderProfileReminderWorker : BackgroundService
 
             try
             {
-                await ProcessTenantAsync(config, cancellationToken);
+                await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
+                var settings = await _settingsService.GetSettingsAsync(db, config.TenantId, cancellationToken);
+                if (!settings.IsEnabled)
+                {
+                    continue;
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                if (!IsSweepDue(config.TenantId, settings.SweepIntervalMinutes, now))
+                {
+                    continue;
+                }
+
+                await ProcessTenantAsync(db, config, settings, cancellationToken);
+                _lastSweepByTenant[config.TenantId] = now;
             }
             catch (Exception ex)
             {
@@ -89,9 +107,12 @@ public sealed class ProviderProfileReminderWorker : BackgroundService
         }
     }
 
-    private async Task ProcessTenantAsync(TelegramTenantConfig config, CancellationToken cancellationToken)
+    private async Task ProcessTenantAsync(
+        BotDbContext db,
+        TelegramTenantConfig config,
+        ProviderReminderSettings settings,
+        CancellationToken cancellationToken)
     {
-        await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var providers = await db.Users
             .Include(x => x.ProviderProfile)
             .Include(x => x.Session)
@@ -139,7 +160,7 @@ public sealed class ProviderProfileReminderWorker : BackgroundService
             }
 
             if (draft.ProviderProfileReminderLastSentUtc.HasValue
-                && now - draft.ProviderProfileReminderLastSentUtc.Value < ReminderResendCooldown)
+                && now - draft.ProviderProfileReminderLastSentUtc.Value < TimeSpan.FromMinutes(settings.ReminderResendCooldownMinutes))
             {
                 continue;
             }
@@ -160,6 +181,17 @@ public sealed class ProviderProfileReminderWorker : BackgroundService
             UserContextService.SaveDraft(providerUser.Session, draft);
             await db.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    private bool IsSweepDue(string tenantId, int sweepIntervalMinutes, DateTimeOffset nowUtc)
+    {
+        var safeInterval = TimeSpan.FromMinutes(Math.Max(1, sweepIntervalMinutes));
+        if (!_lastSweepByTenant.TryGetValue(tenantId, out var lastSweepUtc))
+        {
+            return true;
+        }
+
+        return nowUtc - lastSweepUtc >= safeInterval;
     }
 
     private static List<string> BuildMissingProfileItems(ProviderProfile? profile)

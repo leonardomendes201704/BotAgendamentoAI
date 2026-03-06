@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -12,7 +12,7 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
-                name: "MessagesLog",
+                name: "tg_MessagesLog",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
@@ -32,7 +32,7 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "Users",
+                name: "tg_Users",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
@@ -53,7 +53,7 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "Jobs",
+                name: "tg_Jobs",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
@@ -81,19 +81,19 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                     table.ForeignKey(
                         name: "FK_Jobs_Users_ClientUserId",
                         column: x => x.ClientUserId,
-                        principalTable: "Users",
+                        principalTable: "tg_Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_Jobs_Users_ProviderUserId",
                         column: x => x.ProviderUserId,
-                        principalTable: "Users",
+                        principalTable: "tg_Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.SetNull);
                 });
 
             migrationBuilder.CreateTable(
-                name: "ProvidersProfile",
+                name: "tg_ProvidersProfile",
                 columns: table => new
                 {
                     UserId = table.Column<long>(type: "INTEGER", nullable: false),
@@ -112,13 +112,13 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                     table.ForeignKey(
                         name: "FK_ProvidersProfile_Users_UserId",
                         column: x => x.UserId,
-                        principalTable: "Users",
+                        principalTable: "tg_Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
-                name: "UserSessions",
+                name: "tg_UserSessions",
                 columns: table => new
                 {
                     UserId = table.Column<long>(type: "INTEGER", nullable: false),
@@ -136,13 +136,13 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                     table.ForeignKey(
                         name: "FK_UserSessions_Users_UserId",
                         column: x => x.UserId,
-                        principalTable: "Users",
+                        principalTable: "tg_Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
-                name: "JobPhotos",
+                name: "tg_JobPhotos",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
@@ -158,13 +158,13 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                     table.ForeignKey(
                         name: "FK_JobPhotos_Jobs_JobId",
                         column: x => x.JobId,
-                        principalTable: "Jobs",
+                        principalTable: "tg_Jobs",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
-                name: "Ratings",
+                name: "tg_Ratings",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
@@ -182,13 +182,13 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                     table.ForeignKey(
                         name: "FK_Ratings_Jobs_JobId",
                         column: x => x.JobId,
-                        principalTable: "Jobs",
+                        principalTable: "tg_Jobs",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
-                name: "ProviderPortfolioPhotos",
+                name: "tg_ProviderPortfolioPhotos",
                 columns: table => new
                 {
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
@@ -204,81 +204,81 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
                     table.ForeignKey(
                         name: "FK_ProviderPortfolioPhotos_ProvidersProfile_ProviderProfileUserId",
                         column: x => x.ProviderProfileUserId,
-                        principalTable: "ProvidersProfile",
+                        principalTable: "tg_ProvidersProfile",
                         principalColumn: "UserId");
                     table.ForeignKey(
                         name: "FK_ProviderPortfolioPhotos_Users_ProviderUserId",
                         column: x => x.ProviderUserId,
-                        principalTable: "Users",
+                        principalTable: "tg_Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateIndex(
                 name: "IX_JobPhotos_JobId_CreatedAt",
-                table: "JobPhotos",
+                table: "tg_JobPhotos",
                 columns: new[] { "JobId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Jobs_ClientUserId_CreatedAt",
-                table: "Jobs",
+                table: "tg_Jobs",
                 columns: new[] { "ClientUserId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Jobs_ProviderUserId_Status_UpdatedAt",
-                table: "Jobs",
+                table: "tg_Jobs",
                 columns: new[] { "ProviderUserId", "Status", "UpdatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Jobs_TenantId_Status_CreatedAt",
-                table: "Jobs",
+                table: "tg_Jobs",
                 columns: new[] { "TenantId", "Status", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_MessagesLog_RelatedJobId_CreatedAt",
-                table: "MessagesLog",
+                table: "tg_MessagesLog",
                 columns: new[] { "RelatedJobId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_MessagesLog_TenantId_TelegramUserId_CreatedAt",
-                table: "MessagesLog",
+                table: "tg_MessagesLog",
                 columns: new[] { "TenantId", "TelegramUserId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ProviderPortfolioPhotos_ProviderProfileUserId",
-                table: "ProviderPortfolioPhotos",
+                table: "tg_ProviderPortfolioPhotos",
                 column: "ProviderProfileUserId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_ProviderPortfolioPhotos_ProviderUserId_CreatedAt",
-                table: "ProviderPortfolioPhotos",
+                table: "tg_ProviderPortfolioPhotos",
                 columns: new[] { "ProviderUserId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Ratings_JobId",
-                table: "Ratings",
+                table: "tg_Ratings",
                 column: "JobId",
                 unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_Ratings_ProviderUserId_CreatedAt",
-                table: "Ratings",
+                table: "tg_Ratings",
                 columns: new[] { "ProviderUserId", "CreatedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Users_TenantId_Role",
-                table: "Users",
+                table: "tg_Users",
                 columns: new[] { "TenantId", "Role" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Users_TenantId_TelegramUserId",
-                table: "Users",
+                table: "tg_Users",
                 columns: new[] { "TenantId", "TelegramUserId" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_UserSessions_ActiveJobId",
-                table: "UserSessions",
+                table: "tg_UserSessions",
                 column: "ActiveJobId");
         }
 
@@ -286,28 +286,29 @@ namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "JobPhotos");
+                name: "tg_JobPhotos");
 
             migrationBuilder.DropTable(
-                name: "MessagesLog");
+                name: "tg_MessagesLog");
 
             migrationBuilder.DropTable(
-                name: "ProviderPortfolioPhotos");
+                name: "tg_ProviderPortfolioPhotos");
 
             migrationBuilder.DropTable(
-                name: "Ratings");
+                name: "tg_Ratings");
 
             migrationBuilder.DropTable(
-                name: "UserSessions");
+                name: "tg_UserSessions");
 
             migrationBuilder.DropTable(
-                name: "ProvidersProfile");
+                name: "tg_ProvidersProfile");
 
             migrationBuilder.DropTable(
-                name: "Jobs");
+                name: "tg_Jobs");
 
             migrationBuilder.DropTable(
-                name: "Users");
+                name: "tg_Users");
         }
     }
 }
+

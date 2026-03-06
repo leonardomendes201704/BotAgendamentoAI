@@ -26,17 +26,20 @@ public sealed class ProviderFlowHandler
     private readonly JobWorkflowService _jobWorkflow;
     private readonly CalendarSyncQueueService? _calendarQueue;
     private readonly AvailabilityService? _availability;
+    private readonly ProviderReminderSettingsService? _reminderSettings;
 
     public ProviderFlowHandler(
         TelegramMessageSender sender,
         JobWorkflowService jobWorkflow,
         CalendarSyncQueueService? calendarQueue = null,
-        AvailabilityService? availability = null)
+        AvailabilityService? availability = null,
+        ProviderReminderSettingsService? reminderSettings = null)
     {
         _sender = sender;
         _jobWorkflow = jobWorkflow;
         _calendarQueue = calendarQueue;
         _availability = availability;
+        _reminderSettings = reminderSettings;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -175,7 +178,10 @@ public sealed class ProviderFlowHandler
             var profile = await EnsureProfileAsync(context, cancellationToken);
             if (route.Arg1 == "LATER")
             {
-                context.Draft.ProviderProfileReminderSnoozeUntilUtc = DateTimeOffset.UtcNow.AddHours(24);
+                var settings = _reminderSettings is null
+                    ? new ProviderReminderSettings { SnoozeHours = 24 }
+                    : await _reminderSettings.GetSettingsAsync(context.Db, context.TenantId, cancellationToken);
+                context.Draft.ProviderProfileReminderSnoozeUntilUtc = DateTimeOffset.UtcNow.AddHours(Math.Max(1, settings.SnoozeHours));
                 UserContextService.SaveDraft(context.Session, context.Draft);
                 await context.Db.SaveChangesAsync(cancellationToken);
 

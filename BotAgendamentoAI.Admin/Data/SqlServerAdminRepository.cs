@@ -4,166 +4,219 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using BotAgendamentoAI.Admin.Models;
-using Microsoft.Data.Sqlite;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 
 namespace BotAgendamentoAI.Admin.Data;
 
-public sealed class SqliteAdminRepository : IAdminRepository
+public sealed class SqlServerAdminRepository : IAdminRepository
 {
-    private readonly string _dbPath;
     private readonly string _connectionString;
-    private readonly ILogger<SqliteAdminRepository> _logger;
+    private readonly ILogger<SqlServerAdminRepository> _logger;
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
 
     private const string AdminSchemaSql = """
-CREATE TABLE IF NOT EXISTS tg_conversation_messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  direction TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  tool_name TEXT NULL,
-  tool_call_id TEXT NULL,
-  created_at_utc TEXT NOT NULL,
-  metadata_json TEXT NULL
-);
+IF OBJECT_ID(N'dbo.tg_conversation_messages', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_conversation_messages
+    (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        phone NVARCHAR(64) NOT NULL,
+        direction NVARCHAR(32) NOT NULL,
+        role NVARCHAR(32) NOT NULL,
+        content NVARCHAR(MAX) NOT NULL,
+        tool_name NVARCHAR(128) NULL,
+        tool_call_id NVARCHAR(128) NULL,
+        created_at_utc NVARCHAR(64) NOT NULL,
+        metadata_json NVARCHAR(MAX) NULL
+    );
+END;
 
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_tenant_phone_created
-ON tg_conversation_messages(tenant_id, phone, created_at_utc);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_conversation_messages_tenant_phone_created' AND object_id = OBJECT_ID(N'dbo.tg_conversation_messages'))
+BEGIN
+    CREATE INDEX idx_conversation_messages_tenant_phone_created
+    ON dbo.tg_conversation_messages(tenant_id, phone, created_at_utc);
+END;
 
-CREATE TABLE IF NOT EXISTS tg_conversation_state (
-  tenant_id TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  summary TEXT NOT NULL,
-  slots_json TEXT NOT NULL,
-  updated_at_utc TEXT NOT NULL,
-  PRIMARY KEY (tenant_id, phone)
-);
+IF OBJECT_ID(N'dbo.tg_conversation_state', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_conversation_state
+    (
+        tenant_id NVARCHAR(32) NOT NULL,
+        phone NVARCHAR(64) NOT NULL,
+        summary NVARCHAR(MAX) NOT NULL,
+        slots_json NVARCHAR(MAX) NOT NULL,
+        updated_at_utc NVARCHAR(64) NOT NULL,
+        CONSTRAINT PK_tg_conversation_state PRIMARY KEY (tenant_id, phone)
+    );
+END;
 
-CREATE TABLE IF NOT EXISTS tg_service_categories (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  normalized_name TEXT NOT NULL,
-  created_at_utc TEXT NOT NULL,
-  UNIQUE(tenant_id, normalized_name)
-);
+IF OBJECT_ID(N'dbo.tg_service_categories', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_service_categories
+    (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        name NVARCHAR(128) NOT NULL,
+        normalized_name NVARCHAR(128) NOT NULL,
+        created_at_utc NVARCHAR(64) NOT NULL,
+        CONSTRAINT UQ_tg_service_categories_tenant_normalized UNIQUE(tenant_id, normalized_name)
+    );
+END;
 
-CREATE INDEX IF NOT EXISTS idx_service_categories_tenant_name
-ON tg_service_categories(tenant_id, name);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_service_categories_tenant_name' AND object_id = OBJECT_ID(N'dbo.tg_service_categories'))
+BEGIN
+    CREATE INDEX idx_service_categories_tenant_name
+    ON dbo.tg_service_categories(tenant_id, name);
+END;
 
-CREATE TABLE IF NOT EXISTS tg_bookings (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL,
-  customer_phone TEXT NOT NULL,
-  customer_name TEXT NOT NULL,
-  service_category TEXT NOT NULL,
-  service_title TEXT NOT NULL,
-  start_local TEXT NOT NULL,
-  duration_minutes INTEGER NOT NULL,
-  address TEXT NOT NULL,
-  notes TEXT NOT NULL,
-  technician_name TEXT NOT NULL,
-  created_at_utc TEXT NOT NULL
-);
+IF OBJECT_ID(N'dbo.tg_bookings', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_bookings
+    (
+        id NVARCHAR(128) PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        customer_phone NVARCHAR(64) NOT NULL,
+        customer_name NVARCHAR(200) NOT NULL,
+        service_category NVARCHAR(128) NOT NULL,
+        service_title NVARCHAR(256) NOT NULL,
+        start_local NVARCHAR(64) NOT NULL,
+        duration_minutes INT NOT NULL,
+        address NVARCHAR(MAX) NOT NULL,
+        notes NVARCHAR(MAX) NOT NULL,
+        technician_name NVARCHAR(200) NOT NULL,
+        created_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
 
-CREATE INDEX IF NOT EXISTS idx_bookings_tenant_phone_start
-ON tg_bookings(tenant_id, customer_phone, start_local);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_bookings_tenant_phone_start' AND object_id = OBJECT_ID(N'dbo.tg_bookings'))
+BEGIN
+    CREATE INDEX idx_bookings_tenant_phone_start
+    ON dbo.tg_bookings(tenant_id, customer_phone, start_local);
+END;
 
-CREATE INDEX IF NOT EXISTS idx_bookings_tenant_start
-ON tg_bookings(tenant_id, start_local);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_bookings_tenant_start' AND object_id = OBJECT_ID(N'dbo.tg_bookings'))
+BEGIN
+    CREATE INDEX idx_bookings_tenant_start
+    ON dbo.tg_bookings(tenant_id, start_local);
+END;
 
-CREATE TABLE IF NOT EXISTS tg_booking_geocode_cache (
-  booking_id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL,
-  address TEXT NOT NULL,
-  latitude REAL NULL,
-  longitude REAL NULL,
-  status TEXT NOT NULL,
-  error_message TEXT NULL,
-  geocoded_at_utc TEXT NOT NULL,
-  retry_after_utc TEXT NULL
-);
+IF OBJECT_ID(N'dbo.tg_booking_geocode_cache', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_booking_geocode_cache
+    (
+        booking_id NVARCHAR(128) PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        address NVARCHAR(MAX) NOT NULL,
+        latitude FLOAT NULL,
+        longitude FLOAT NULL,
+        status NVARCHAR(32) NOT NULL,
+        error_message NVARCHAR(MAX) NULL,
+        geocoded_at_utc NVARCHAR(64) NOT NULL,
+        retry_after_utc NVARCHAR(64) NULL
+    );
+END;
 
-CREATE INDEX IF NOT EXISTS idx_booking_geocode_cache_tenant_status
-ON tg_booking_geocode_cache(tenant_id, status, retry_after_utc);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_booking_geocode_cache_tenant_status' AND object_id = OBJECT_ID(N'dbo.tg_booking_geocode_cache'))
+BEGIN
+    CREATE INDEX idx_booking_geocode_cache_tenant_status
+    ON dbo.tg_booking_geocode_cache(tenant_id, status, retry_after_utc);
+END;
 
-CREATE TABLE IF NOT EXISTS tg_service_catalog (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  category_name TEXT NOT NULL,
-  default_duration_minutes INTEGER NOT NULL DEFAULT 60,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  created_at_utc TEXT NOT NULL,
-  updated_at_utc TEXT NOT NULL
-);
+IF OBJECT_ID(N'dbo.tg_service_catalog', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_service_catalog
+    (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        title NVARCHAR(256) NOT NULL,
+        category_name NVARCHAR(128) NOT NULL,
+        default_duration_minutes INT NOT NULL CONSTRAINT DF_tg_service_catalog_default_duration_minutes DEFAULT(60),
+        is_active BIT NOT NULL CONSTRAINT DF_tg_service_catalog_is_active DEFAULT(1),
+        created_at_utc NVARCHAR(64) NOT NULL,
+        updated_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
 
-CREATE INDEX IF NOT EXISTS idx_service_catalog_tenant_active
-ON tg_service_catalog(tenant_id, is_active, title);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_service_catalog_tenant_active' AND object_id = OBJECT_ID(N'dbo.tg_service_catalog'))
+BEGIN
+    CREATE INDEX idx_service_catalog_tenant_active
+    ON dbo.tg_service_catalog(tenant_id, is_active, title);
+END;
 
-CREATE TABLE IF NOT EXISTS tg_tenant_bot_config (
-  tenant_id TEXT PRIMARY KEY,
-  menu_json TEXT NOT NULL,
-  messages_json TEXT NOT NULL,
-  updated_at_utc TEXT NOT NULL
-);
+IF OBJECT_ID(N'dbo.tg_tenant_bot_config', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_tenant_bot_config
+    (
+        tenant_id NVARCHAR(32) PRIMARY KEY,
+        menu_json NVARCHAR(MAX) NOT NULL,
+        messages_json NVARCHAR(MAX) NOT NULL,
+        updated_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
 
-CREATE TABLE IF NOT EXISTS tg_tenant_telegram_config (
-  tenant_id TEXT PRIMARY KEY,
-  bot_id TEXT NOT NULL,
-  bot_username TEXT NOT NULL,
-  bot_token TEXT NOT NULL,
-  is_active INTEGER NOT NULL DEFAULT 0,
-  polling_timeout_seconds INTEGER NOT NULL DEFAULT 30,
-  last_update_id INTEGER NOT NULL DEFAULT 0,
-  updated_at_utc TEXT NOT NULL
-);
+IF OBJECT_ID(N'dbo.tg_tenant_telegram_config', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_tenant_telegram_config
+    (
+        tenant_id NVARCHAR(32) PRIMARY KEY,
+        bot_id NVARCHAR(128) NOT NULL,
+        bot_username NVARCHAR(128) NOT NULL,
+        bot_token NVARCHAR(512) NOT NULL,
+        is_active BIT NOT NULL CONSTRAINT DF_tg_tenant_telegram_config_is_active DEFAULT(0),
+        polling_timeout_seconds INT NOT NULL CONSTRAINT DF_tg_tenant_telegram_config_polling_timeout_seconds DEFAULT(30),
+        last_update_id BIGINT NOT NULL CONSTRAINT DF_tg_tenant_telegram_config_last_update_id DEFAULT(0),
+        updated_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
 
-CREATE TABLE IF NOT EXISTS tg_tenant_google_calendar_config (
-  tenant_id TEXT PRIMARY KEY,
-  is_enabled INTEGER NOT NULL DEFAULT 0,
-  calendar_id TEXT NOT NULL DEFAULT '',
-  service_account_json TEXT NOT NULL DEFAULT '',
-  time_zone_id TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
-  default_duration_minutes INTEGER NOT NULL DEFAULT 60,
-  availability_window_days INTEGER NOT NULL DEFAULT 7,
-  availability_slot_interval_minutes INTEGER NOT NULL DEFAULT 60,
-  availability_workday_start_hour INTEGER NOT NULL DEFAULT 8,
-  availability_workday_end_hour INTEGER NOT NULL DEFAULT 20,
-  availability_today_lead_minutes INTEGER NOT NULL DEFAULT 30,
-  max_attempts INTEGER NOT NULL DEFAULT 8,
-  retry_base_seconds INTEGER NOT NULL DEFAULT 10,
-  retry_max_seconds INTEGER NOT NULL DEFAULT 600,
-  event_title_template TEXT NOT NULL DEFAULT '',
-  event_description_template TEXT NOT NULL DEFAULT '',
-  updated_at_utc TEXT NOT NULL
-);
+IF OBJECT_ID(N'dbo.tg_tenant_google_calendar_config', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_tenant_google_calendar_config
+    (
+        tenant_id NVARCHAR(32) PRIMARY KEY,
+        is_enabled BIT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_is_enabled DEFAULT(0),
+        calendar_id NVARCHAR(512) NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_calendar_id DEFAULT(''),
+        service_account_json NVARCHAR(MAX) NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_service_account_json DEFAULT(''),
+        time_zone_id NVARCHAR(64) NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_time_zone_id DEFAULT('America/Sao_Paulo'),
+        default_duration_minutes INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_default_duration_minutes DEFAULT(60),
+        availability_window_days INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_window_days DEFAULT(7),
+        availability_slot_interval_minutes INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_slot_interval_minutes DEFAULT(60),
+        availability_workday_start_hour INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_workday_start_hour DEFAULT(8),
+        availability_workday_end_hour INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_workday_end_hour DEFAULT(20),
+        availability_today_lead_minutes INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_today_lead_minutes DEFAULT(30),
+        max_attempts INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_max_attempts DEFAULT(8),
+        retry_base_seconds INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_retry_base_seconds DEFAULT(10),
+        retry_max_seconds INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_retry_max_seconds DEFAULT(600),
+        event_title_template NVARCHAR(MAX) NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_event_title_template DEFAULT(''),
+        event_description_template NVARCHAR(MAX) NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_event_description_template DEFAULT(''),
+        updated_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
 
-CREATE TABLE IF NOT EXISTS tg_shared_settings (
-  setting_key TEXT PRIMARY KEY,
-  setting_value TEXT NOT NULL,
-  updated_at_utc TEXT NOT NULL
-);
+IF OBJECT_ID(N'dbo.tg_shared_settings', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_shared_settings
+    (
+        setting_key NVARCHAR(128) PRIMARY KEY,
+        setting_value NVARCHAR(MAX) NOT NULL,
+        updated_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
 """;
 
-    public SqliteAdminRepository(IOptions<AdminOptions> options, ILogger<SqliteAdminRepository> logger)
+    public SqlServerAdminRepository(
+        IOptions<AdminOptions> options,
+        IConfiguration configuration,
+        ILogger<SqlServerAdminRepository> logger)
     {
         _logger = logger;
-        _dbPath = ResolveDatabasePath(options.Value.DatabasePath);
-        _connectionString = $"Data Source={_dbPath}";
+        _connectionString = ResolveConnectionString(options.Value.ConnectionString, configuration.GetConnectionString("DefaultConnection"));
     }
 
     public async Task InitializeAsync()
     {
-        var dir = Path.GetDirectoryName(_dbPath);
-        if (!string.IsNullOrWhiteSpace(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
@@ -171,16 +224,16 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         command.CommandText = AdminSchemaSql;
         await command.ExecuteNonQueryAsync();
 
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_window_days", "INTEGER NOT NULL DEFAULT 7");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_slot_interval_minutes", "INTEGER NOT NULL DEFAULT 60");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_workday_start_hour", "INTEGER NOT NULL DEFAULT 8");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_workday_end_hour", "INTEGER NOT NULL DEFAULT 20");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_today_lead_minutes", "INTEGER NOT NULL DEFAULT 30");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "max_attempts", "INTEGER NOT NULL DEFAULT 8");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_base_seconds", "INTEGER NOT NULL DEFAULT 10");
-        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_max_seconds", "INTEGER NOT NULL DEFAULT 600");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_window_days", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_window_days2 DEFAULT(7)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_slot_interval_minutes", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_slot_interval_minutes2 DEFAULT(60)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_workday_start_hour", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_workday_start_hour2 DEFAULT(8)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_workday_end_hour", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_workday_end_hour2 DEFAULT(20)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "availability_today_lead_minutes", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_availability_today_lead_minutes2 DEFAULT(30)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "max_attempts", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_max_attempts2 DEFAULT(8)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_base_seconds", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_retry_base_seconds2 DEFAULT(10)");
+        await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_max_seconds", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_retry_max_seconds2 DEFAULT(600)");
 
-        _logger.LogInformation("Admin SQLite path: {Path}", _dbPath);
+        _logger.LogInformation("Admin SQL Server repository initialized.");
     }
 
     public async Task<IReadOnlyList<string>> GetTenantIdsAsync()
@@ -444,8 +497,8 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 FROM tg_conversation_state
                 WHERE tenant_id = @tenant_id
                   AND (
-                    json_extract(slots_json, '$.menuContext') = 'human_handoff'
-                    OR json_extract(slots_json, '$.pending') = 'human_handoff'
+                    JSON_VALUE(slots_json, '$.menuContext') = 'human_handoff'
+                    OR JSON_VALUE(slots_json, '$.pending') = 'human_handoff'
                   );
                 """,
                 ("@tenant_id", tenant));
@@ -519,7 +572,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   WHERE b.tenant_id = @tenant_id
                     AND (@since_utc IS NULL OR b.created_at_utc >= @since_utc)
                   ORDER BY b.created_at_utc DESC
-                  LIMIT @limit;
                   """
                 : """
                   SELECT
@@ -539,7 +591,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   WHERE b.tenant_id = @tenant_id
                     AND (@since_utc IS NULL OR b.created_at_utc >= @since_utc)
                   ORDER BY b.created_at_utc DESC
-                  LIMIT @limit;
                   """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@since_utc", sinceUtc.HasValue ? ToUtcText(sinceUtc.Value) : (object)DBNull.Value);
@@ -557,11 +608,11 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     CustomerPhone = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
                     Address = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
                     StartLocal = ParseLocalDateTime(reader.IsDBNull(6) ? string.Empty : reader.GetString(6)),
-                    CreatedAtUtc = ParseUtc(reader.IsDBNull(7) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(7)),
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(7) ? null : reader.GetValue(7)),
                     Latitude = reader.IsDBNull(8) ? null : reader.GetDouble(8),
                     Longitude = reader.IsDBNull(9) ? null : reader.GetDouble(9),
                     GeocodeStatus = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
-                    RetryAfterUtc = TryParseNullableUtc(reader.IsDBNull(11) ? null : reader.GetString(11))
+                    RetryAfterUtc = TryParseNullableUtc(reader.IsDBNull(11) ? null : reader.GetValue(11))
                 });
             }
         }
@@ -592,7 +643,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     AND j.Status NOT IN ('Draft', 'Finished', 'Cancelled')
                     AND (@since_utc IS NULL OR j.CreatedAt >= @since_utc)
                   ORDER BY j.CreatedAt DESC
-                  LIMIT @limit;
                   """
                 : """
                   SELECT
@@ -613,7 +663,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     AND j.Status NOT IN ('Draft', 'Finished', 'Cancelled')
                     AND (@since_utc IS NULL OR j.CreatedAt >= @since_utc)
                   ORDER BY j.CreatedAt DESC
-                  LIMIT @limit;
                   """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@since_utc", sinceUtc.HasValue ? ToUtcText(sinceUtc.Value) : (object)DBNull.Value);
@@ -630,9 +679,8 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     customerPhone = telegramUserId > 0 ? $"tg:{telegramUserId}" : $"user:{clientUserId}";
                 }
 
-                var scheduledRaw = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
-                var createdAtRaw = reader.IsDBNull(9) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(9);
-                var createdAtUtc = ParseUtc(createdAtRaw);
+                var scheduledRaw = ToInvariantText(reader.IsDBNull(8) ? null : reader.GetValue(8));
+                var createdAtUtc = ParseUtc(reader.IsDBNull(9) ? null : reader.GetValue(9));
 
                 var row = new DashboardMapRow
                 {
@@ -799,17 +847,16 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             command.CommandText = hasLegacyState
                 ? """
                   SELECT
+                      TOP (@limit)
                       t.phone,
                       t.last_message_at_utc,
                       COALESCE(last_msg.content, '') AS last_content,
-                      COALESCE(json_extract(cs.slots_json, '$.menuContext'), '') AS menu_context
+                      COALESCE(JSON_VALUE(cs.slots_json, '$.menuContext'), '') AS menu_context
                   FROM (
                       SELECT phone, MAX(created_at_utc) AS last_message_at_utc
                       FROM tg_conversation_messages
                       WHERE tenant_id = @tenant_id
                       GROUP BY phone
-                      ORDER BY last_message_at_utc DESC
-                      LIMIT @limit
                   ) t
                   LEFT JOIN tg_conversation_messages last_msg
                       ON last_msg.tenant_id = @tenant_id
@@ -822,6 +869,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   """
                 : """
                   SELECT
+                      TOP (@limit)
                       t.phone,
                       t.last_message_at_utc,
                       COALESCE(last_msg.content, '') AS last_content,
@@ -831,8 +879,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                       FROM tg_conversation_messages
                       WHERE tenant_id = @tenant_id
                       GROUP BY phone
-                      ORDER BY last_message_at_utc DESC
-                      LIMIT @limit
                   ) t
                   LEFT JOIN tg_conversation_messages last_msg
                       ON last_msg.tenant_id = @tenant_id
@@ -850,7 +896,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 output.Add(new ConversationThreadSummary
                 {
                     Phone = reader.GetString(0),
-                    LastMessageAtUtc = ParseUtc(reader.GetString(1)),
+                    LastMessageAtUtc = ParseUtc(reader.IsDBNull(1) ? null : reader.GetValue(1)),
                     LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                     MenuContext = menuContext,
                     IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
@@ -882,7 +928,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                       ON s.UserId = u.Id
                   WHERE m.TenantId = @tenant_id
                   ORDER BY m.CreatedAt DESC
-                  LIMIT @limit;
                   """
                 : """
                   SELECT
@@ -899,7 +944,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   ) t ON t.LastId = m.Id
                   WHERE m.TenantId = @tenant_id
                   ORDER BY m.CreatedAt DESC
-                  LIMIT @limit;
                   """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -917,7 +961,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 output.Add(new ConversationThreadSummary
                 {
                     Phone = $"tg:{telegramUserId}",
-                    LastMessageAtUtc = ParseUtc(reader.IsDBNull(1) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(1)),
+                    LastMessageAtUtc = ParseUtc(reader.IsDBNull(1) ? null : reader.GetValue(1)),
                     LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                     MenuContext = menuContext,
                     IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
@@ -959,7 +1003,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 WHERE TenantId = @tenant_id
                   AND TelegramUserId = @telegram_user_id
                 ORDER BY CreatedAt DESC, Id DESC
-                LIMIT @limit;
                 """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
@@ -981,7 +1024,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     Content = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
                     ToolName = null,
                     ToolCallId = null,
-                    CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(4))
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? null : reader.GetValue(4))
                 });
             }
         }
@@ -997,7 +1040,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 WHERE tenant_id = @tenant_id
                   AND phone = @phone
                 ORDER BY created_at_utc DESC, id DESC
-                LIMIT @limit;
                 """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@phone", normalizedPhone);
@@ -1014,7 +1056,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     Content = reader.GetString(3),
                     ToolName = reader.IsDBNull(4) ? null : reader.GetString(4),
                     ToolCallId = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    CreatedAtUtc = ParseUtc(reader.GetString(6))
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(6) ? null : reader.GetValue(6))
                 });
             }
         }
@@ -1047,7 +1089,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 SELECT default_duration_minutes
                 FROM tg_tenant_google_calendar_config
                 WHERE tenant_id = @tenant_id
-                LIMIT 1;
                 """;
             durationCommand.Parameters.AddWithValue("@tenant_id", tenant);
             var durationScalar = await durationCommand.ExecuteScalarAsync();
@@ -1082,7 +1123,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   LEFT JOIN tg_booking_geocode_cache g ON g.booking_id = b.id
                   WHERE b.tenant_id = @tenant_id
                   ORDER BY b.created_at_utc DESC
-                  LIMIT @limit;
                   """
                 : """
                   SELECT
@@ -1101,7 +1141,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   FROM tg_bookings b
                   WHERE b.tenant_id = @tenant_id
                   ORDER BY b.created_at_utc DESC
-                  LIMIT @limit;
                   """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -1123,7 +1162,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     Latitude = reader.IsDBNull(10) ? null : reader.GetDouble(10),
                     Longitude = reader.IsDBNull(11) ? null : reader.GetDouble(11),
                     TechnicianName = reader.GetString(8),
-                    CreatedAtUtc = ParseUtc(reader.GetString(9))
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(9) ? null : reader.GetValue(9))
                 });
             }
         }
@@ -1151,12 +1190,11 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   LEFT JOIN tg_Users c ON c.Id = j.ClientUserId
                   LEFT JOIN tg_Users p ON p.Id = j.ProviderUserId
                   LEFT JOIN tg_booking_geocode_cache g
-                    ON g.booking_id = ('job:' || j.Id)
+                    ON g.booking_id = ('job:' + CONVERT(NVARCHAR(50), j.Id))
                    AND g.tenant_id = j.TenantId
                   WHERE j.TenantId = @tenant_id
                     AND j.Status <> 'Draft'
                   ORDER BY j.CreatedAt DESC
-                  LIMIT @limit;
                   """
                 : hasUsers
                 ? """
@@ -1180,7 +1218,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   WHERE j.TenantId = @tenant_id
                     AND j.Status <> 'Draft'
                   ORDER BY j.CreatedAt DESC
-                  LIMIT @limit;
                   """
                 : """
                   SELECT
@@ -1201,7 +1238,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   WHERE j.TenantId = @tenant_id
                     AND j.Status <> 'Draft'
                   ORDER BY j.CreatedAt DESC
-                  LIMIT @limit;
                   """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -1209,8 +1245,8 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             await using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                var createdAtUtc = ParseUtc(reader.IsDBNull(5) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(5));
-                var scheduledAtRaw = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                var createdAtUtc = ParseUtc(reader.IsDBNull(5) ? null : reader.GetValue(5));
+                var scheduledAtRaw = ToInvariantText(reader.IsDBNull(3) ? null : reader.GetValue(3));
                 var customerPhone = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
                 var telegramUserId = reader.IsDBNull(9) ? 0L : reader.GetInt64(9);
                 if (string.IsNullOrWhiteSpace(customerPhone))
@@ -1306,7 +1342,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   )
                 )
               ORDER BY COALESCE(s.last_job_at, u.UpdatedAt) DESC, u.Name ASC
-              LIMIT @limit;
               """
             : """
               SELECT
@@ -1329,7 +1364,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
               WHERE u.TenantId = @tenant_id
                 AND LOWER(COALESCE(u.Role, '')) IN ('client', 'both')
               ORDER BY u.UpdatedAt DESC, u.Name ASC
-              LIMIT @limit;
               """;
         command.Parameters.AddWithValue("@tenant_id", tenant);
         command.Parameters.AddWithValue("@limit", safeLimit);
@@ -1347,13 +1381,13 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 Phone = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
                 Role = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
                 IsActive = reader.IsDBNull(7) || Convert.ToInt32(reader.GetValue(7), CultureInfo.InvariantCulture) == 1,
-                CreatedAtUtc = ParseUtc(reader.IsDBNull(8) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(8)),
-                UpdatedAtUtc = ParseUtc(reader.IsDBNull(9) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(9)),
+                CreatedAtUtc = ParseUtc(reader.IsDBNull(8) ? null : reader.GetValue(8)),
+                UpdatedAtUtc = ParseUtc(reader.IsDBNull(9) ? null : reader.GetValue(9)),
                 TotalJobs = reader.IsDBNull(10) ? 0 : Convert.ToInt32(reader.GetValue(10), CultureInfo.InvariantCulture),
                 OpenJobs = reader.IsDBNull(11) ? 0 : Convert.ToInt32(reader.GetValue(11), CultureInfo.InvariantCulture),
                 FinishedJobs = reader.IsDBNull(12) ? 0 : Convert.ToInt32(reader.GetValue(12), CultureInfo.InvariantCulture),
                 CancelledJobs = reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13), CultureInfo.InvariantCulture),
-                LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(14) ? null : reader.GetString(14))
+                LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(14) ? null : reader.GetValue(14))
             });
         }
 
@@ -1434,7 +1468,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   )
                 )
               ORDER BY COALESCE(s.last_job_at, u.UpdatedAt) DESC, u.Name ASC
-              LIMIT @limit;
               """
             : hasProviderProfiles
             ? """
@@ -1469,7 +1502,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   OR p.UserId IS NOT NULL
                 )
               ORDER BY u.UpdatedAt DESC, u.Name ASC
-              LIMIT @limit;
               """
             : hasJobs
             ? """
@@ -1524,7 +1556,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                   )
                 )
               ORDER BY COALESCE(s.last_job_at, u.UpdatedAt) DESC, u.Name ASC
-              LIMIT @limit;
               """
             : """
               SELECT
@@ -1554,7 +1585,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
               WHERE u.TenantId = @tenant_id
                 AND LOWER(COALESCE(u.Role, '')) IN ('provider', 'both')
               ORDER BY u.UpdatedAt DESC, u.Name ASC
-              LIMIT @limit;
               """;
         command.Parameters.AddWithValue("@tenant_id", tenant);
         command.Parameters.AddWithValue("@limit", safeLimit);
@@ -1583,9 +1613,9 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 OpenJobs = reader.IsDBNull(16) ? 0 : Convert.ToInt32(reader.GetValue(16), CultureInfo.InvariantCulture),
                 FinishedJobs = reader.IsDBNull(17) ? 0 : Convert.ToInt32(reader.GetValue(17), CultureInfo.InvariantCulture),
                 CancelledJobs = reader.IsDBNull(18) ? 0 : Convert.ToInt32(reader.GetValue(18), CultureInfo.InvariantCulture),
-                LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(19) ? null : reader.GetString(19)),
-                CreatedAtUtc = ParseUtc(reader.IsDBNull(20) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(20)),
-                UpdatedAtUtc = ParseUtc(reader.IsDBNull(21) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(21))
+                LastJobAtUtc = TryParseNullableUtc(reader.IsDBNull(19) ? null : reader.GetValue(19)),
+                CreatedAtUtc = ParseUtc(reader.IsDBNull(20) ? null : reader.GetValue(20)),
+                UpdatedAtUtc = ParseUtc(reader.IsDBNull(21) ? null : reader.GetValue(21))
             });
         }
 
@@ -1619,7 +1649,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 TenantId = reader.GetString(1),
                 Name = reader.GetString(2),
                 NormalizedName = reader.IsDBNull(3) ? NormalizeCategoryKey(reader.GetString(2)) : reader.GetString(3),
-                CreatedAtUtc = ParseUtc(reader.GetString(4))
+                CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? null : reader.GetValue(4))
             });
         }
 
@@ -1639,7 +1669,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT id, tenant_id, name, normalized_name, created_at_utc
             FROM tg_service_categories
             WHERE tenant_id = @tenant_id AND id = @id
-            LIMIT 1;
             """;
         command.Parameters.AddWithValue("@tenant_id", tenant);
         command.Parameters.AddWithValue("@id", id);
@@ -1656,7 +1685,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             TenantId = reader.GetString(1),
             Name = reader.GetString(2),
             NormalizedName = reader.IsDBNull(3) ? NormalizeCategoryKey(reader.GetString(2)) : reader.GetString(3),
-            CreatedAtUtc = ParseUtc(reader.GetString(4))
+            CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? null : reader.GetValue(4))
         };
     }
 
@@ -1674,10 +1703,23 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         {
             command.CommandText =
                 """
-                INSERT INTO tg_service_categories (tenant_id, name, normalized_name, created_at_utc)
-                VALUES (@tenant_id, @name, @normalized_name, @created_at_utc)
-                ON CONFLICT(tenant_id, normalized_name) DO UPDATE SET
-                    name = excluded.name;
+                IF EXISTS (
+                    SELECT 1
+                    FROM tg_service_categories
+                    WHERE tenant_id = @tenant_id
+                      AND normalized_name = @normalized_name
+                )
+                BEGIN
+                    UPDATE tg_service_categories
+                    SET name = @name
+                    WHERE tenant_id = @tenant_id
+                      AND normalized_name = @normalized_name;
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO tg_service_categories (tenant_id, name, normalized_name, created_at_utc)
+                    VALUES (@tenant_id, @name, @normalized_name, @created_at_utc);
+                END;
                 """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@name", safeName);
@@ -1725,7 +1767,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT id, tenant_id, name, normalized_name, created_at_utc
             FROM tg_service_categories
             WHERE tenant_id = @tenant_id AND id = @id
-            LIMIT 1;
             """;
         select.Parameters.AddWithValue("@tenant_id", tenant);
         select.Parameters.AddWithValue("@id", id);
@@ -1742,7 +1783,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             TenantId = reader.GetString(1),
             Name = reader.GetString(2),
             NormalizedName = reader.IsDBNull(3) ? NormalizeCategoryKey(reader.GetString(2)) : reader.GetString(3),
-            CreatedAtUtc = ParseUtc(reader.GetString(4))
+            CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? null : reader.GetValue(4))
         };
     }
 
@@ -1813,9 +1854,9 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 Title = reader.GetString(2),
                 CategoryName = reader.GetString(3),
                 DefaultDurationMinutes = reader.GetInt32(4),
-                IsActive = reader.GetInt32(5) == 1,
-                CreatedAtUtc = ParseUtc(reader.GetString(6)),
-                UpdatedAtUtc = ParseUtc(reader.GetString(7))
+                IsActive = ReadBool(reader, 5),
+                CreatedAtUtc = ParseUtc(reader.IsDBNull(6) ? null : reader.GetValue(6)),
+                UpdatedAtUtc = ParseUtc(reader.IsDBNull(7) ? null : reader.GetValue(7))
             });
         }
 
@@ -1835,7 +1876,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT id, tenant_id, title, category_name, default_duration_minutes, is_active, created_at_utc, updated_at_utc
             FROM tg_service_catalog
             WHERE tenant_id = @tenant_id AND id = @id
-            LIMIT 1;
             """;
         command.Parameters.AddWithValue("@tenant_id", tenant);
         command.Parameters.AddWithValue("@id", id);
@@ -1853,9 +1893,9 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             Title = reader.GetString(2),
             CategoryName = reader.GetString(3),
             DefaultDurationMinutes = reader.GetInt32(4),
-            IsActive = reader.GetInt32(5) == 1,
-            CreatedAtUtc = ParseUtc(reader.GetString(6)),
-            UpdatedAtUtc = ParseUtc(reader.GetString(7))
+            IsActive = ReadBool(reader, 5),
+            CreatedAtUtc = ParseUtc(reader.IsDBNull(6) ? null : reader.GetValue(6)),
+            UpdatedAtUtc = ParseUtc(reader.IsDBNull(7) ? null : reader.GetValue(7))
         };
     }
 
@@ -1890,7 +1930,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         }
 
         await using var lastIdCommand = connection.CreateCommand();
-        lastIdCommand.CommandText = "SELECT last_insert_rowid();";
+        lastIdCommand.CommandText = "SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
         var id = Convert.ToInt64(await lastIdCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
 
         return await GetServiceByIdAsync(tenant, id)
@@ -1976,7 +2016,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT menu_json, messages_json
             FROM tg_tenant_bot_config
             WHERE tenant_id = @tenant_id
-            LIMIT 1;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
 
@@ -2008,7 +2047,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id
             FROM tg_tenant_telegram_config
             WHERE tenant_id = @tenant_id
-            LIMIT 1;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
 
@@ -2018,7 +2056,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 model.TelegramBotId = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
                 model.TelegramBotUsername = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
                 model.TelegramBotToken = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
-                model.TelegramIsActive = !reader.IsDBNull(3) && reader.GetInt32(3) == 1;
+                model.TelegramIsActive = ReadBool(reader, 3);
                 model.TelegramPollingTimeoutSeconds = ClampTelegramPollingSeconds(reader.IsDBNull(4) ? 30 : reader.GetInt32(4));
                 model.TelegramLastUpdateId = reader.IsDBNull(5) ? 0L : reader.GetInt64(5);
             }
@@ -2046,14 +2084,13 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 event_description_template
             FROM tg_tenant_google_calendar_config
             WHERE tenant_id = @tenant_id
-            LIMIT 1;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
 
             await using var reader = await command.ExecuteReaderAsync();
             if (await reader.ReadAsync())
             {
-                model.GoogleCalendarEnabled = !reader.IsDBNull(0) && reader.GetInt32(0) == 1;
+                model.GoogleCalendarEnabled = ReadBool(reader, 0);
                 model.GoogleCalendarId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
                 var serviceAccountJson = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
                 model.HasGoogleCalendarServiceAccountJson = !string.IsNullOrWhiteSpace(serviceAccountJson);
@@ -2099,7 +2136,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             FROM tg_Users
             WHERE TenantId = @tenant_id
             ORDER BY UpdatedAt DESC
-            LIMIT @limit;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -2137,7 +2173,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             WHERE TenantId = @tenant_id
             GROUP BY TelegramUserId
             ORDER BY last_seen DESC
-            LIMIT @limit;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -2170,7 +2205,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
               AND phone LIKE 'tg:%'
             GROUP BY phone
             ORDER BY last_seen DESC
-            LIMIT @limit;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -2202,7 +2236,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             WHERE tenant_id = @tenant_id
               AND phone LIKE 'tg:%'
             ORDER BY updated_at_utc DESC
-            LIMIT @limit;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@limit", safeLimit);
@@ -2266,7 +2299,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT bot_token
             FROM tg_tenant_telegram_config
             WHERE tenant_id = @tenant_id
-            LIMIT 1;
             """;
             existingTokenCommand.Parameters.AddWithValue("@tenant_id", tenant);
             tokenToPersist = Convert.ToString(await existingTokenCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
@@ -2285,7 +2317,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT service_account_json
             FROM tg_tenant_google_calendar_config
             WHERE tenant_id = @tenant_id
-            LIMIT 1;
             """;
             existingGoogleJsonCommand.Parameters.AddWithValue("@tenant_id", tenant);
             serviceAccountJsonToPersist = Convert.ToString(await existingGoogleJsonCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
@@ -2327,12 +2358,19 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         {
             command.CommandText =
             """
-            INSERT INTO tg_tenant_bot_config (tenant_id, menu_json, messages_json, updated_at_utc)
-            VALUES (@tenant_id, @menu_json, @messages_json, @updated_at_utc)
-            ON CONFLICT(tenant_id) DO UPDATE SET
-                menu_json = excluded.menu_json,
-                messages_json = excluded.messages_json,
-                updated_at_utc = excluded.updated_at_utc;
+            IF EXISTS (SELECT 1 FROM tg_tenant_bot_config WHERE tenant_id = @tenant_id)
+            BEGIN
+                UPDATE tg_tenant_bot_config
+                SET menu_json = @menu_json,
+                    messages_json = @messages_json,
+                    updated_at_utc = @updated_at_utc
+                WHERE tenant_id = @tenant_id;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO tg_tenant_bot_config (tenant_id, menu_json, messages_json, updated_at_utc)
+                VALUES (@tenant_id, @menu_json, @messages_json, @updated_at_utc);
+            END;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@menu_json", JsonSerializer.Serialize(menu));
@@ -2345,18 +2383,25 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         {
             command.CommandText =
             """
-            INSERT INTO tg_tenant_telegram_config
-            (tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc)
-            VALUES
-            (@tenant_id, @bot_id, @bot_username, @bot_token, @is_active, @polling_timeout_seconds, @last_update_id, @updated_at_utc)
-            ON CONFLICT(tenant_id) DO UPDATE SET
-                bot_id = excluded.bot_id,
-                bot_username = excluded.bot_username,
-                bot_token = excluded.bot_token,
-                is_active = excluded.is_active,
-                polling_timeout_seconds = excluded.polling_timeout_seconds,
-                last_update_id = excluded.last_update_id,
-                updated_at_utc = excluded.updated_at_utc;
+            IF EXISTS (SELECT 1 FROM tg_tenant_telegram_config WHERE tenant_id = @tenant_id)
+            BEGIN
+                UPDATE tg_tenant_telegram_config
+                SET bot_id = @bot_id,
+                    bot_username = @bot_username,
+                    bot_token = @bot_token,
+                    is_active = @is_active,
+                    polling_timeout_seconds = @polling_timeout_seconds,
+                    last_update_id = @last_update_id,
+                    updated_at_utc = @updated_at_utc
+                WHERE tenant_id = @tenant_id;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO tg_tenant_telegram_config
+                (tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc)
+                VALUES
+                (@tenant_id, @bot_id, @bot_username, @bot_token, @is_active, @polling_timeout_seconds, @last_update_id, @updated_at_utc);
+            END;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@bot_id", telegram.BotId);
@@ -2373,63 +2418,70 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         {
             command.CommandText =
             """
-            INSERT INTO tg_tenant_google_calendar_config
-            (
-                tenant_id,
-                is_enabled,
-                calendar_id,
-                service_account_json,
-                time_zone_id,
-                default_duration_minutes,
-                availability_window_days,
-                availability_slot_interval_minutes,
-                availability_workday_start_hour,
-                availability_workday_end_hour,
-                availability_today_lead_minutes,
-                max_attempts,
-                retry_base_seconds,
-                retry_max_seconds,
-                event_title_template,
-                event_description_template,
-                updated_at_utc
-            )
-            VALUES
-            (
-                @tenant_id,
-                @is_enabled,
-                @calendar_id,
-                @service_account_json,
-                @time_zone_id,
-                @default_duration_minutes,
-                @availability_window_days,
-                @availability_slot_interval_minutes,
-                @availability_workday_start_hour,
-                @availability_workday_end_hour,
-                @availability_today_lead_minutes,
-                @max_attempts,
-                @retry_base_seconds,
-                @retry_max_seconds,
-                @event_title_template,
-                @event_description_template,
-                @updated_at_utc
-            )
-            ON CONFLICT(tenant_id) DO UPDATE SET
-                is_enabled = excluded.is_enabled,
-                calendar_id = excluded.calendar_id,
-                service_account_json = excluded.service_account_json,
-                time_zone_id = excluded.time_zone_id,
-                default_duration_minutes = excluded.default_duration_minutes,
-                availability_window_days = excluded.availability_window_days,
-                availability_slot_interval_minutes = excluded.availability_slot_interval_minutes,
-                availability_workday_start_hour = excluded.availability_workday_start_hour,
-                availability_workday_end_hour = excluded.availability_workday_end_hour,
-                availability_today_lead_minutes = excluded.availability_today_lead_minutes,
-                max_attempts = excluded.max_attempts,
-                retry_base_seconds = excluded.retry_base_seconds,
-                retry_max_seconds = excluded.retry_max_seconds,
-                event_title_template = excluded.event_title_template,
-                event_description_template = excluded.event_description_template,
-                updated_at_utc = excluded.updated_at_utc;
+            IF EXISTS (SELECT 1 FROM tg_tenant_google_calendar_config WHERE tenant_id = @tenant_id)
+            BEGIN
+                UPDATE tg_tenant_google_calendar_config
+                SET is_enabled = @is_enabled,
+                    calendar_id = @calendar_id,
+                    service_account_json = @service_account_json,
+                    time_zone_id = @time_zone_id,
+                    default_duration_minutes = @default_duration_minutes,
+                    availability_window_days = @availability_window_days,
+                    availability_slot_interval_minutes = @availability_slot_interval_minutes,
+                    availability_workday_start_hour = @availability_workday_start_hour,
+                    availability_workday_end_hour = @availability_workday_end_hour,
+                    availability_today_lead_minutes = @availability_today_lead_minutes,
+                    max_attempts = @max_attempts,
+                    retry_base_seconds = @retry_base_seconds,
+                    retry_max_seconds = @retry_max_seconds,
+                    event_title_template = @event_title_template,
+                    event_description_template = @event_description_template,
+                    updated_at_utc = @updated_at_utc
+                WHERE tenant_id = @tenant_id;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO tg_tenant_google_calendar_config
+                (
+                    tenant_id,
+                    is_enabled,
+                    calendar_id,
+                    service_account_json,
+                    time_zone_id,
+                    default_duration_minutes,
+                    availability_window_days,
+                    availability_slot_interval_minutes,
+                    availability_workday_start_hour,
+                    availability_workday_end_hour,
+                    availability_today_lead_minutes,
+                    max_attempts,
+                    retry_base_seconds,
+                    retry_max_seconds,
+                    event_title_template,
+                    event_description_template,
+                    updated_at_utc
+                )
+                VALUES
+                (
+                    @tenant_id,
+                    @is_enabled,
+                    @calendar_id,
+                    @service_account_json,
+                    @time_zone_id,
+                    @default_duration_minutes,
+                    @availability_window_days,
+                    @availability_slot_interval_minutes,
+                    @availability_workday_start_hour,
+                    @availability_workday_end_hour,
+                    @availability_today_lead_minutes,
+                    @max_attempts,
+                    @retry_base_seconds,
+                    @retry_max_seconds,
+                    @event_title_template,
+                    @event_description_template,
+                    @updated_at_utc
+                );
+            END;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@is_enabled", googleCalendar.IsEnabled ? 1 : 0);
@@ -2466,7 +2518,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
 
         var hasUsers = await TableExistsAsync(connection, "tg_Users", transaction);
         var hasUserSessions = await TableExistsAsync(connection, "tg_UserSessions", transaction);
@@ -2539,7 +2591,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             FROM tg_MessagesLog
             WHERE TenantId = @tenant_id
               AND TelegramUserId = @telegram_user_id
-            LIMIT 1;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@telegram_user_id", safeUserId);
@@ -2556,7 +2607,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             FROM tg_conversation_messages
             WHERE tenant_id = @tenant_id
               AND (phone = @phone OR phone = @prefixed_phone)
-            LIMIT 1;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@phone", phone);
@@ -2574,7 +2624,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             FROM tg_conversation_state
             WHERE tenant_id = @tenant_id
               AND (phone = @phone OR phone = @prefixed_phone)
-            LIMIT 1;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
             command.Parameters.AddWithValue("@phone", phone);
@@ -2649,7 +2698,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
 
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
 
         var hasLegacyMessages = await TableExistsAsync(connection, "tg_conversation_messages", transaction);
         var hasLegacyState = await TableExistsAsync(connection, "tg_conversation_state", transaction);
@@ -3273,24 +3322,31 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         }
     }
 
-    private static async Task UpsertGeocodeCacheAsync(SqliteConnection connection, DashboardMapRow row, string? errorMessage)
+    private static async Task UpsertGeocodeCacheAsync(SqlConnection connection, DashboardMapRow row, string? errorMessage)
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO tg_booking_geocode_cache
-            (booking_id, tenant_id, address, latitude, longitude, status, error_message, geocoded_at_utc, retry_after_utc)
-            VALUES
-            (@booking_id, @tenant_id, @address, @latitude, @longitude, @status, @error_message, @geocoded_at_utc, @retry_after_utc)
-            ON CONFLICT(booking_id) DO UPDATE SET
-                tenant_id = excluded.tenant_id,
-                address = excluded.address,
-                latitude = excluded.latitude,
-                longitude = excluded.longitude,
-                status = excluded.status,
-                error_message = excluded.error_message,
-                geocoded_at_utc = excluded.geocoded_at_utc,
-                retry_after_utc = excluded.retry_after_utc;
+            IF EXISTS (SELECT 1 FROM tg_booking_geocode_cache WHERE booking_id = @booking_id)
+            BEGIN
+                UPDATE tg_booking_geocode_cache
+                SET tenant_id = @tenant_id,
+                    address = @address,
+                    latitude = @latitude,
+                    longitude = @longitude,
+                    status = @status,
+                    error_message = @error_message,
+                    geocoded_at_utc = @geocoded_at_utc,
+                    retry_after_utc = @retry_after_utc
+                WHERE booking_id = @booking_id;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO tg_booking_geocode_cache
+                (booking_id, tenant_id, address, latitude, longitude, status, error_message, geocoded_at_utc, retry_after_utc)
+                VALUES
+                (@booking_id, @tenant_id, @address, @latitude, @longitude, @status, @error_message, @geocoded_at_utc, @retry_after_utc);
+            END;
             """;
         command.Parameters.AddWithValue("@booking_id", row.BookingId);
         command.Parameters.AddWithValue("@tenant_id", row.TenantId);
@@ -3305,7 +3361,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
     }
 
     private static async Task<(double? Latitude, double? Longitude, string Status, DateTimeOffset? RetryAfterUtc)> TryGetGeocodeCacheAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string bookingId,
         string tenantId)
     {
@@ -3316,7 +3372,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             FROM tg_booking_geocode_cache
             WHERE booking_id = @booking_id
               AND tenant_id = @tenant_id
-            LIMIT 1;
             """;
         command.Parameters.AddWithValue("@booking_id", bookingId);
         command.Parameters.AddWithValue("@tenant_id", tenantId);
@@ -3330,12 +3385,12 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         double? latitude = reader.IsDBNull(0) ? null : reader.GetDouble(0);
         double? longitude = reader.IsDBNull(1) ? null : reader.GetDouble(1);
         var status = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
-        var retryAfterUtc = TryParseNullableUtc(reader.IsDBNull(3) ? null : reader.GetString(3));
+        var retryAfterUtc = TryParseNullableUtc(reader.IsDBNull(3) ? null : reader.GetValue(3));
         return (latitude, longitude, status, retryAfterUtc);
     }
 
     private static async Task UpdateJobCoordinatesAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string tenantId,
         long jobId,
         double latitude,
@@ -3456,15 +3511,34 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         }
     }
 
-    private static DateTimeOffset? TryParseNullableUtc(string? value)
+    private static DateTimeOffset? TryParseNullableUtc(object? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (value is null or DBNull)
+        {
+            return null;
+        }
+
+        if (value is DateTimeOffset offset)
+        {
+            return offset.ToUniversalTime();
+        }
+
+        if (value is DateTime dateTime)
+        {
+            var normalized = dateTime.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                : dateTime;
+            return new DateTimeOffset(normalized).ToUniversalTime();
+        }
+
+        var text = ToInvariantText(value);
+        if (string.IsNullOrWhiteSpace(text))
         {
             return null;
         }
 
         return DateTimeOffset.TryParse(
-            value,
+            text,
             CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
             out var parsed)
@@ -3557,7 +3631,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         return string.Join(' ', words);
     }
 
-    private static async Task<CategoryItem?> FindCategoryByNormalizedAsync(SqliteConnection connection, string tenantId, string normalized)
+    private static async Task<CategoryItem?> FindCategoryByNormalizedAsync(SqlConnection connection, string tenantId, string normalized)
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
@@ -3565,7 +3639,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT id, tenant_id, name, normalized_name, created_at_utc
             FROM tg_service_categories
             WHERE tenant_id = @tenant_id AND normalized_name = @normalized_name
-            LIMIT 1;
             """;
         command.Parameters.AddWithValue("@tenant_id", tenantId);
         command.Parameters.AddWithValue("@normalized_name", normalized);
@@ -3582,37 +3655,35 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             TenantId = reader.GetString(1),
             Name = reader.GetString(2),
             NormalizedName = reader.IsDBNull(3) ? normalized : reader.GetString(3),
-            CreatedAtUtc = ParseUtc(reader.GetString(4))
+            CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? null : reader.GetValue(4))
         };
     }
 
-    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName, SqliteTransaction transaction)
+    private static async Task<bool> TableExistsAsync(SqlConnection connection, string tableName, SqlTransaction transaction)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
         """
         SELECT 1
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name = @table_name
-        LIMIT 1;
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_TYPE = 'BASE TABLE'
+          AND TABLE_NAME = @table_name
         """;
         command.Parameters.AddWithValue("@table_name", tableName);
         var scalar = await command.ExecuteScalarAsync();
         return scalar is not null && scalar is not DBNull;
     }
 
-    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName)
+    private static async Task<bool> TableExistsAsync(SqlConnection connection, string tableName)
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
         """
         SELECT 1
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name = @table_name
-        LIMIT 1;
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_TYPE = 'BASE TABLE'
+          AND TABLE_NAME = @table_name
         """;
         command.Parameters.AddWithValue("@table_name", tableName);
         var scalar = await command.ExecuteScalarAsync();
@@ -3620,7 +3691,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
     }
 
     private static async Task EnsureColumnAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string tableName,
         string columnName,
         string columnDefinitionSql)
@@ -3631,18 +3702,18 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         }
 
         await using var command = connection.CreateCommand();
-        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinitionSql};";
+        command.CommandText = $"ALTER TABLE {tableName} ADD {columnName} {columnDefinitionSql};";
         try
         {
             await command.ExecuteNonQueryAsync();
         }
-        catch (SqliteException ex) when (ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+        catch (SqlException ex) when (ex.Number == 2705)
         {
             // Column already exists.
         }
     }
 
-    private static async Task<int> QueryIntAsync(SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)
+    private static async Task<int> QueryIntAsync(SqlConnection connection, string sql, params (string Name, object Value)[] parameters)
     {
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -3655,7 +3726,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         return scalar is null || scalar is DBNull ? 0 : Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<string> GetSharedSettingAsync(SqliteConnection connection, string settingKey)
+    private static async Task<string> GetSharedSettingAsync(SqlConnection connection, string settingKey)
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
@@ -3663,7 +3734,6 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             SELECT setting_value
             FROM tg_shared_settings
             WHERE setting_key = @setting_key
-            LIMIT 1;
             """;
         command.Parameters.AddWithValue("@setting_key", settingKey);
         var scalar = await command.ExecuteScalarAsync();
@@ -3671,7 +3741,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
     }
 
     private static async Task UpsertSharedSettingAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string settingKey,
         string settingValue,
         string updatedAtUtc)
@@ -3679,11 +3749,18 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO tg_shared_settings (setting_key, setting_value, updated_at_utc)
-            VALUES (@setting_key, @setting_value, @updated_at_utc)
-            ON CONFLICT(setting_key) DO UPDATE SET
-                setting_value = excluded.setting_value,
-                updated_at_utc = excluded.updated_at_utc;
+            IF EXISTS (SELECT 1 FROM tg_shared_settings WHERE setting_key = @setting_key)
+            BEGIN
+                UPDATE tg_shared_settings
+                SET setting_value = @setting_value,
+                    updated_at_utc = @updated_at_utc
+                WHERE setting_key = @setting_key;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO tg_shared_settings (setting_key, setting_value, updated_at_utc)
+                VALUES (@setting_key, @setting_value, @updated_at_utc);
+            END;
             """;
         command.Parameters.AddWithValue("@setting_key", settingKey);
         command.Parameters.AddWithValue("@setting_value", (settingValue ?? string.Empty).Trim());
@@ -3691,7 +3768,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         await command.ExecuteNonQueryAsync();
     }
 
-    private SqliteConnection CreateConnection() => new(_connectionString);
+    private SqlConnection CreateConnection() => new(_connectionString);
 
     private static DateTime ParseLocalDateTime(string value)
     {
@@ -3735,15 +3812,50 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         return fallbackUtc.ToLocalTime().DateTime;
     }
 
-    private static DateTimeOffset ParseUtc(string value)
+    private static DateTimeOffset ParseUtc(object? value)
+        => TryParseNullableUtc(value) ?? DateTimeOffset.UtcNow;
+
+    private static bool ReadBool(SqlDataReader reader, int ordinal, bool defaultValue = false)
     {
-        return DateTimeOffset.TryParse(
-            value,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-            out var parsed)
-            ? parsed
-            : DateTimeOffset.UtcNow;
+        if (reader.IsDBNull(ordinal))
+        {
+            return defaultValue;
+        }
+
+        var value = reader.GetValue(ordinal);
+        return value switch
+        {
+            bool boolValue => boolValue,
+            byte byteValue => byteValue != 0,
+            short shortValue => shortValue != 0,
+            int intValue => intValue != 0,
+            long longValue => longValue != 0,
+            string text when bool.TryParse(text, out var parsedBool) => parsedBool,
+            string text when int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedInt) => parsedInt != 0,
+            IConvertible convertible => convertible.ToInt32(CultureInfo.InvariantCulture) != 0,
+            _ => defaultValue
+        };
+    }
+
+    private static string ToInvariantText(object? value)
+    {
+        if (value is null or DBNull)
+        {
+            return string.Empty;
+        }
+
+        return value switch
+        {
+            string s => s,
+            DateTimeOffset offset => offset.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            DateTime dateTime => (dateTime.Kind == DateTimeKind.Unspecified
+                    ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                    : dateTime)
+                .ToUniversalTime()
+                .ToString("O", CultureInfo.InvariantCulture),
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
+            _ => value.ToString() ?? string.Empty
+        };
     }
 
     private static string ToUtcText(DateTimeOffset value)
@@ -3752,30 +3864,19 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
     private static string NormalizeTenant(string tenantId)
         => string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
 
-    private static string ResolveDatabasePath(string? configuredPath)
+    private static string ResolveConnectionString(string? configuredConnectionString, string? defaultConnectionString)
     {
-        if (!string.IsNullOrWhiteSpace(configuredPath))
+        if (!string.IsNullOrWhiteSpace(configuredConnectionString))
         {
-            return Path.GetFullPath(configuredPath);
+            return configuredConnectionString.Trim();
         }
 
-        var envPath = Environment.GetEnvironmentVariable("BOT_DB_PATH");
-        if (!string.IsNullOrWhiteSpace(envPath))
+        if (!string.IsNullOrWhiteSpace(defaultConnectionString))
         {
-            return Path.GetFullPath(envPath);
+            return defaultConnectionString.Trim();
         }
 
-        var path = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..",
-            "bin", "Debug", "net9.0", "data", "bot.db"));
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        return path;
+        throw new InvalidOperationException("Connection string not configured for SQL Server admin repository.");
     }
 
     private static bool TryParseTelegramUserId(string? rawValue, out long telegramUserId)
@@ -3888,4 +3989,5 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         }
     }
 }
+
 

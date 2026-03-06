@@ -1,28 +1,28 @@
 using BotAgendamentoAI.Admin.Models;
-using Microsoft.Data.Sqlite;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using System.Globalization;
 
 namespace BotAgendamentoAI.Admin.Realtime;
 
-public sealed class DashboardSqliteWatcher : BackgroundService
+public sealed class DashboardSqlServerWatcher : BackgroundService
 {
     private readonly IDashboardRealtimeNotifier _notifier;
-    private readonly ILogger<DashboardSqliteWatcher> _logger;
+    private readonly ILogger<DashboardSqlServerWatcher> _logger;
     private readonly string _connectionString;
     private readonly TimeSpan _pollInterval;
     private Dictionary<string, TenantWatermark> _previous = new(StringComparer.OrdinalIgnoreCase);
     private bool _initialized;
 
-    public DashboardSqliteWatcher(
+    public DashboardSqlServerWatcher(
         IOptions<AdminOptions> options,
         IDashboardRealtimeNotifier notifier,
-        ILogger<DashboardSqliteWatcher> logger)
+        ILogger<DashboardSqlServerWatcher> logger)
     {
         _notifier = notifier;
         _logger = logger;
 
-        var dbPath = ResolveDatabasePath(options.Value.DatabasePath);
-        _connectionString = $"Data Source={dbPath}";
+        _connectionString = ResolveConnectionString(options.Value.ConnectionString);
 
         var configuredSeconds = options.Value.DashboardRealtimePollSeconds;
         _pollInterval = TimeSpan.FromSeconds(Math.Clamp(configuredSeconds, 1, 60));
@@ -31,7 +31,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "Dashboard SQLite watcher started. Interval: {IntervalSeconds}s",
+            "Dashboard SQL Server watcher started. Interval: {IntervalSeconds}s",
             _pollInterval.TotalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -56,7 +56,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Dashboard SQLite watcher loop failed.");
+                _logger.LogWarning(ex, "Dashboard SQL Server watcher loop failed.");
             }
 
             try
@@ -126,7 +126,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
             await MergeLongWatermarksAsync(
                 connection,
                 """
-                SELECT tenant_id, MAX(rowid)
+                SELECT tenant_id, COUNT_BIG(*)
                 FROM tg_bookings
                 GROUP BY tenant_id;
                 """,
@@ -183,7 +183,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
     }
 
     private static async Task MergeLongWatermarksAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string sql,
         Dictionary<string, TenantWatermark> destination,
         Action<TenantWatermark, long> apply,
@@ -203,7 +203,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
     }
 
     private static async Task<bool> TableExistsAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string tableName,
         CancellationToken cancellationToken)
     {
@@ -211,10 +211,9 @@ public sealed class DashboardSqliteWatcher : BackgroundService
         command.CommandText =
             """
             SELECT 1
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name = @table_name
-            LIMIT 1;
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_TYPE = 'BASE TABLE'
+              AND TABLE_NAME = @table_name;
             """;
         command.Parameters.AddWithValue("@table_name", tableName);
         var scalar = await command.ExecuteScalarAsync(cancellationToken);
@@ -222,7 +221,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
     }
 
     private static async Task MergeTextWatermarksAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         string sql,
         Dictionary<string, TenantWatermark> destination,
         Action<TenantWatermark, string> apply,
@@ -235,13 +234,13 @@ public sealed class DashboardSqliteWatcher : BackgroundService
         while (await reader.ReadAsync(cancellationToken))
         {
             var tenantId = NormalizeTenant(reader.IsDBNull(0) ? null : reader.GetString(0));
-            var value = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            var value = reader.IsDBNull(1) ? string.Empty : ToInvariantText(reader.GetValue(1));
             var watermark = GetOrCreate(destination, tenantId);
             apply(watermark, value);
         }
     }
 
-    private SqliteConnection CreateConnection() => new(_connectionString);
+    private SqlConnection CreateConnection() => new(_connectionString);
 
     private static TenantWatermark GetOrCreate(
         Dictionary<string, TenantWatermark> source,
@@ -260,30 +259,41 @@ public sealed class DashboardSqliteWatcher : BackgroundService
     private static string NormalizeTenant(string? tenantId)
         => string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
 
-    private static string ResolveDatabasePath(string? configuredPath)
+    private static string ToInvariantText(object? value)
     {
-        if (!string.IsNullOrWhiteSpace(configuredPath))
+        if (value is null or DBNull)
         {
-            return Path.GetFullPath(configuredPath);
+            return string.Empty;
         }
 
-        var envPath = Environment.GetEnvironmentVariable("BOT_DB_PATH");
-        if (!string.IsNullOrWhiteSpace(envPath))
+        return value switch
         {
-            return Path.GetFullPath(envPath);
+            string s => s,
+            DateTimeOffset offset => offset.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            DateTime dateTime => (dateTime.Kind == DateTimeKind.Unspecified
+                    ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                    : dateTime)
+                .ToUniversalTime()
+                .ToString("O", CultureInfo.InvariantCulture),
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
+            _ => value.ToString() ?? string.Empty
+        };
+    }
+
+    private static string ResolveConnectionString(string? configuredConnectionString)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredConnectionString))
+        {
+            return configuredConnectionString.Trim();
         }
 
-        var path = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..",
-            "bin", "Debug", "net9.0", "data", "bot.db"));
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
+        var envValue = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
+        if (!string.IsNullOrWhiteSpace(envValue))
         {
-            Directory.CreateDirectory(directory);
+            return envValue.Trim();
         }
 
-        return path;
+        throw new InvalidOperationException("Connection string not configured for SQL Server dashboard watcher.");
     }
 
     private sealed class TenantWatermark
@@ -316,4 +326,5 @@ public sealed class DashboardSqliteWatcher : BackgroundService
         }
     }
 }
+
 

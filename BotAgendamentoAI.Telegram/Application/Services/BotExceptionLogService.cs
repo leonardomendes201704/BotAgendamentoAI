@@ -36,7 +36,7 @@ public sealed class BotExceptionLogService
             await using var command = connection.CreateCommand();
             command.CommandText =
             """
-            INSERT INTO exception_logs
+            INSERT INTO tg_exception_logs
             (
                 tenant_id,
                 source,
@@ -86,7 +86,7 @@ public sealed class BotExceptionLogService
         {
             _logger.LogError(
                 logException,
-                "Falha ao persistir exception em exception_logs. source={Source} tenant={Tenant}",
+                "Falha ao persistir exception em tg_exception_logs. source={Source} tenant={Tenant}",
                 source,
                 tenantId);
         }
@@ -100,4 +100,5 @@ public sealed class BotExceptionLogService
         command.Parameters.Add(parameter);
     }
 }
+
 

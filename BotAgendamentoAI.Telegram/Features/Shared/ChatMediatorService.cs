@@ -165,6 +165,22 @@ public sealed class ChatMediatorService
             return true;
         }
 
+        if (incoming.Video is not null)
+        {
+            await _sender.SendTextAsync(
+                db,
+                bot,
+                tenantId,
+                sender.TelegramUserId,
+                incoming.Chat.Id,
+                "Video nao e suportado no chat. Envie apenas fotos, texto ou localizacao.",
+                null,
+                session.ChatJobId,
+                cancellationToken);
+
+            return true;
+        }
+
         return true;
     }
 

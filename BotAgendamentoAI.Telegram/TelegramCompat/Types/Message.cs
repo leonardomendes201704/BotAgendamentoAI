@@ -25,6 +25,9 @@ public sealed class Message
     [JsonPropertyName("photo")]
     public PhotoSize[]? Photo { get; set; }
 
+    [JsonPropertyName("video")]
+    public Video? Video { get; set; }
+
     [JsonPropertyName("location")]
     public Location? Location { get; set; }
 }

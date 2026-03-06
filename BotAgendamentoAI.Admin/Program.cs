@@ -5,10 +5,27 @@ using BotAgendamentoAI.Admin.Realtime;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
-builder.Services.AddSingleton<IAdminRepository, SqliteAdminRepository>();
+var defaultConnection = builder.Configuration.GetConnectionString("DefaultConnection");
+if (!string.IsNullOrWhiteSpace(defaultConnection))
+{
+    builder.Services.PostConfigure<AdminOptions>(options =>
+    {
+        if (string.IsNullOrWhiteSpace(options.ConnectionString))
+        {
+            options.ConnectionString = defaultConnection.Trim();
+        }
+    });
+    builder.Services.AddSingleton<IAdminRepository, SqlServerAdminRepository>();
+    builder.Services.AddHostedService<DashboardSqlServerWatcher>();
+}
+else
+{
+    builder.Services.AddSingleton<IAdminRepository, SqliteAdminRepository>();
+    builder.Services.AddHostedService<DashboardSqliteWatcher>();
+}
+
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<IDashboardRealtimeNotifier, SignalRDashboardRealtimeNotifier>();
-builder.Services.AddHostedService<DashboardSqliteWatcher>();
 builder.Services.AddControllersWithViews();
 
 var app = builder.Build();

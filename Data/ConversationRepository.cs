@@ -14,7 +14,7 @@ public sealed class ConversationRepository
     };
 
     private const string SchemaSql = """
-CREATE TABLE IF NOT EXISTS conversation_messages (
+CREATE TABLE IF NOT EXISTS tg_conversation_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant_id TEXT NOT NULL,
   phone TEXT NOT NULL,
@@ -28,9 +28,9 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_tenant_phone_created
-ON conversation_messages(tenant_id, phone, created_at_utc);
+ON tg_conversation_messages(tenant_id, phone, created_at_utc);
 
-CREATE TABLE IF NOT EXISTS conversation_state (
+CREATE TABLE IF NOT EXISTS tg_conversation_state (
   tenant_id TEXT NOT NULL,
   phone TEXT NOT NULL,
   summary TEXT NOT NULL,
@@ -39,14 +39,14 @@ CREATE TABLE IF NOT EXISTS conversation_state (
   PRIMARY KEY (tenant_id, phone)
 );
 
-CREATE TABLE IF NOT EXISTS tenant_bot_config (
+CREATE TABLE IF NOT EXISTS tg_tenant_bot_config (
   tenant_id TEXT PRIMARY KEY,
   menu_json TEXT NOT NULL,
   messages_json TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS tenant_telegram_config (
+CREATE TABLE IF NOT EXISTS tg_tenant_telegram_config (
   tenant_id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL,
   bot_username TEXT NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
   updated_at_utc TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS shared_settings (
+CREATE TABLE IF NOT EXISTS tg_shared_settings (
   setting_key TEXT PRIMARY KEY,
   setting_value TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO conversation_messages
+            INSERT INTO tg_conversation_messages
             (tenant_id, phone, direction, role, content, tool_name, tool_call_id, created_at_utc, metadata_json)
             VALUES
             (@tenant_id, @phone, @direction, @role, @content, @tool_name, @tool_call_id, @created_at_utc, @metadata_json);
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT id, tenant_id, phone, direction, role, content, tool_name, tool_call_id, created_at_utc, metadata_json
-            FROM conversation_messages
+            FROM tg_conversation_messages
             WHERE tenant_id = @tenant_id AND phone = @phone
             ORDER BY created_at_utc ASC, id ASC;
             """;
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT id, tenant_id, phone, direction, role, content, tool_name, tool_call_id, created_at_utc, metadata_json
-            FROM conversation_messages
+            FROM tg_conversation_messages
             WHERE tenant_id = @tenant_id
               AND phone = @phone
               AND created_at_utc >= @start_utc
@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT tenant_id, phone, summary, slots_json, updated_at_utc
-            FROM conversation_state
+            FROM tg_conversation_state
             WHERE tenant_id = @tenant_id AND phone = @phone
             LIMIT 1;
             """;
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO conversation_state
+            INSERT INTO tg_conversation_state
             (tenant_id, phone, summary, slots_json, updated_at_utc)
             VALUES
             (@tenant_id, @phone, @summary, @slots_json, @updated_at_utc)
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT menu_json, messages_json
-            FROM tenant_bot_config
+            FROM tg_tenant_bot_config
             WHERE tenant_id = @tenant_id
             LIMIT 1;
             """;
@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc
-            FROM tenant_telegram_config
+            FROM tg_tenant_telegram_config
             WHERE tenant_id = @tenant_id
             LIMIT 1;
             """;
@@ -362,7 +362,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc
-            FROM tenant_telegram_config
+            FROM tg_tenant_telegram_config
             WHERE is_active = 1
               AND LENGTH(TRIM(bot_token)) > 0;
             """;
@@ -397,7 +397,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO tenant_telegram_config
+            INSERT INTO tg_tenant_telegram_config
             (tenant_id, bot_id, bot_username, bot_token, is_active, polling_timeout_seconds, last_update_id, updated_at_utc)
             VALUES
             (@tenant_id, @bot_id, @bot_username, @bot_token, @is_active, @polling_timeout_seconds, @last_update_id, @updated_at_utc)
@@ -433,7 +433,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            UPDATE tenant_telegram_config
+            UPDATE tg_tenant_telegram_config
             SET last_update_id = @last_update_id,
                 updated_at_utc = @updated_at_utc
             WHERE tenant_id = @tenant_id;
@@ -453,7 +453,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         command.CommandText =
             """
             SELECT setting_value
-            FROM shared_settings
+            FROM tg_shared_settings
             WHERE setting_key = @setting_key
             LIMIT 1;
             """;
@@ -472,7 +472,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO shared_settings (setting_key, setting_value, updated_at_utc)
+            INSERT INTO tg_shared_settings (setting_key, setting_value, updated_at_utc)
             VALUES (@setting_key, @setting_value, @updated_at_utc)
             ON CONFLICT(setting_key) DO UPDATE SET
                 setting_value = excluded.setting_value,
@@ -542,3 +542,4 @@ CREATE TABLE IF NOT EXISTS shared_settings (
 
     private const string OpenAiApiKeySettingKey = "openai_api_key";
 }
+

@@ -193,6 +193,26 @@ public sealed class MarketplaceBotOrchestrator
             return;
         }
 
+        if (!IsProviderMode(user) && message.Video is not null)
+        {
+            var inPhotoStep = string.Equals(user.Session.State, BotStates.C_COLLECT_PHOTOS, StringComparison.Ordinal);
+            await _sender.SendTextAsync(
+                db,
+                botClient,
+                tenantId,
+                user.TelegramUserId,
+                message.Chat.Id,
+                inPhotoStep
+                    ? "Video nao e permitido nessa etapa. Envie apenas fotos ou toque em 'Concluir fotos'."
+                    : "No momento aceitamos apenas fotos. Video nao e suportado.",
+                inPhotoStep
+                    ? KeyboardFactory.PhotoCollectMenu()
+                    : KeyboardFactory.ClientHomeActions(user.Role == UserRole.Both),
+                user.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
         if (IsProviderMode(user))
         {
             await _providerFlow.HandleTextAsync(context, message, cancellationToken);
@@ -430,6 +450,11 @@ public sealed class MarketplaceBotOrchestrator
             return MessageType.Location;
         }
 
+        if (message.Video is not null)
+        {
+            return MessageType.Unknown;
+        }
+
         return MessageType.Unknown;
     }
 
@@ -443,6 +468,11 @@ public sealed class MarketplaceBotOrchestrator
         if (message.Location is not null)
         {
             return $"[location] lat={message.Location.Latitude};lng={message.Location.Longitude}";
+        }
+
+        if (message.Video is not null)
+        {
+            return "[video]";
         }
 
         return "[unknown]";

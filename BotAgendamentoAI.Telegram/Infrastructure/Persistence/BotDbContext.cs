@@ -2,6 +2,7 @@
 using BotAgendamentoAI.Telegram.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using System.Globalization;
 
 namespace BotAgendamentoAI.Telegram.Infrastructure.Persistence;
 
@@ -34,10 +35,20 @@ public sealed class BotDbContext : DbContext
         var jobStatusConverter = new EnumToStringConverter<JobStatus>();
         var directionConverter = new EnumToStringConverter<MessageDirection>();
         var messageTypeConverter = new EnumToStringConverter<MessageType>();
+        var dateTimeOffsetTextConverter = new ValueConverter<DateTimeOffset, string>(
+            value => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            value => DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
+        var nullableDateTimeOffsetTextConverter = new ValueConverter<DateTimeOffset?, string?>(
+            value => value.HasValue
+                ? value.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+                : null,
+            value => string.IsNullOrWhiteSpace(value)
+                ? null
+                : DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
 
         modelBuilder.Entity<AppUser>(entity =>
         {
-            entity.ToTable("Users");
+            entity.ToTable("tg_Users");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TenantId).IsRequired().HasMaxLength(32);
             entity.Property(x => x.Name).IsRequired().HasMaxLength(120);
@@ -53,7 +64,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<ProviderProfile>(entity =>
         {
-            entity.ToTable("ProvidersProfile");
+            entity.ToTable("tg_ProvidersProfile");
             entity.HasKey(x => x.UserId);
             entity.Property(x => x.Bio).HasMaxLength(2048);
             entity.Property(x => x.CategoriesJson).IsRequired();
@@ -68,7 +79,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<ProviderPortfolioPhoto>(entity =>
         {
-            entity.ToTable("ProviderPortfolioPhotos");
+            entity.ToTable("tg_ProviderPortfolioPhotos");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.FileIdOrUrl).IsRequired().HasMaxLength(1024);
             entity.Property(x => x.CreatedAt).IsRequired();
@@ -83,7 +94,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<Job>(entity =>
         {
-            entity.ToTable("Jobs");
+            entity.ToTable("tg_Jobs");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TenantId).IsRequired().HasMaxLength(32);
             entity.Property(x => x.Category).IsRequired().HasMaxLength(128);
@@ -115,7 +126,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<JobPhoto>(entity =>
         {
-            entity.ToTable("JobPhotos");
+            entity.ToTable("tg_JobPhotos");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TelegramFileId).IsRequired().HasMaxLength(512);
             entity.Property(x => x.Kind).IsRequired().HasMaxLength(32);
@@ -131,7 +142,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<MessageLog>(entity =>
         {
-            entity.ToTable("MessagesLog");
+            entity.ToTable("tg_MessagesLog");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TenantId).IsRequired().HasMaxLength(32);
             entity.Property(x => x.Direction).HasConversion(directionConverter).HasMaxLength(16);
@@ -145,7 +156,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<Rating>(entity =>
         {
-            entity.ToTable("Ratings");
+            entity.ToTable("tg_Ratings");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Stars).IsRequired();
             entity.Property(x => x.Comment).HasMaxLength(1024);
@@ -162,7 +173,7 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<UserSession>(entity =>
         {
-            entity.ToTable("UserSessions");
+            entity.ToTable("tg_UserSessions");
             entity.HasKey(x => x.UserId);
             entity.Property(x => x.State).IsRequired().HasMaxLength(64);
             entity.Property(x => x.DraftJson).IsRequired();
@@ -177,17 +188,20 @@ public sealed class BotDbContext : DbContext
 
         modelBuilder.Entity<ServiceCategoryEntity>(entity =>
         {
-            entity.ToTable("service_categories", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_service_categories", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
             entity.Property(x => x.Name).HasColumnName("name");
             entity.Property(x => x.NormalizedName).HasColumnName("normalized_name");
-            entity.Property(x => x.CreatedAtUtc).HasColumnName("created_at_utc");
+            entity.Property(x => x.CreatedAtUtc)
+                .HasColumnName("created_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         modelBuilder.Entity<TelegramTenantConfig>(entity =>
         {
-            entity.ToTable("tenant_telegram_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_tenant_telegram_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.TenantId);
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
             entity.Property(x => x.BotId).HasColumnName("bot_id");
@@ -196,31 +210,40 @@ public sealed class BotDbContext : DbContext
             entity.Property(x => x.IsActive).HasColumnName("is_active");
             entity.Property(x => x.PollingTimeoutSeconds).HasColumnName("polling_timeout_seconds");
             entity.Property(x => x.LastUpdateId).HasColumnName("last_update_id");
-            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         modelBuilder.Entity<SharedSetting>(entity =>
         {
-            entity.ToTable("shared_settings", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_shared_settings", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.SettingKey);
             entity.Property(x => x.SettingKey).HasColumnName("setting_key");
             entity.Property(x => x.SettingValue).HasColumnName("setting_value");
-            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         modelBuilder.Entity<TenantBotConfig>(entity =>
         {
-            entity.ToTable("tenant_bot_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_tenant_bot_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.TenantId);
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
             entity.Property(x => x.MenuJson).HasColumnName("menu_json");
             entity.Property(x => x.MessagesJson).HasColumnName("messages_json");
-            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         modelBuilder.Entity<TenantGoogleCalendarConfig>(entity =>
         {
-            entity.ToTable("tenant_google_calendar_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_tenant_google_calendar_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.TenantId);
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
             entity.Property(x => x.IsEnabled).HasColumnName("is_enabled");
@@ -238,12 +261,15 @@ public sealed class BotDbContext : DbContext
             entity.Property(x => x.RetryMaxSeconds).HasColumnName("retry_max_seconds");
             entity.Property(x => x.EventTitleTemplate).HasColumnName("event_title_template");
             entity.Property(x => x.EventDescriptionTemplate).HasColumnName("event_description_template");
-            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         modelBuilder.Entity<CalendarSyncQueueItem>(entity =>
         {
-            entity.ToTable("calendar_sync_queue", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_calendar_sync_queue", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Id).HasColumnName("id");
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
@@ -251,21 +277,36 @@ public sealed class BotDbContext : DbContext
             entity.Property(x => x.Action).HasColumnName("action");
             entity.Property(x => x.Status).HasColumnName("status");
             entity.Property(x => x.Attempts).HasColumnName("attempts");
-            entity.Property(x => x.AvailableAtUtc).HasColumnName("available_at_utc");
-            entity.Property(x => x.LockedAtUtc).HasColumnName("locked_at_utc");
+            entity.Property(x => x.AvailableAtUtc)
+                .HasColumnName("available_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+            entity.Property(x => x.LockedAtUtc)
+                .HasColumnName("locked_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(nullableDateTimeOffsetTextConverter);
             entity.Property(x => x.LastError).HasColumnName("last_error");
-            entity.Property(x => x.CreatedAtUtc).HasColumnName("created_at_utc");
-            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            entity.Property(x => x.CreatedAtUtc)
+                .HasColumnName("created_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         modelBuilder.Entity<JobCalendarLink>(entity =>
         {
-            entity.ToTable("job_calendar_links", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.ToTable("tg_job_calendar_links", tableBuilder => tableBuilder.ExcludeFromMigrations());
             entity.HasKey(x => x.JobId);
             entity.Property(x => x.JobId).HasColumnName("job_id");
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
             entity.Property(x => x.CalendarEventId).HasColumnName("calendar_event_id");
-            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            entity.Property(x => x.UpdatedAtUtc)
+                .HasColumnName("updated_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
         });
 
         base.OnModelCreating(modelBuilder);

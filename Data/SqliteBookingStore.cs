@@ -9,7 +9,7 @@ public sealed class SqliteBookingStore : IBookingStore
     private readonly string _connectionString;
 
     private const string SchemaSql = """
-CREATE TABLE IF NOT EXISTS bookings (
+CREATE TABLE IF NOT EXISTS tg_bookings (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   customer_phone TEXT NOT NULL,
@@ -25,12 +25,12 @@ CREATE TABLE IF NOT EXISTS bookings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant_phone_start
-ON bookings(tenant_id, customer_phone, start_local);
+ON tg_bookings(tenant_id, customer_phone, start_local);
 
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant_start
-ON bookings(tenant_id, start_local);
+ON tg_bookings(tenant_id, start_local);
 
-CREATE TABLE IF NOT EXISTS service_categories (
+CREATE TABLE IF NOT EXISTS tg_service_categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant_id TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS service_categories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_service_categories_tenant_name
-ON service_categories(tenant_id, name);
+ON tg_service_categories(tenant_id, name);
 """;
 
     public SqliteBookingStore(string sqlitePath)
@@ -90,7 +90,7 @@ ON service_categories(tenant_id, name);
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO bookings
+            INSERT INTO tg_bookings
             (id, tenant_id, customer_phone, customer_name, service_category, service_title, start_local, duration_minutes, address, notes, technician_name, created_at_utc)
             VALUES
             (@id, @tenant_id, @customer_phone, @customer_name, @service_category, @service_title, @start_local, @duration_minutes, @address, @notes, @technician_name, @created_at_utc);
@@ -128,7 +128,7 @@ ON service_categories(tenant_id, name);
         command.CommandText =
             """
             SELECT id, tenant_id, customer_phone, customer_name, service_category, service_title, start_local, duration_minutes, address, notes, technician_name
-            FROM bookings
+            FROM tg_bookings
             WHERE tenant_id = @tenant_id
               AND (@customer_phone IS NULL OR customer_phone = @customer_phone)
               AND (@from_local IS NULL OR start_local >= @from_local)
@@ -169,7 +169,7 @@ ON service_categories(tenant_id, name);
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            DELETE FROM bookings
+            DELETE FROM tg_bookings
             WHERE tenant_id = @tenant_id AND id = @id;
             """;
 
@@ -188,7 +188,7 @@ ON service_categories(tenant_id, name);
         command.CommandText =
             """
             SELECT id, tenant_id, customer_phone, customer_name, service_category, service_title, start_local, duration_minutes, address, notes, technician_name
-            FROM bookings
+            FROM tg_bookings
             WHERE tenant_id = @tenant_id AND id = @id
             LIMIT 1;
             """;
@@ -224,7 +224,7 @@ ON service_categories(tenant_id, name);
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            UPDATE bookings
+            UPDATE tg_bookings
             SET start_local = @new_start_local
             WHERE tenant_id = @tenant_id AND id = @id;
             """;
@@ -255,7 +255,7 @@ ON service_categories(tenant_id, name);
         command.CommandText =
             """
             SELECT id, tenant_id, name, normalized_name, created_at_utc
-            FROM service_categories
+            FROM tg_service_categories
             WHERE tenant_id = @tenant_id
             ORDER BY name ASC;
             """;
@@ -297,13 +297,13 @@ ON service_categories(tenant_id, name);
 
     private static void EnsureBookingServiceCategoryColumn(SqliteConnection connection)
     {
-        if (HasColumn(connection, "bookings", "service_category"))
+        if (HasColumn(connection, "tg_bookings", "service_category"))
         {
             return;
         }
 
         using var command = connection.CreateCommand();
-        command.CommandText = "ALTER TABLE bookings ADD COLUMN service_category TEXT NULL;";
+        command.CommandText = "ALTER TABLE tg_bookings ADD COLUMN service_category TEXT NULL;";
         command.ExecuteNonQuery();
     }
 
@@ -334,7 +334,7 @@ ON service_categories(tenant_id, name);
             command.CommandText =
                 """
                 SELECT id, tenant_id, service_title, notes
-                FROM bookings
+                FROM tg_bookings
                 WHERE service_category IS NULL OR TRIM(service_category) = '';
                 """;
 
@@ -358,7 +358,7 @@ ON service_categories(tenant_id, name);
             using var update = connection.CreateCommand();
             update.CommandText =
                 """
-                UPDATE bookings
+                UPDATE tg_bookings
                 SET service_category = @service_category
                 WHERE tenant_id = @tenant_id AND id = @id;
                 """;
@@ -381,7 +381,7 @@ ON service_categories(tenant_id, name);
         {
             insert.CommandText =
                 """
-                INSERT OR IGNORE INTO service_categories (tenant_id, name, normalized_name, created_at_utc)
+                INSERT OR IGNORE INTO tg_service_categories (tenant_id, name, normalized_name, created_at_utc)
                 VALUES (@tenant_id, @name, @normalized_name, @created_at_utc);
                 """;
             insert.Parameters.AddWithValue("@tenant_id", tenantId);
@@ -395,7 +395,7 @@ ON service_categories(tenant_id, name);
         select.CommandText =
             """
             SELECT id, tenant_id, name, normalized_name, created_at_utc
-            FROM service_categories
+            FROM tg_service_categories
             WHERE tenant_id = @tenant_id AND normalized_name = @normalized_name
             LIMIT 1;
             """;
@@ -428,7 +428,7 @@ ON service_categories(tenant_id, name);
             using var insert = connection.CreateCommand();
             insert.CommandText =
                 """
-                INSERT OR IGNORE INTO service_categories (tenant_id, name, normalized_name, created_at_utc)
+                INSERT OR IGNORE INTO tg_service_categories (tenant_id, name, normalized_name, created_at_utc)
                 VALUES (@tenant_id, @name, @normalized_name, @created_at_utc);
                 """;
             insert.Parameters.AddWithValue("@tenant_id", tenantId);
@@ -502,3 +502,4 @@ ON service_categories(tenant_id, name);
         return phone.Trim();
     }
 }
+

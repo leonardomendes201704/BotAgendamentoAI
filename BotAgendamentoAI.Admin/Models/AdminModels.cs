@@ -3,6 +3,7 @@ namespace BotAgendamentoAI.Admin.Models;
 public sealed class AdminOptions
 {
     public string? DatabasePath { get; set; }
+    public string? ConnectionString { get; set; }
     public int DashboardRealtimePollSeconds { get; set; } = 2;
 }
 
@@ -219,6 +220,10 @@ public sealed class BotConfigViewModel
     public bool TelegramIsActive { get; set; }
     public int TelegramPollingTimeoutSeconds { get; set; } = 30;
     public long TelegramLastUpdateId { get; set; }
+    public bool ProviderReminderEnabled { get; set; } = true;
+    public int ProviderReminderSweepIntervalMinutes { get; set; } = 5;
+    public int ProviderReminderResendCooldownMinutes { get; set; } = 5;
+    public int ProviderReminderSnoozeHours { get; set; } = 24;
     public bool GoogleCalendarEnabled { get; set; }
     public string GoogleCalendarId { get; set; } = string.Empty;
     public string GoogleCalendarServiceAccountJson { get; set; } = string.Empty;

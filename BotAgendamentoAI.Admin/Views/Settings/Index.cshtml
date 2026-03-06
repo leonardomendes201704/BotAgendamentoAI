@@ -123,6 +123,33 @@
     </div>
 
     <hr />
+    <h2 class="h5">Lembrete de perfil do prestador</h2>
+    <p class="text-muted">Parametros do worker que lembra prestadores com perfil incompleto (categorias, raio e CEP/local base).</p>
+
+    <div class="form-check mb-3">
+        <input asp-for="ProviderReminderEnabled" class="form-check-input" />
+        <label asp-for="ProviderReminderEnabled" class="form-check-label">Ativar lembretes automaticos para prestadores</label>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-sm-4">
+            <label class="form-label">Varredura (minutos)</label>
+            <input asp-for="ProviderReminderSweepIntervalMinutes" type="number" class="form-control" min="1" max="1440" />
+            <small class="text-muted">A cada quantos minutos o worker tenta enviar lembretes.</small>
+        </div>
+        <div class="col-sm-4">
+            <label class="form-label">Cooldown entre lembretes (min)</label>
+            <input asp-for="ProviderReminderResendCooldownMinutes" type="number" class="form-control" min="1" max="1440" />
+            <small class="text-muted">Tempo minimo entre dois lembretes para o mesmo prestador.</small>
+        </div>
+        <div class="col-sm-4">
+            <label class="form-label">Soneca do "Fazer mais tarde" (horas)</label>
+            <input asp-for="ProviderReminderSnoozeHours" type="number" class="form-control" min="1" max="168" />
+            <small class="text-muted">Tempo de pausa quando o prestador escolhe "Fazer mais tarde".</small>
+        </div>
+    </div>
+
+    <hr />
     <h2 class="h5">Google Calendar</h2>
     <p class="text-muted">Integra com Google Calendar via Service Account para criar/atualizar/cancelar eventos dos agendamentos.</p>
 
