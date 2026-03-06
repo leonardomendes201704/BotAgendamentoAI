@@ -27,6 +27,7 @@ public static class BotStates
 
     // Shared
     public const string CHAT_MEDIATED = "CHAT_MEDIATED";
+    public const string HUMAN_HANDOFF = "human_handoff";
     public const string U_ROLE_REQUIRED = "U_ROLE_REQUIRED";
     public const string NONE = "NONE";
 }

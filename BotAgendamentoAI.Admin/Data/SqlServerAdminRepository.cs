@@ -15,6 +15,7 @@ public sealed class SqlServerAdminRepository : IAdminRepository
     private readonly string _connectionString;
     private readonly ILogger<SqlServerAdminRepository> _logger;
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
+    private static readonly HttpClient TelegramHttpClient = BuildTelegramHttpClient();
     private static readonly ConcurrentDictionary<string, string> ReverseNeighborhoodCache = new(StringComparer.Ordinal);
     private const int CoverageReverseLookupBudget = 120;
 
@@ -198,6 +199,39 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'dbo.tg_human_handoff_sessions', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_human_handoff_sessions
+    (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        tenant_id NVARCHAR(32) NOT NULL,
+        telegram_user_id BIGINT NOT NULL,
+        app_user_id BIGINT NULL,
+        requested_by_role NVARCHAR(32) NOT NULL CONSTRAINT DF_tg_human_handoff_requested_by_role DEFAULT(N'unknown'),
+        is_open BIT NOT NULL CONSTRAINT DF_tg_human_handoff_is_open DEFAULT(1),
+        requested_at_utc NVARCHAR(64) NOT NULL,
+        accepted_at_utc NVARCHAR(64) NULL,
+        closed_at_utc NVARCHAR(64) NULL,
+        assigned_agent NVARCHAR(128) NULL,
+        previous_state NVARCHAR(64) NULL,
+        close_reason NVARCHAR(256) NULL,
+        last_message_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_human_handoff_sessions_tenant_open_requested' AND object_id = OBJECT_ID(N'dbo.tg_human_handoff_sessions'))
+BEGIN
+    CREATE INDEX ix_tg_human_handoff_sessions_tenant_open_requested
+    ON dbo.tg_human_handoff_sessions(tenant_id, is_open, requested_at_utc DESC);
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'uq_tg_human_handoff_sessions_open_thread' AND object_id = OBJECT_ID(N'dbo.tg_human_handoff_sessions'))
+BEGIN
+    CREATE UNIQUE INDEX uq_tg_human_handoff_sessions_open_thread
+    ON dbo.tg_human_handoff_sessions(tenant_id, telegram_user_id)
+    WHERE is_open = 1;
+END;
+
 IF OBJECT_ID(N'dbo.tg_shared_settings', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.tg_shared_settings
@@ -277,6 +311,7 @@ END;
         await CollectFromTableAsync("tg_tenant_google_calendar_config", "tenant_id");
         await CollectFromTableAsync("tg_Users", "TenantId");
         await CollectFromTableAsync("tg_MessagesLog", "TenantId");
+        await CollectFromTableAsync("tg_human_handoff_sessions", "tenant_id");
 
         if (tenants.Count == 0)
         {
@@ -304,6 +339,7 @@ END;
         var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
         var hasUsers = await TableExistsAsync(connection, "tg_Users");
         var hasLegacyState = await TableExistsAsync(connection, "tg_conversation_state");
+        var hasHandoffSessions = await TableExistsAsync(connection, "tg_human_handoff_sessions");
         var hasProviderJobRejections = await TableExistsAsync(connection, "tg_provider_job_rejections");
 
         var incomingConversationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -494,7 +530,18 @@ END;
         }
 
         var humanHandoffOpen = 0;
-        if (hasLegacyState)
+        if (hasHandoffSessions)
+        {
+            humanHandoffOpen = await QueryIntAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM tg_human_handoff_sessions
+                WHERE tenant_id = @tenant_id
+                  AND is_open = 1;
+                """,
+                ("@tenant_id", tenant));
+        }
+        else if (hasLegacyState)
         {
             humanHandoffOpen = await QueryIntAsync(connection,
                 """
@@ -859,6 +906,7 @@ END;
         var hasMessagesLog = await TableExistsAsync(connection, "tg_MessagesLog");
         var hasUsers = await TableExistsAsync(connection, "tg_Users");
         var hasUserSessions = await TableExistsAsync(connection, "tg_UserSessions");
+        var hasHandoffSessions = await TableExistsAsync(connection, "tg_human_handoff_sessions");
 
         if (hasLegacyMessages)
         {
@@ -870,7 +918,8 @@ END;
                       t.phone,
                       t.last_message_at_utc,
                       COALESCE(last_msg.content, '') AS last_content,
-                      COALESCE(JSON_VALUE(cs.slots_json, '$.menuContext'), '') AS menu_context
+                      COALESCE(JSON_VALUE(cs.slots_json, '$.menuContext'), '') AS menu_context,
+                      COALESCE(last_msg.direction, '') AS last_direction
                   FROM (
                       SELECT phone, MAX(created_at_utc) AS last_message_at_utc
                       FROM tg_conversation_messages
@@ -892,7 +941,8 @@ END;
                       t.phone,
                       t.last_message_at_utc,
                       COALESCE(last_msg.content, '') AS last_content,
-                      ''
+                      '',
+                      COALESCE(last_msg.direction, '') AS last_direction
                   FROM (
                       SELECT phone, MAX(created_at_utc) AS last_message_at_utc
                       FROM tg_conversation_messages
@@ -918,7 +968,8 @@ END;
                     LastMessageAtUtc = ParseUtc(reader.IsDBNull(1) ? null : reader.GetValue(1)),
                     LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                     MenuContext = menuContext,
-                    IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
+                    IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase),
+                    LastMessageDirection = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
                 });
             }
         }
@@ -932,7 +983,8 @@ END;
                       m.TelegramUserId,
                       m.CreatedAt,
                       COALESCE(m.Text, '') AS last_text,
-                      COALESCE(s.State, '') AS menu_context
+                      COALESCE(s.State, '') AS menu_context,
+                      COALESCE(m.Direction, '') AS last_direction
                   FROM tg_MessagesLog m
                   INNER JOIN (
                       SELECT TelegramUserId, MAX(Id) AS LastId
@@ -953,7 +1005,8 @@ END;
                       m.TelegramUserId,
                       m.CreatedAt,
                       COALESCE(m.Text, '') AS last_text,
-                      ''
+                      '',
+                      COALESCE(m.Direction, '') AS last_direction
                   FROM tg_MessagesLog m
                   INNER JOIN (
                       SELECT TelegramUserId, MAX(Id) AS LastId
@@ -983,7 +1036,8 @@ END;
                     LastMessageAtUtc = ParseUtc(reader.IsDBNull(1) ? null : reader.GetValue(1)),
                     LastMessagePreview = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                     MenuContext = menuContext,
-                    IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase)
+                    IsInHumanHandoff = string.Equals(menuContext, "human_handoff", StringComparison.OrdinalIgnoreCase),
+                    LastMessageDirection = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
                 });
             }
         }
@@ -996,6 +1050,55 @@ END;
             .OrderByDescending(x => x.LastMessageAtUtc)
             .Take(safeLimit)
             .ToList();
+
+        if (hasHandoffSessions && output.Count > 0)
+        {
+            var openHandoffUsers = new Dictionary<long, bool>();
+            await using var handoffCommand = connection.CreateCommand();
+            handoffCommand.CommandText =
+                """
+                SELECT telegram_user_id, assigned_agent, accepted_at_utc
+                FROM tg_human_handoff_sessions
+                WHERE tenant_id = @tenant_id
+                  AND is_open = 1;
+                """;
+            handoffCommand.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var handoffReader = await handoffCommand.ExecuteReaderAsync();
+            while (await handoffReader.ReadAsync())
+            {
+                if (!handoffReader.IsDBNull(0))
+                {
+                    var telegramUserId = handoffReader.GetInt64(0);
+                    var assignedAgent = handoffReader.IsDBNull(1) ? string.Empty : handoffReader.GetString(1);
+                    DateTimeOffset? acceptedAtUtc = handoffReader.IsDBNull(2)
+                        ? null
+                        : ParseUtc(handoffReader.GetValue(2));
+                    var awaitingHumanPickup = string.IsNullOrWhiteSpace(assignedAgent) || !acceptedAtUtc.HasValue;
+
+                    openHandoffUsers[telegramUserId] = awaitingHumanPickup;
+                }
+            }
+
+            if (openHandoffUsers.Count > 0)
+            {
+                foreach (var item in output)
+                {
+                    if (!TryParseTelegramUserId(item.Phone, out var telegramUserId))
+                    {
+                        continue;
+                    }
+
+                    if (openHandoffUsers.TryGetValue(telegramUserId, out var awaitingHumanPickup))
+                    {
+                        item.IsInHumanHandoff = true;
+                        item.MenuContext = "human_handoff";
+                        item.IsAwaitingHumanReply = awaitingHumanPickup
+                            || IsInboundConversationDirection(item.LastMessageDirection);
+                    }
+                }
+            }
+        }
 
         return output;
     }
@@ -1031,9 +1134,8 @@ END;
             while (await reader.ReadAsync())
             {
                 var direction = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-                var role = string.Equals(direction, "Out", StringComparison.OrdinalIgnoreCase)
-                    ? "assistant"
-                    : "user";
+                var messageType = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                var role = ResolveTelegramRole(direction, messageType);
 
                 output.Add(new ConversationMessageItem
                 {
@@ -1082,6 +1184,557 @@ END;
 
         output.Reverse();
         return output;
+    }
+
+    public async Task<ConversationHandoffStatus> GetConversationHandoffStatusAsync(string tenantId, string phone)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var normalizedPhone = phone?.Trim() ?? string.Empty;
+        var output = BuildUnavailableHandoffStatus(tenant, normalizedPhone);
+
+        if (!TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
+        {
+            return output;
+        }
+
+        output.IsTelegramThread = true;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        if (!await TableExistsAsync(connection, "tg_human_handoff_sessions"))
+        {
+            return output;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT TOP (1)
+                requested_by_role,
+                is_open,
+                requested_at_utc,
+                accepted_at_utc,
+                closed_at_utc,
+                assigned_agent,
+                previous_state,
+                close_reason,
+                last_message_at_utc
+            FROM tg_human_handoff_sessions
+            WHERE tenant_id = @tenant_id
+              AND telegram_user_id = @telegram_user_id
+            ORDER BY requested_at_utc DESC, id DESC;
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            return output;
+        }
+
+        output.RequestedByRole = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+        output.IsOpen = ReadBool(reader, 1);
+        output.RequestedAtUtc = reader.IsDBNull(2) ? null : ParseUtc(reader.GetValue(2));
+        output.AcceptedAtUtc = reader.IsDBNull(3) ? null : ParseUtc(reader.GetValue(3));
+        output.ClosedAtUtc = reader.IsDBNull(4) ? null : ParseUtc(reader.GetValue(4));
+        output.AssignedAgent = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+        output.PreviousState = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+        output.CloseReason = reader.IsDBNull(7) ? string.Empty : reader.GetString(7);
+        output.LastMessageAtUtc = reader.IsDBNull(8) ? null : ParseUtc(reader.GetValue(8));
+
+        return output;
+    }
+
+    public async Task<ConversationHandoffStatus> OpenConversationHandoffAsync(string tenantId, string phone, string? agent)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var normalizedPhone = phone?.Trim() ?? string.Empty;
+        var output = BuildUnavailableHandoffStatus(tenant, normalizedPhone);
+        var safeAgent = string.IsNullOrWhiteSpace(agent) ? "admin" : agent.Trim();
+
+        if (!TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
+        {
+            return output;
+        }
+
+        output.IsTelegramThread = true;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        if (!await TableExistsAsync(connection, "tg_human_handoff_sessions"))
+        {
+            return output;
+        }
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        var nowText = ToUtcText(nowUtc);
+
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "tg_Users", transaction);
+        var hasUserSessions = await TableExistsAsync(connection, "tg_UserSessions", transaction);
+
+        long? appUserId = null;
+        string previousState = string.Empty;
+        string role = string.Empty;
+
+        if (hasUsers)
+        {
+            await using var userCommand = connection.CreateCommand();
+            userCommand.Transaction = transaction;
+            userCommand.CommandText = hasUserSessions
+                ? """
+                  SELECT TOP (1) u.Id, COALESCE(s.State, ''), COALESCE(u.Role, '')
+                  FROM tg_Users u
+                  LEFT JOIN tg_UserSessions s ON s.UserId = u.Id
+                  WHERE u.TenantId = @tenant_id
+                    AND u.TelegramUserId = @telegram_user_id;
+                  """
+                : """
+                  SELECT TOP (1) u.Id, '', COALESCE(u.Role, '')
+                  FROM tg_Users u
+                  WHERE u.TenantId = @tenant_id
+                    AND u.TelegramUserId = @telegram_user_id;
+                  """;
+            userCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            userCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+            await using var userReader = await userCommand.ExecuteReaderAsync();
+            if (await userReader.ReadAsync())
+            {
+                appUserId = userReader.IsDBNull(0) ? null : userReader.GetInt64(0);
+                previousState = userReader.IsDBNull(1) ? string.Empty : userReader.GetString(1).Trim();
+                role = userReader.IsDBNull(2) ? string.Empty : userReader.GetString(2).Trim();
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(previousState) || string.Equals(previousState, "human_handoff", StringComparison.OrdinalIgnoreCase))
+        {
+            previousState = ResolveHomeStateFromRole(role);
+        }
+
+        long openSessionId = 0;
+        await using (var openCommand = connection.CreateCommand())
+        {
+            openCommand.Transaction = transaction;
+            openCommand.CommandText =
+                """
+                SELECT TOP (1) id
+                FROM tg_human_handoff_sessions
+                WHERE tenant_id = @tenant_id
+                  AND telegram_user_id = @telegram_user_id
+                  AND is_open = 1
+                ORDER BY requested_at_utc DESC, id DESC;
+                """;
+            openCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            openCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+            var openScalar = await openCommand.ExecuteScalarAsync();
+            if (openScalar is not null && openScalar is not DBNull)
+            {
+                openSessionId = Convert.ToInt64(openScalar, CultureInfo.InvariantCulture);
+            }
+        }
+
+        if (openSessionId > 0)
+        {
+            await using var updateCommand = connection.CreateCommand();
+            updateCommand.Transaction = transaction;
+            updateCommand.CommandText =
+                """
+                UPDATE tg_human_handoff_sessions
+                SET accepted_at_utc = COALESCE(accepted_at_utc, @accepted_at_utc),
+                    assigned_agent = CASE
+                        WHEN @assigned_agent IS NULL OR LTRIM(RTRIM(@assigned_agent)) = '' THEN assigned_agent
+                        ELSE @assigned_agent
+                    END,
+                    previous_state = CASE
+                        WHEN (previous_state IS NULL OR LTRIM(RTRIM(previous_state)) = '') AND @previous_state IS NOT NULL AND LTRIM(RTRIM(@previous_state)) <> '' THEN @previous_state
+                        ELSE previous_state
+                    END,
+                    last_message_at_utc = @last_message_at_utc
+                WHERE id = @id;
+                """;
+            updateCommand.Parameters.AddWithValue("@accepted_at_utc", nowText);
+            updateCommand.Parameters.AddWithValue("@assigned_agent", safeAgent);
+            updateCommand.Parameters.AddWithValue("@previous_state", previousState);
+            updateCommand.Parameters.AddWithValue("@last_message_at_utc", nowText);
+            updateCommand.Parameters.AddWithValue("@id", openSessionId);
+            await updateCommand.ExecuteNonQueryAsync();
+        }
+        else
+        {
+            await using var insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText =
+                """
+                INSERT INTO tg_human_handoff_sessions
+                (
+                    tenant_id,
+                    telegram_user_id,
+                    app_user_id,
+                    requested_by_role,
+                    is_open,
+                    requested_at_utc,
+                    accepted_at_utc,
+                    closed_at_utc,
+                    assigned_agent,
+                    previous_state,
+                    close_reason,
+                    last_message_at_utc
+                )
+                VALUES
+                (
+                    @tenant_id,
+                    @telegram_user_id,
+                    @app_user_id,
+                    @requested_by_role,
+                    1,
+                    @requested_at_utc,
+                    @accepted_at_utc,
+                    NULL,
+                    @assigned_agent,
+                    @previous_state,
+                    NULL,
+                    @last_message_at_utc
+                );
+                """;
+            insertCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            insertCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+            insertCommand.Parameters.AddWithValue("@app_user_id", appUserId.HasValue ? appUserId.Value : DBNull.Value);
+            insertCommand.Parameters.AddWithValue("@requested_by_role", "admin");
+            insertCommand.Parameters.AddWithValue("@requested_at_utc", nowText);
+            insertCommand.Parameters.AddWithValue("@accepted_at_utc", nowText);
+            insertCommand.Parameters.AddWithValue("@assigned_agent", safeAgent);
+            insertCommand.Parameters.AddWithValue("@previous_state", previousState);
+            insertCommand.Parameters.AddWithValue("@last_message_at_utc", nowText);
+            await insertCommand.ExecuteNonQueryAsync();
+        }
+
+        if (hasUserSessions && appUserId.HasValue)
+        {
+            await using var updateSessionCommand = connection.CreateCommand();
+            updateSessionCommand.Transaction = transaction;
+            updateSessionCommand.CommandText =
+                """
+                UPDATE tg_UserSessions
+                SET State = 'human_handoff',
+                    IsChatActive = 0,
+                    ChatJobId = NULL,
+                    ChatPeerUserId = NULL,
+                    UpdatedAt = @updated_at
+                WHERE UserId = @user_id;
+                """;
+            updateSessionCommand.Parameters.AddWithValue("@updated_at", nowText);
+            updateSessionCommand.Parameters.AddWithValue("@user_id", appUserId.Value);
+            var affected = await updateSessionCommand.ExecuteNonQueryAsync();
+
+            if (affected == 0)
+            {
+                await using var insertSessionCommand = connection.CreateCommand();
+                insertSessionCommand.Transaction = transaction;
+                insertSessionCommand.CommandText =
+                    """
+                    INSERT INTO tg_UserSessions (UserId, State, DraftJson, ActiveJobId, ChatJobId, ChatPeerUserId, IsChatActive, UpdatedAt)
+                    VALUES (@user_id, 'human_handoff', '{}', NULL, NULL, NULL, 0, @updated_at);
+                    """;
+                insertSessionCommand.Parameters.AddWithValue("@user_id", appUserId.Value);
+                insertSessionCommand.Parameters.AddWithValue("@updated_at", nowText);
+                await insertSessionCommand.ExecuteNonQueryAsync();
+            }
+        }
+
+        await transaction.CommitAsync();
+        return await GetConversationHandoffStatusAsync(tenant, normalizedPhone);
+    }
+
+    public async Task<ConversationHandoffStatus> CloseConversationHandoffAsync(string tenantId, string phone, string? agent, string? reason)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var normalizedPhone = phone?.Trim() ?? string.Empty;
+        var output = BuildUnavailableHandoffStatus(tenant, normalizedPhone);
+        var safeAgent = string.IsNullOrWhiteSpace(agent) ? "admin" : agent.Trim();
+        var safeReason = string.IsNullOrWhiteSpace(reason) ? "Encerrado pelo admin" : reason.Trim();
+
+        if (!TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
+        {
+            return output;
+        }
+
+        output.IsTelegramThread = true;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        if (!await TableExistsAsync(connection, "tg_human_handoff_sessions"))
+        {
+            return output;
+        }
+
+        var nowText = ToUtcText(DateTimeOffset.UtcNow);
+
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "tg_Users", transaction);
+        var hasUserSessions = await TableExistsAsync(connection, "tg_UserSessions", transaction);
+
+        long? appUserId = null;
+        string role = string.Empty;
+        if (hasUsers)
+        {
+            await using var userCommand = connection.CreateCommand();
+            userCommand.Transaction = transaction;
+            userCommand.CommandText =
+                """
+                SELECT TOP (1) Id, COALESCE(Role, '')
+                FROM tg_Users
+                WHERE TenantId = @tenant_id
+                  AND TelegramUserId = @telegram_user_id;
+                """;
+            userCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            userCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+            await using var userReader = await userCommand.ExecuteReaderAsync();
+            if (await userReader.ReadAsync())
+            {
+                appUserId = userReader.IsDBNull(0) ? null : userReader.GetInt64(0);
+                role = userReader.IsDBNull(1) ? string.Empty : userReader.GetString(1);
+            }
+        }
+
+        string previousState = string.Empty;
+        long openSessionId = 0;
+        await using (var openCommand = connection.CreateCommand())
+        {
+            openCommand.Transaction = transaction;
+            openCommand.CommandText =
+                """
+                SELECT TOP (1) id, COALESCE(previous_state, '')
+                FROM tg_human_handoff_sessions
+                WHERE tenant_id = @tenant_id
+                  AND telegram_user_id = @telegram_user_id
+                  AND is_open = 1
+                ORDER BY requested_at_utc DESC, id DESC;
+                """;
+            openCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            openCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+            await using var openReader = await openCommand.ExecuteReaderAsync();
+            if (await openReader.ReadAsync())
+            {
+                openSessionId = openReader.IsDBNull(0) ? 0L : openReader.GetInt64(0);
+                previousState = openReader.IsDBNull(1) ? string.Empty : openReader.GetString(1);
+            }
+        }
+
+        if (openSessionId > 0)
+        {
+            await using var closeCommand = connection.CreateCommand();
+            closeCommand.Transaction = transaction;
+            closeCommand.CommandText =
+                """
+                UPDATE tg_human_handoff_sessions
+                SET is_open = 0,
+                    closed_at_utc = @closed_at_utc,
+                    assigned_agent = CASE
+                        WHEN @assigned_agent IS NULL OR LTRIM(RTRIM(@assigned_agent)) = '' THEN assigned_agent
+                        ELSE @assigned_agent
+                    END,
+                    close_reason = @close_reason,
+                    last_message_at_utc = @last_message_at_utc
+                WHERE id = @id;
+                """;
+            closeCommand.Parameters.AddWithValue("@closed_at_utc", nowText);
+            closeCommand.Parameters.AddWithValue("@assigned_agent", safeAgent);
+            closeCommand.Parameters.AddWithValue("@close_reason", safeReason);
+            closeCommand.Parameters.AddWithValue("@last_message_at_utc", nowText);
+            closeCommand.Parameters.AddWithValue("@id", openSessionId);
+            await closeCommand.ExecuteNonQueryAsync();
+        }
+
+        var resumeState = string.IsNullOrWhiteSpace(previousState) || string.Equals(previousState, "human_handoff", StringComparison.OrdinalIgnoreCase)
+            ? ResolveHomeStateFromRole(role)
+            : previousState.Trim();
+
+        if (hasUserSessions && appUserId.HasValue)
+        {
+            await using var resumeCommand = connection.CreateCommand();
+            resumeCommand.Transaction = transaction;
+            resumeCommand.CommandText =
+                """
+                UPDATE tg_UserSessions
+                SET State = @state,
+                    IsChatActive = 0,
+                    ChatJobId = NULL,
+                    ChatPeerUserId = NULL,
+                    UpdatedAt = @updated_at
+                WHERE UserId = @user_id;
+                """;
+            resumeCommand.Parameters.AddWithValue("@state", resumeState);
+            resumeCommand.Parameters.AddWithValue("@updated_at", nowText);
+            resumeCommand.Parameters.AddWithValue("@user_id", appUserId.Value);
+            await resumeCommand.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+        return await GetConversationHandoffStatusAsync(tenant, normalizedPhone);
+    }
+
+    public async Task<SendHumanMessageResult> SendHumanMessageAsync(string tenantId, string phone, string message, string? agent)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var normalizedPhone = phone?.Trim() ?? string.Empty;
+        var safeMessage = message?.Trim() ?? string.Empty;
+        var safeAgent = string.IsNullOrWhiteSpace(agent) ? "admin" : agent.Trim();
+
+        if (!TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
+        {
+            return new SendHumanMessageResult
+            {
+                Success = false,
+                Error = "A conversa nao pertence ao canal Telegram.",
+                Handoff = BuildUnavailableHandoffStatus(tenant, normalizedPhone)
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(safeMessage))
+        {
+            return new SendHumanMessageResult
+            {
+                Success = false,
+                Error = "Informe uma mensagem para envio.",
+                Handoff = BuildUnavailableHandoffStatus(tenant, normalizedPhone)
+            };
+        }
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var hasTelegramConfig = await TableExistsAsync(connection, "tg_tenant_telegram_config");
+        if (!hasTelegramConfig)
+        {
+            return new SendHumanMessageResult
+            {
+                Success = false,
+                Error = "Configuracao Telegram nao encontrada para este tenant.",
+                Handoff = BuildUnavailableHandoffStatus(tenant, normalizedPhone)
+            };
+        }
+
+        string token;
+        await using (var tokenCommand = connection.CreateCommand())
+        {
+            tokenCommand.CommandText =
+                """
+                SELECT TOP (1) bot_token
+                FROM tg_tenant_telegram_config
+                WHERE tenant_id = @tenant_id;
+                """;
+            tokenCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            token = Convert.ToString(await tokenCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return new SendHumanMessageResult
+            {
+                Success = false,
+                Error = "Token do bot Telegram nao configurado para este tenant.",
+                Handoff = BuildUnavailableHandoffStatus(tenant, normalizedPhone)
+            };
+        }
+
+        var opened = await OpenConversationHandoffAsync(tenant, normalizedPhone, safeAgent);
+        var telegramResult = await SendTelegramTextAsync(token, telegramUserId, safeMessage);
+        if (!telegramResult.Success)
+        {
+            return new SendHumanMessageResult
+            {
+                Success = false,
+                Error = telegramResult.Error,
+                Handoff = opened
+            };
+        }
+
+        var nowText = ToUtcText(DateTimeOffset.UtcNow);
+        await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
+        {
+            var hasMessagesLog = await TableExistsAsync(connection, "tg_MessagesLog", transaction);
+            if (hasMessagesLog)
+            {
+                await using var messageCommand = connection.CreateCommand();
+                messageCommand.Transaction = transaction;
+                messageCommand.CommandText =
+                    """
+                    INSERT INTO tg_MessagesLog
+                    (
+                        TenantId,
+                        TelegramUserId,
+                        Direction,
+                        MessageType,
+                        Text,
+                        TelegramMessageId,
+                        RelatedJobId,
+                        CreatedAt
+                    )
+                    VALUES
+                    (
+                        @tenant_id,
+                        @telegram_user_id,
+                        'Out',
+                        'Event',
+                        @text,
+                        @telegram_message_id,
+                        NULL,
+                        @created_at
+                    );
+                    """;
+                messageCommand.Parameters.AddWithValue("@tenant_id", tenant);
+                messageCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+                messageCommand.Parameters.AddWithValue("@text", safeMessage);
+                messageCommand.Parameters.AddWithValue("@telegram_message_id", telegramResult.MessageId.HasValue ? telegramResult.MessageId.Value : DBNull.Value);
+                messageCommand.Parameters.AddWithValue("@created_at", nowText);
+                await messageCommand.ExecuteNonQueryAsync();
+            }
+
+            if (await TableExistsAsync(connection, "tg_human_handoff_sessions", transaction))
+            {
+                await using var handoffCommand = connection.CreateCommand();
+                handoffCommand.Transaction = transaction;
+                handoffCommand.CommandText =
+                    """
+                    UPDATE tg_human_handoff_sessions
+                    SET accepted_at_utc = COALESCE(accepted_at_utc, @accepted_at_utc),
+                        assigned_agent = CASE
+                            WHEN @assigned_agent IS NULL OR LTRIM(RTRIM(@assigned_agent)) = '' THEN assigned_agent
+                            ELSE @assigned_agent
+                        END,
+                        last_message_at_utc = @last_message_at_utc
+                    WHERE tenant_id = @tenant_id
+                      AND telegram_user_id = @telegram_user_id
+                      AND is_open = 1;
+                    """;
+                handoffCommand.Parameters.AddWithValue("@accepted_at_utc", nowText);
+                handoffCommand.Parameters.AddWithValue("@assigned_agent", safeAgent);
+                handoffCommand.Parameters.AddWithValue("@last_message_at_utc", nowText);
+                handoffCommand.Parameters.AddWithValue("@tenant_id", tenant);
+                handoffCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+                await handoffCommand.ExecuteNonQueryAsync();
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        return new SendHumanMessageResult
+        {
+            Success = true,
+            Error = string.Empty,
+            TelegramMessageId = telegramResult.MessageId,
+            Handoff = await GetConversationHandoffStatusAsync(tenant, normalizedPhone)
+        };
     }
 
     public async Task<IReadOnlyList<BookingListItem>> GetBookingsAsync(string tenantId, int limit)
@@ -4158,6 +4811,104 @@ END;
 
     private SqlConnection CreateConnection() => new(_connectionString);
 
+    private static ConversationHandoffStatus BuildUnavailableHandoffStatus(string tenantId, string phone)
+    {
+        return new ConversationHandoffStatus
+        {
+            TenantId = tenantId,
+            Phone = phone,
+            IsTelegramThread = false,
+            IsOpen = false,
+            RequestedByRole = string.Empty,
+            AssignedAgent = string.Empty,
+            PreviousState = string.Empty,
+            CloseReason = string.Empty,
+            RequestedAtUtc = null,
+            AcceptedAtUtc = null,
+            ClosedAtUtc = null,
+            LastMessageAtUtc = null
+        };
+    }
+
+    private static string ResolveTelegramRole(string direction, string messageType)
+    {
+        if (string.Equals(direction, "Out", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(messageType, "Event", StringComparison.OrdinalIgnoreCase)
+                ? "human"
+                : "assistant";
+        }
+
+        return "user";
+    }
+
+    private static bool IsInboundConversationDirection(string? direction)
+        => string.Equals(direction?.Trim(), "In", StringComparison.OrdinalIgnoreCase);
+
+    private static string ResolveHomeStateFromRole(string? role)
+    {
+        return string.Equals(role?.Trim(), "Provider", StringComparison.OrdinalIgnoreCase)
+            ? "P_HOME"
+            : "C_HOME";
+    }
+
+    private static async Task<TelegramSendResult> SendTelegramTextAsync(string token, long chatId, string text)
+    {
+        try
+        {
+            var requestPayload = JsonSerializer.Serialize(new
+            {
+                chat_id = chatId,
+                text
+            });
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"https://api.telegram.org/bot{token.Trim()}/sendMessage")
+            {
+                Content = new StringContent(requestPayload, Encoding.UTF8, "application/json")
+            };
+
+            using var response = await TelegramHttpClient.SendAsync(request);
+            var payload = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                return TelegramSendResult.Fail($"Falha ao enviar mensagem ao Telegram (HTTP {(int)response.StatusCode}).");
+            }
+
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            var ok = root.TryGetProperty("ok", out var okElement)
+                     && okElement.ValueKind == JsonValueKind.True;
+            if (!ok)
+            {
+                var description = root.TryGetProperty("description", out var descriptionElement)
+                    ? descriptionElement.GetString()
+                    : null;
+                return TelegramSendResult.Fail(
+                    string.IsNullOrWhiteSpace(description)
+                        ? "Telegram recusou o envio da mensagem."
+                        : description.Trim());
+            }
+
+            long? messageId = null;
+            if (root.TryGetProperty("result", out var resultElement)
+                && resultElement.ValueKind == JsonValueKind.Object
+                && resultElement.TryGetProperty("message_id", out var messageIdElement))
+            {
+                if (messageIdElement.ValueKind == JsonValueKind.Number && messageIdElement.TryGetInt64(out var parsedId))
+                {
+                    messageId = parsedId;
+                }
+            }
+
+            return TelegramSendResult.Ok(messageId);
+        }
+        catch (Exception ex)
+        {
+            return TelegramSendResult.Fail($"Erro ao enviar mensagem ao Telegram: {ex.Message}");
+        }
+    }
+
     private static DateTime ParseLocalDateTime(string value)
     {
         if (DateTime.TryParseExact(
@@ -4252,6 +5003,14 @@ END;
     private static string NormalizeTenant(string tenantId)
         => string.IsNullOrWhiteSpace(tenantId) ? "A" : tenantId.Trim();
 
+    private static HttpClient BuildTelegramHttpClient()
+    {
+        return new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(15)
+        };
+    }
+
     private static string ResolveConnectionString(string? configuredConnectionString, string? defaultConnectionString)
     {
         if (!string.IsNullOrWhiteSpace(configuredConnectionString))
@@ -4332,6 +5091,33 @@ END;
         public int RetryMaxSeconds { get; set; } = 600;
         public string EventTitleTemplate { get; set; } = string.Empty;
         public string EventDescriptionTemplate { get; set; } = string.Empty;
+    }
+
+    private sealed class TelegramSendResult
+    {
+        public bool Success { get; private set; }
+        public string Error { get; private set; } = string.Empty;
+        public long? MessageId { get; private set; }
+
+        public static TelegramSendResult Ok(long? messageId)
+        {
+            return new TelegramSendResult
+            {
+                Success = true,
+                MessageId = messageId,
+                Error = string.Empty
+            };
+        }
+
+        public static TelegramSendResult Fail(string error)
+        {
+            return new TelegramSendResult
+            {
+                Success = false,
+                Error = string.IsNullOrWhiteSpace(error) ? "Falha ao enviar mensagem." : error.Trim(),
+                MessageId = null
+            };
+        }
     }
 
     private sealed class DashboardMapRow

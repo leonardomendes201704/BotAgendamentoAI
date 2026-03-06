@@ -6,6 +6,11 @@
         .Where(message => !string.Equals(message.Role, "tool", StringComparison.OrdinalIgnoreCase))
         .ToList();
     var realtimeLimit = (int?)ViewData["Limit"] ?? 250;
+    var initialHandoff = Model.Handoff ?? new BotAgendamentoAI.Admin.Models.ConversationHandoffStatus
+    {
+        TenantId = Model.TenantId,
+        Phone = Model.Phone
+    };
 }
 
 <style>
@@ -86,6 +91,10 @@
     .realtime-toggle-btn {
         min-width: 150px;
     }
+
+    .handoff-status-card {
+        border: 1px solid #dce5eb;
+    }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -94,6 +103,37 @@
         <span id="realtimeStatusBadge" class="badge text-bg-secondary">Realtime desligado</span>
         <button id="realtimeToggleBtn" type="button" class="btn btn-sm btn-outline-primary realtime-toggle-btn">Ligar realtime</button>
         <a class="btn btn-sm btn-outline-secondary" asp-action="Index" asp-route-tenant="@Model.TenantId">Voltar</a>
+    </div>
+</div>
+
+<div class="card handoff-status-card mb-3">
+    <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <div class="text-muted small">Atendimento humano</div>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="handoffStatusBadge" class="badge text-bg-secondary">Fechado</span>
+                    <small id="handoffMeta" class="text-muted">Sem atendimento ativo.</small>
+                </div>
+            </div>
+            <div class="d-flex gap-2">
+                <button id="handoffOpenBtn" type="button" class="btn btn-sm btn-outline-success">Iniciar atendimento</button>
+                <button id="handoffCloseBtn" type="button" class="btn btn-sm btn-outline-danger">Encerrar atendimento</button>
+            </div>
+        </div>
+
+        <div id="handoffNotTelegramAlert" class="alert alert-info py-2 px-3 mt-3 mb-0 d-none">
+            Intervencao humana disponivel apenas para conversas Telegram (formato tg:&lt;id&gt;).
+        </div>
+
+        <div class="mt-3">
+            <label class="form-label" for="humanMessageInput">Mensagem do atendente</label>
+            <textarea id="humanMessageInput" class="form-control" rows="3" maxlength="1200" placeholder="Digite a mensagem para o cliente ou prestador..."></textarea>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+                <small id="humanSendStatus" class="text-muted"></small>
+                <button id="humanSendBtn" type="button" class="btn btn-sm btn-primary">Enviar mensagem</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -119,15 +159,21 @@
                     var roleBadgeClass = roleLower switch
                     {
                         "assistant" => "text-bg-primary",
+                        "human" => "text-bg-info",
                         "system" => "text-bg-warning",
                         _ => "text-bg-secondary"
                     };
+                    var senderName = isInbound
+                        ? "Cliente"
+                        : roleLower == "human"
+                            ? "Atendente"
+                            : "Bot";
 
                     <div class="chat-row @rowClass">
                         <div class="chat-bubble @bubbleClass">
                             <div class="chat-meta">
                                 <span class="badge @roleBadgeClass">@message.Role</span>
-                                <span class="chat-sender">@(isInbound ? "Cliente" : "Bot")</span>
+                                <span class="chat-sender">@senderName</span>
                                 <span>@message.CreatedAtUtc.ToLocalTime().ToString("dd/MM HH:mm:ss")</span>
                             </div>
                             <p class="chat-content">@message.Content</p>
@@ -140,13 +186,15 @@
 </div>
 
 @section Scripts {
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
     <script>
         (() => {
             const tenantId = @Html.Raw(JsonSerializer.Serialize(Model.TenantId));
             const phone = @Html.Raw(JsonSerializer.Serialize(Model.Phone));
             const snapshotLimit = @realtimeLimit;
             const snapshotEndpoint = '@Url.Action("Snapshot", "Conversations")';
+            const handoffOpenEndpoint = '@Url.Action("HandoffOpen", "Conversations")';
+            const handoffCloseEndpoint = '@Url.Action("HandoffClose", "Conversations")';
+            const sendHumanEndpoint = '@Url.Action("SendHumanMessage", "Conversations")';
             const initialMessages = @Html.Raw(JsonSerializer.Serialize(
                 visibleMessages.Select(message => new
                 {
@@ -156,18 +204,43 @@
                     content = message.Content,
                     createdAtUtc = message.CreatedAtUtc.ToString("O")
                 })));
+            const initialHandoff = @Html.Raw(JsonSerializer.Serialize(new
+            {
+                tenantId = initialHandoff.TenantId,
+                phone = initialHandoff.Phone,
+                isTelegramThread = initialHandoff.IsTelegramThread,
+                isOpen = initialHandoff.IsOpen,
+                requestedByRole = initialHandoff.RequestedByRole,
+                assignedAgent = initialHandoff.AssignedAgent,
+                previousState = initialHandoff.PreviousState,
+                closeReason = initialHandoff.CloseReason,
+                requestedAtUtc = initialHandoff.RequestedAtUtc?.ToString("O"),
+                acceptedAtUtc = initialHandoff.AcceptedAtUtc?.ToString("O"),
+                closedAtUtc = initialHandoff.ClosedAtUtc?.ToString("O"),
+                lastMessageAtUtc = initialHandoff.LastMessageAtUtc?.ToString("O")
+            }));
 
             const chatTrack = document.getElementById('chatTrack');
             const chatRows = document.getElementById('chatRows');
             const realtimeToggleBtn = document.getElementById('realtimeToggleBtn');
             const realtimeStatusBadge = document.getElementById('realtimeStatusBadge');
             const realtimeUpdatedAt = document.getElementById('realtimeUpdatedAt');
+            const handoffStatusBadge = document.getElementById('handoffStatusBadge');
+            const handoffMeta = document.getElementById('handoffMeta');
+            const handoffOpenBtn = document.getElementById('handoffOpenBtn');
+            const handoffCloseBtn = document.getElementById('handoffCloseBtn');
+            const handoffNotTelegramAlert = document.getElementById('handoffNotTelegramAlert');
+            const humanMessageInput = document.getElementById('humanMessageInput');
+            const humanSendBtn = document.getElementById('humanSendBtn');
+            const humanSendStatus = document.getElementById('humanSendStatus');
             const storageKey = `conversation-realtime:${tenantId}:${phone}`;
 
             let realtimeConnection = null;
             let realtimeEnabled = true;
             let isRefreshing = false;
             let lastSignature = '';
+            let lastHandoffSignature = '';
+            let currentHandoff = normalizeHandoff(initialHandoff);
 
             try {
                 const storedValue = window.localStorage.getItem(storageKey);
@@ -203,6 +276,10 @@
                 const normalized = (role ?? '').toString().trim().toLowerCase();
                 if (normalized === 'assistant') {
                     return 'text-bg-primary';
+                }
+
+                if (normalized === 'human') {
+                    return 'text-bg-info';
                 }
 
                 if (normalized === 'system') {
@@ -243,13 +320,114 @@
                     .filter(item => (item.role ?? '').toString().trim().toLowerCase() !== 'tool');
             }
 
+            function normalizeHandoff(raw) {
+                const source = raw ?? {};
+                return {
+                    tenantId: (source.tenantId ?? source.TenantId ?? tenantId ?? '').toString(),
+                    phone: (source.phone ?? source.Phone ?? phone ?? '').toString(),
+                    isTelegramThread: !!(source.isTelegramThread ?? source.IsTelegramThread),
+                    isOpen: !!(source.isOpen ?? source.IsOpen),
+                    requestedByRole: (source.requestedByRole ?? source.RequestedByRole ?? '').toString(),
+                    assignedAgent: (source.assignedAgent ?? source.AssignedAgent ?? '').toString(),
+                    previousState: (source.previousState ?? source.PreviousState ?? '').toString(),
+                    closeReason: (source.closeReason ?? source.CloseReason ?? '').toString(),
+                    requestedAtUtc: source.requestedAtUtc ?? source.RequestedAtUtc ?? null,
+                    acceptedAtUtc: source.acceptedAtUtc ?? source.AcceptedAtUtc ?? null,
+                    closedAtUtc: source.closedAtUtc ?? source.ClosedAtUtc ?? null,
+                    lastMessageAtUtc: source.lastMessageAtUtc ?? source.LastMessageAtUtc ?? null
+                };
+            }
+
             function buildSignature(messages) {
                 if (!Array.isArray(messages) || messages.length === 0) {
                     return '0';
                 }
 
                 const last = messages[messages.length - 1];
-                return `${messages.length}|${last.id}|${last.createdAtUtc}|${(last.content ?? '').length}`;
+                return `${messages.length}|${last.id}|${last.createdAtUtc}|${(last.content ?? '').length}|${last.role}`;
+            }
+
+            function buildHandoffSignature(handoff) {
+                const normalized = normalizeHandoff(handoff);
+                return [
+                    normalized.isTelegramThread ? '1' : '0',
+                    normalized.isOpen ? '1' : '0',
+                    normalized.requestedAtUtc ?? '',
+                    normalized.acceptedAtUtc ?? '',
+                    normalized.closedAtUtc ?? '',
+                    normalized.lastMessageAtUtc ?? '',
+                    normalized.assignedAgent ?? ''
+                ].join('|');
+            }
+
+            function setHumanSendStatus(text, isError) {
+                if (!humanSendStatus) {
+                    return;
+                }
+
+                humanSendStatus.textContent = text ?? '';
+                humanSendStatus.className = isError ? 'text-danger' : 'text-muted';
+            }
+
+            function renderHandoff(rawStatus) {
+                const status = normalizeHandoff(rawStatus);
+                currentHandoff = status;
+
+                if (handoffStatusBadge) {
+                    handoffStatusBadge.textContent = status.isOpen ? 'Atendimento ativo' : 'Atendimento fechado';
+                    handoffStatusBadge.className = status.isOpen ? 'badge text-bg-success' : 'badge text-bg-secondary';
+                }
+
+                if (handoffMeta) {
+                    if (!status.isTelegramThread) {
+                        handoffMeta.textContent = 'Conversa fora do canal Telegram.';
+                    } else if (status.isOpen) {
+                        const assigned = status.assignedAgent ? ` | Atendente: ${status.assignedAgent}` : '';
+                        handoffMeta.textContent = `Aberto em ${formatDateTime(status.requestedAtUtc)}${assigned}`;
+                    } else {
+                        handoffMeta.textContent = status.closedAtUtc
+                            ? `Ultimo encerramento: ${formatDateTime(status.closedAtUtc)}.`
+                            : 'Sem atendimento ativo.';
+                    }
+                }
+
+                if (handoffNotTelegramAlert) {
+                    handoffNotTelegramAlert.classList.toggle('d-none', status.isTelegramThread);
+                }
+
+                if (handoffOpenBtn) {
+                    handoffOpenBtn.disabled = !status.isTelegramThread || status.isOpen;
+                }
+
+                if (handoffCloseBtn) {
+                    handoffCloseBtn.disabled = !status.isTelegramThread || !status.isOpen;
+                }
+
+                if (humanMessageInput) {
+                    humanMessageInput.disabled = !status.isTelegramThread || !status.isOpen;
+                }
+
+                if (humanSendBtn) {
+                    humanSendBtn.disabled = !status.isTelegramThread || !status.isOpen;
+                }
+            }
+
+            async function postForm(endpoint, payload) {
+                const body = new URLSearchParams(payload);
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                    body: body.toString()
+                });
+
+                let parsed = null;
+                try {
+                    parsed = await response.json();
+                } catch {
+                    parsed = null;
+                }
+
+                return { ok: response.ok, payload: parsed, status: response.status };
             }
 
             function updateRealtimeStatus(text, enabled) {
@@ -318,8 +496,13 @@
                     const inbound = isInboundDirection(message.direction);
                     const rowClass = inbound ? 'chat-left' : 'chat-right';
                     const bubbleClass = inbound ? 'chat-bubble-in' : 'chat-bubble-out';
-                    const sender = inbound ? 'Cliente' : 'Bot';
                     const role = (message.role ?? '').toString().trim() || '-';
+                    const roleLower = role.toLowerCase();
+                    const sender = inbound
+                        ? 'Cliente'
+                        : roleLower === 'human'
+                            ? 'Atendente'
+                            : 'Bot';
 
                     return `
                         <div class="chat-row ${rowClass}">
@@ -368,11 +551,18 @@
 
                     const payload = await response.json();
                     const messages = normalizeMessages(payload.messages ?? payload.Messages ?? []);
+                    const handoff = normalizeHandoff(payload.handoff ?? payload.Handoff ?? currentHandoff);
                     const signature = buildSignature(messages);
+                    const handoffSignature = buildHandoffSignature(handoff);
 
                     if (signature !== lastSignature) {
                         renderMessages(messages, false);
                         lastSignature = signature;
+                    }
+
+                    if (handoffSignature !== lastHandoffSignature) {
+                        renderHandoff(handoff);
+                        lastHandoffSignature = handoffSignature;
                     }
 
                     updateUpdatedAt(reason ?? 'sync');
@@ -495,6 +685,95 @@
                 updateRealtimeStatus('Realtime desligado', false);
             }
 
+            if (handoffOpenBtn) {
+                handoffOpenBtn.addEventListener('click', async () => {
+                    setHumanSendStatus('Abrindo atendimento humano...', false);
+                    const result = await postForm(handoffOpenEndpoint, {
+                        tenant: tenantId,
+                        phone
+                    });
+
+                    if (!result.ok) {
+                        setHumanSendStatus(result.payload?.error ?? `Falha HTTP ${result.status} ao abrir atendimento.`, true);
+                        return;
+                    }
+
+                    const status = normalizeHandoff(result.payload?.handoff);
+                    renderHandoff(status);
+                    lastHandoffSignature = buildHandoffSignature(status);
+                    setHumanSendStatus('Atendimento humano iniciado.', false);
+                    await refreshConversation('handoff aberto');
+                });
+            }
+
+            if (handoffCloseBtn) {
+                handoffCloseBtn.addEventListener('click', async () => {
+                    setHumanSendStatus('Encerrando atendimento humano...', false);
+                    const result = await postForm(handoffCloseEndpoint, {
+                        tenant: tenantId,
+                        phone
+                    });
+
+                    if (!result.ok) {
+                        setHumanSendStatus(result.payload?.error ?? `Falha HTTP ${result.status} ao encerrar atendimento.`, true);
+                        return;
+                    }
+
+                    const status = normalizeHandoff(result.payload?.handoff);
+                    renderHandoff(status);
+                    lastHandoffSignature = buildHandoffSignature(status);
+                    setHumanSendStatus('Atendimento humano encerrado.', false);
+                    await refreshConversation('handoff fechado');
+                });
+            }
+
+            if (humanSendBtn) {
+                humanSendBtn.addEventListener('click', async () => {
+                    const message = (humanMessageInput?.value ?? '').trim();
+                    if (!message) {
+                        setHumanSendStatus('Digite uma mensagem antes de enviar.', true);
+                        return;
+                    }
+
+                    if (!currentHandoff.isTelegramThread) {
+                        setHumanSendStatus('Intervencao humana disponivel apenas para conversas Telegram.', true);
+                        return;
+                    }
+
+                    if (!currentHandoff.isOpen) {
+                        setHumanSendStatus('Abra o atendimento humano antes de enviar mensagens.', true);
+                        return;
+                    }
+
+                    humanSendBtn.disabled = true;
+                    setHumanSendStatus('Enviando mensagem...', false);
+                    const result = await postForm(sendHumanEndpoint, {
+                        tenant: tenantId,
+                        phone,
+                        message
+                    });
+                    humanSendBtn.disabled = false;
+
+                    if (!result.ok) {
+                        setHumanSendStatus(result.payload?.error ?? `Falha HTTP ${result.status} no envio.`, true);
+                        const fallbackStatus = normalizeHandoff(result.payload?.handoff);
+                        renderHandoff(fallbackStatus);
+                        lastHandoffSignature = buildHandoffSignature(fallbackStatus);
+                        return;
+                    }
+
+                    if (humanMessageInput) {
+                        humanMessageInput.value = '';
+                    }
+
+                    const updatedStatus = normalizeHandoff(result.payload?.handoff);
+                    renderHandoff(updatedStatus);
+                    lastHandoffSignature = buildHandoffSignature(updatedStatus);
+                    setHumanSendStatus('Mensagem enviada com sucesso.', false);
+                    await refreshConversation('envio humano');
+                });
+            }
+
             if (realtimeToggleBtn) {
                 realtimeToggleBtn.addEventListener('click', async () => {
                     if (realtimeEnabled) {
@@ -507,7 +786,10 @@
 
             const normalizedInitial = normalizeMessages(initialMessages);
             lastSignature = buildSignature(normalizedInitial);
+            lastHandoffSignature = buildHandoffSignature(initialHandoff);
             renderMessages(normalizedInitial, true);
+            renderHandoff(initialHandoff);
+            setHumanSendStatus('', false);
             updateUpdatedAt('carregado');
             updateToggleButton();
 

@@ -15,10 +15,15 @@ public sealed class SignalRDashboardRealtimeNotifier : IDashboardRealtimeNotifie
     {
         var normalizedTenant = NormalizeTenant(tenantId);
         var payload = new DashboardChangedEvent(normalizedTenant, DateTimeOffset.UtcNow);
-        return _hubContext
-            .Clients
-            .Group(DashboardHub.BuildTenantGroup(normalizedTenant))
-            .SendAsync("dashboardChanged", payload, cancellationToken);
+        return Task.WhenAll(
+            _hubContext
+                .Clients
+                .Group(DashboardHub.BuildTenantGroup(normalizedTenant))
+                .SendAsync("dashboardChanged", payload, cancellationToken),
+            _hubContext
+                .Clients
+                .Group(DashboardHub.BuildAllGroup())
+                .SendAsync("dashboardChanged", payload, cancellationToken));
     }
 
     private static string NormalizeTenant(string? tenantId)

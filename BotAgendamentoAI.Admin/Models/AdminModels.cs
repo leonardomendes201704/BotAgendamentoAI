@@ -49,6 +49,8 @@ public sealed class ConversationThreadSummary
     public string LastMessagePreview { get; set; } = string.Empty;
     public string MenuContext { get; set; } = string.Empty;
     public bool IsInHumanHandoff { get; set; }
+    public string LastMessageDirection { get; set; } = string.Empty;
+    public bool IsAwaitingHumanReply { get; set; }
 }
 
 public sealed class ConversationMessageItem
@@ -66,7 +68,32 @@ public sealed class ConversationDetailsViewModel
 {
     public string TenantId { get; set; } = "A";
     public string Phone { get; set; } = string.Empty;
+    public ConversationHandoffStatus Handoff { get; set; } = new();
     public IReadOnlyList<ConversationMessageItem> Messages { get; set; } = Array.Empty<ConversationMessageItem>();
+}
+
+public sealed class ConversationHandoffStatus
+{
+    public string TenantId { get; set; } = "A";
+    public string Phone { get; set; } = string.Empty;
+    public bool IsTelegramThread { get; set; }
+    public bool IsOpen { get; set; }
+    public string RequestedByRole { get; set; } = string.Empty;
+    public string AssignedAgent { get; set; } = string.Empty;
+    public string PreviousState { get; set; } = string.Empty;
+    public string CloseReason { get; set; } = string.Empty;
+    public DateTimeOffset? RequestedAtUtc { get; set; }
+    public DateTimeOffset? AcceptedAtUtc { get; set; }
+    public DateTimeOffset? ClosedAtUtc { get; set; }
+    public DateTimeOffset? LastMessageAtUtc { get; set; }
+}
+
+public sealed class SendHumanMessageResult
+{
+    public bool Success { get; set; }
+    public string Error { get; set; } = string.Empty;
+    public long? TelegramMessageId { get; set; }
+    public ConversationHandoffStatus Handoff { get; set; } = new();
 }
 
 public sealed class BookingListItem

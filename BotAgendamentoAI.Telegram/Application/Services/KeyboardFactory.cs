@@ -29,6 +29,7 @@ public static class KeyboardFactory
         {
             new KeyboardButton[] { MenuTexts.ClientRequestService, MenuTexts.ClientMyBookings },
             new KeyboardButton[] { MenuTexts.ClientFavorites, MenuTexts.ClientHelp },
+            new KeyboardButton[] { MenuTexts.HumanHandoff },
             new KeyboardButton[] { MenuTexts.ClientSwitchToProvider }
         })
         {
@@ -56,6 +57,10 @@ public static class KeyboardFactory
             new[]
             {
                 InlineKeyboardButton.WithCallbackData("4 - Ajuda", "C:HOME:HLP")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest())
             }
         };
 
@@ -75,7 +80,8 @@ public static class KeyboardFactory
         var rows = new List<KeyboardButton[]>
         {
             new KeyboardButton[] { MenuTexts.ProviderAvailableJobs, MenuTexts.ProviderAgenda },
-            new KeyboardButton[] { MenuTexts.ProviderProfile, MenuTexts.ProviderPortfolio }
+            new KeyboardButton[] { MenuTexts.ProviderProfile, MenuTexts.ProviderPortfolio },
+            new KeyboardButton[] { MenuTexts.HumanHandoff }
         };
 
         if (allowSwitchToClient)
@@ -130,6 +136,10 @@ public static class KeyboardFactory
             {
                 new KeyboardButton(MenuTexts.Back),
                 new KeyboardButton(MenuTexts.Cancel)
+            },
+            new KeyboardButton[]
+            {
+                new KeyboardButton(MenuTexts.HumanHandoff)
             }
         })
         {
@@ -147,6 +157,10 @@ public static class KeyboardFactory
             {
                 new KeyboardButton(MenuTexts.Back),
                 new KeyboardButton(MenuTexts.Cancel)
+            },
+            new KeyboardButton[]
+            {
+                new KeyboardButton(MenuTexts.HumanHandoff)
             }
         })
         {
@@ -515,7 +529,8 @@ public static class KeyboardFactory
         return new[]
         {
             InlineKeyboardButton.WithCallbackData(MenuTexts.Back, CallbackDataRouter.Back()),
-            InlineKeyboardButton.WithCallbackData(MenuTexts.Cancel, CallbackDataRouter.Cancel())
+            InlineKeyboardButton.WithCallbackData(MenuTexts.Cancel, CallbackDataRouter.Cancel()),
+            InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest())
         };
     }
 }

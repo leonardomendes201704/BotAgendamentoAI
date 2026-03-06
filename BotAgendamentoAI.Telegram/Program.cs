@@ -61,6 +61,7 @@ builder.Services.AddSingleton<ProviderReminderSettingsService>();
 builder.Services.AddSingleton<JobWorkflowService>();
 builder.Services.AddSingleton<IPhotoValidator, StubPhotoValidator>();
 builder.Services.AddSingleton<ChatMediatorService>();
+builder.Services.AddSingleton<HumanHandoffService>();
 builder.Services.AddSingleton<ClientFlowHandler>();
 builder.Services.AddSingleton<ProviderFlowHandler>();
 builder.Services.AddSingleton<MarketplaceBotOrchestrator>();
@@ -87,6 +88,7 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider, bool 
         await EnsureGoogleCalendarTablesSqlServer(db);
         await EnsureExceptionLogsTableSqlServer(db);
         await EnsureProviderJobRejectionsTableSqlServer(db);
+        await EnsureHumanHandoffTableSqlServer(db);
         return;
     }
 
@@ -94,6 +96,7 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider, bool 
     await EnsureGoogleCalendarTables(db);
     await EnsureExceptionLogsTable(db);
     await EnsureProviderJobRejectionsTable(db);
+    await EnsureHumanHandoffTable(db);
     await EnsureJobContactColumns(db);
 }
 
@@ -773,6 +776,87 @@ static async Task EnsureProviderJobRejectionsTableSqlServer(BotDbContext db)
     BEGIN
         CREATE INDEX ix_tg_provider_job_rejections_tenant_created
         ON dbo.tg_provider_job_rejections (tenant_id, created_at_utc);
+    END;
+    """);
+}
+
+static async Task EnsureHumanHandoffTable(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS tg_human_handoff_sessions
+    (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        telegram_user_id INTEGER NOT NULL,
+        app_user_id INTEGER NULL,
+        requested_by_role TEXT NOT NULL DEFAULT 'unknown',
+        is_open INTEGER NOT NULL DEFAULT 1,
+        requested_at_utc TEXT NOT NULL,
+        accepted_at_utc TEXT NULL,
+        closed_at_utc TEXT NULL,
+        assigned_agent TEXT NULL,
+        previous_state TEXT NULL,
+        close_reason TEXT NULL,
+        last_message_at_utc TEXT NOT NULL
+    );
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_tg_human_handoff_sessions_tenant_open_requested
+    ON tg_human_handoff_sessions (tenant_id, is_open, requested_at_utc DESC);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_tg_human_handoff_sessions_open_thread
+    ON tg_human_handoff_sessions (tenant_id, telegram_user_id)
+    WHERE is_open = 1;
+    """);
+}
+
+static async Task EnsureHumanHandoffTableSqlServer(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF OBJECT_ID(N'dbo.tg_human_handoff_sessions', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.tg_human_handoff_sessions
+        (
+            id BIGINT IDENTITY(1,1) PRIMARY KEY,
+            tenant_id NVARCHAR(32) NOT NULL,
+            telegram_user_id BIGINT NOT NULL,
+            app_user_id BIGINT NULL,
+            requested_by_role NVARCHAR(32) NOT NULL CONSTRAINT DF_tg_human_handoff_requested_by_role DEFAULT(N'unknown'),
+            is_open BIT NOT NULL CONSTRAINT DF_tg_human_handoff_is_open DEFAULT(1),
+            requested_at_utc NVARCHAR(64) NOT NULL,
+            accepted_at_utc NVARCHAR(64) NULL,
+            closed_at_utc NVARCHAR(64) NULL,
+            assigned_agent NVARCHAR(128) NULL,
+            previous_state NVARCHAR(64) NULL,
+            close_reason NVARCHAR(256) NULL,
+            last_message_at_utc NVARCHAR(64) NOT NULL
+        );
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_tg_human_handoff_sessions_tenant_open_requested' AND object_id = OBJECT_ID(N'dbo.tg_human_handoff_sessions'))
+    BEGIN
+        CREATE INDEX ix_tg_human_handoff_sessions_tenant_open_requested
+        ON dbo.tg_human_handoff_sessions (tenant_id, is_open, requested_at_utc DESC);
+    END;
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'uq_tg_human_handoff_sessions_open_thread' AND object_id = OBJECT_ID(N'dbo.tg_human_handoff_sessions'))
+    BEGIN
+        CREATE UNIQUE INDEX uq_tg_human_handoff_sessions_open_thread
+        ON dbo.tg_human_handoff_sessions (tenant_id, telegram_user_id)
+        WHERE is_open = 1;
     END;
     """);
 }

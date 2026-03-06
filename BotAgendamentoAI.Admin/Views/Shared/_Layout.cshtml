@@ -12,7 +12,7 @@
     <header>
         <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
             <div class="container-fluid">
-                <a class="navbar-brand" asp-area="" asp-controller="Dashboard" asp-action="Index">BotAgendamento Admin</a>
+                <a class="navbar-brand" target="_self" asp-area="" asp-controller="Dashboard" asp-action="Index">BotAgendamento Admin</a>
                 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
                         aria-expanded="false" aria-label="Toggle navigation">
                     <span class="navbar-toggler-icon"></span>
@@ -20,31 +20,31 @@
                 <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
                     <ul class="navbar-nav flex-grow-1">
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Dashboard" asp-action="Index">Dashboard</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Dashboard" asp-action="Index">Dashboard</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Conversations" asp-action="Index">Conversas</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Conversations" asp-action="Index">Conversas</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Bookings" asp-action="Index">Agendamentos</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Bookings" asp-action="Index">Agendamentos</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Clients" asp-action="Index">Clientes</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Clients" asp-action="Index">Clientes</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Providers" asp-action="Index">Prestadores</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Providers" asp-action="Index">Prestadores</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Coverage" asp-action="Index">Cobertura</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Coverage" asp-action="Index">Cobertura</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Categories" asp-action="Index">Categorias</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Categories" asp-action="Index">Categorias</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Services" asp-action="Index">Servicos</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Services" asp-action="Index">Servicos</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Settings" asp-action="Index">Configuracoes</a>
+                            <a class="nav-link text-dark" target="_self" asp-area="" asp-controller="Settings" asp-action="Index">Configuracoes</a>
                         </li>
                     </ul>
                 </div>
@@ -57,6 +57,34 @@
         </main>
     </div>
 
+    <button type="button"
+            class="btn btn-dark admin-conversations-launcher"
+            data-bs-toggle="offcanvas"
+            data-bs-target="#activeConversationsDrawer"
+            aria-controls="activeConversationsDrawer">
+        Conversas Ativas
+        <span id="activeConversationsBadge" class="badge text-bg-light ms-2">0</span>
+    </button>
+
+    <div class="offcanvas offcanvas-end admin-conversations-drawer" tabindex="-1" id="activeConversationsDrawer" aria-labelledby="activeConversationsDrawerLabel">
+        <div class="offcanvas-header border-bottom">
+            <div>
+                <h5 class="offcanvas-title mb-1" id="activeConversationsDrawerLabel">Conversas Ativas</h5>
+                <div id="activeConversationsMeta" class="text-muted small">Carregando...</div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <button id="activeConversationsRefresh" type="button" class="btn btn-sm btn-outline-secondary">Atualizar</button>
+                <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Fechar"></button>
+            </div>
+        </div>
+        <div class="offcanvas-body p-0">
+            <div id="activeConversationsStatus" class="admin-conversations-status">
+                Carregando conversas...
+            </div>
+            <div id="activeConversationsList" class="list-group list-group-flush"></div>
+        </div>
+    </div>
+
     <footer class="border-top footer text-muted">
         <div class="container">
             &copy; 2026 - BotAgendamento Admin
@@ -65,6 +93,291 @@
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
+    <script>
+        (() => {
+            const endpoint = '@Url.Action("ActiveThreads", "Conversations")';
+            const detailsUrl = '@Url.Action("Details", "Conversations")';
+            const drawerEl = document.getElementById('activeConversationsDrawer');
+            const launcherEl = document.querySelector('.admin-conversations-launcher');
+            const badgeEl = document.getElementById('activeConversationsBadge');
+            const metaEl = document.getElementById('activeConversationsMeta');
+            const statusEl = document.getElementById('activeConversationsStatus');
+            const listEl = document.getElementById('activeConversationsList');
+            const refreshBtn = document.getElementById('activeConversationsRefresh');
+
+            if (!drawerEl || !launcherEl || !badgeEl || !metaEl || !statusEl || !listEl || !refreshBtn) {
+                return;
+            }
+
+            const currentParams = new URLSearchParams(window.location.search);
+            const currentTenant = (currentParams.get('tenant') || '').trim().toLowerCase();
+            const currentPhone = (currentParams.get('phone') || '').trim().toLowerCase();
+            let refreshTimer = null;
+            let isLoading = false;
+            let refreshQueued = false;
+            let realtimeConnection = null;
+
+            function formatDateTime(value) {
+                if (!value) {
+                    return '-';
+                }
+
+                const parsed = new Date(value);
+                if (Number.isNaN(parsed.getTime())) {
+                    return value.toString();
+                }
+
+                return parsed.toLocaleString('pt-BR', {
+                    dateStyle: 'short',
+                    timeStyle: 'short'
+                });
+            }
+
+            function setStatus(message, hidden) {
+                statusEl.textContent = message;
+                statusEl.classList.toggle('d-none', hidden);
+            }
+
+            function clearList() {
+                while (listEl.firstChild) {
+                    listEl.removeChild(listEl.firstChild);
+                }
+            }
+
+            function setHumanWaitingState(count) {
+                const safeCount = Number.isFinite(Number(count)) ? Number(count) : 0;
+                launcherEl.classList.toggle('has-human-waiting', safeCount > 0);
+                launcherEl.setAttribute(
+                    'title',
+                    safeCount > 0
+                        ? `${safeCount} conversa(s) aguardando resposta humana`
+                        : 'Conversas ativas');
+            }
+
+            function buildDetailsHref(item) {
+                const tenant = encodeURIComponent(item.tenantId || '');
+                const phone = encodeURIComponent(item.phone || '');
+                return `${detailsUrl}?tenant=${tenant}&phone=${phone}`;
+            }
+
+            function isCurrentThread(item) {
+                return currentTenant.length > 0
+                    && currentPhone.length > 0
+                    && (item.tenantId || '').toString().trim().toLowerCase() === currentTenant
+                    && (item.phone || '').toString().trim().toLowerCase() === currentPhone;
+            }
+
+            function renderItem(item) {
+                const link = document.createElement('a');
+                link.href = buildDetailsHref(item);
+                link.target = '_self';
+                link.className = 'list-group-item list-group-item-action admin-conversation-item';
+                if (isCurrentThread(item)) {
+                    link.classList.add('active');
+                }
+                if (item.isAwaitingHumanReply) {
+                    link.classList.add('admin-conversation-item-waiting');
+                }
+
+                const head = document.createElement('div');
+                head.className = 'admin-conversation-item-head';
+
+                const title = document.createElement('div');
+                title.className = 'admin-conversation-item-title';
+                title.textContent = item.phone || '-';
+
+                const time = document.createElement('div');
+                time.className = 'admin-conversation-item-time';
+                time.textContent = formatDateTime(item.lastMessageAtUtc);
+
+                head.appendChild(title);
+                head.appendChild(time);
+
+                const meta = document.createElement('div');
+                meta.className = 'admin-conversation-item-meta';
+
+                const tenantBadge = document.createElement('span');
+                tenantBadge.className = 'badge text-bg-secondary';
+                tenantBadge.textContent = `Tenant ${item.tenantId || '-'}`;
+                meta.appendChild(tenantBadge);
+
+                if (item.isInHumanHandoff) {
+                    const handoffBadge = document.createElement('span');
+                    handoffBadge.className = 'badge text-bg-warning';
+                    handoffBadge.textContent = 'Humano ativo';
+                    meta.appendChild(handoffBadge);
+                }
+
+                if (item.isAwaitingHumanReply) {
+                    const waitingBadge = document.createElement('span');
+                    waitingBadge.className = 'badge text-bg-danger';
+                    waitingBadge.textContent = 'Aguardando humano';
+                    meta.appendChild(waitingBadge);
+                }
+
+                const preview = document.createElement('div');
+                preview.className = 'admin-conversation-item-preview';
+                preview.textContent = item.lastMessagePreview || '(sem texto)';
+
+                link.appendChild(head);
+                link.appendChild(meta);
+                link.appendChild(preview);
+                return link;
+            }
+
+            function render(items, atUtc, awaitingHumanReplyCount) {
+                clearList();
+                badgeEl.textContent = items.length.toString();
+                const waitingCount = Number.isFinite(Number(awaitingHumanReplyCount))
+                    ? Number(awaitingHumanReplyCount)
+                    : items.filter(item => item.isAwaitingHumanReply).length;
+                setHumanWaitingState(waitingCount);
+                metaEl.textContent = waitingCount > 0
+                    ? `Ordenado por ultima interacao - ${waitingCount} aguardando humano${atUtc ? ` - atualizado em ${formatDateTime(atUtc)}` : ''}`
+                    : `Ordenado por ultima interacao${atUtc ? ` - atualizado em ${formatDateTime(atUtc)}` : ''}`;
+
+                if (items.length === 0) {
+                    setStatus('Nenhuma conversa ativa no momento.', false);
+                    return;
+                }
+
+                setStatus('', true);
+                for (const item of items) {
+                    listEl.appendChild(renderItem(item));
+                }
+            }
+
+            async function loadConversations() {
+                if (isLoading) {
+                    return;
+                }
+
+                isLoading = true;
+                refreshBtn.disabled = true;
+
+                if (!listEl.childElementCount) {
+                    setStatus('Carregando conversas...', false);
+                }
+
+                try {
+                    const response = await fetch(`${endpoint}?limit=150`, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const payload = await response.json();
+                    const items = payload.items || payload.Items || [];
+                    const atUtc = payload.atUtc || payload.AtUtc || null;
+                    const awaitingHumanReplyCount = payload.awaitingHumanReplyCount ?? payload.AwaitingHumanReplyCount ?? null;
+                    render(items, atUtc, awaitingHumanReplyCount);
+                } catch (error) {
+                    console.error('Falha ao carregar conversas ativas.', error);
+                    if (!listEl.childElementCount) {
+                        setStatus('Nao foi possivel carregar as conversas ativas.', false);
+                    }
+                    metaEl.textContent = 'Falha ao atualizar conversas.';
+                } finally {
+                    isLoading = false;
+                    refreshBtn.disabled = false;
+                }
+            }
+
+            drawerEl.addEventListener('show.bs.offcanvas', () => {
+                loadConversations();
+            });
+
+            drawerEl.addEventListener('shown.bs.offcanvas', () => {
+                loadConversations();
+                refreshTimer = window.setInterval(loadConversations, 15000);
+            });
+
+            drawerEl.addEventListener('hidden.bs.offcanvas', () => {
+                if (refreshTimer !== null) {
+                    window.clearInterval(refreshTimer);
+                    refreshTimer = null;
+                }
+            });
+
+            refreshBtn.addEventListener('click', () => {
+                loadConversations();
+            });
+
+            function queueRefresh() {
+                if (refreshQueued) {
+                    return;
+                }
+
+                refreshQueued = true;
+                window.setTimeout(() => {
+                    refreshQueued = false;
+                    loadConversations();
+                }, 400);
+            }
+
+            function createRealtimeConnection() {
+                if (!window.signalR) {
+                    return null;
+                }
+
+                const connection = new signalR.HubConnectionBuilder()
+                    .withUrl('/hubs/dashboard')
+                    .withAutomaticReconnect([0, 2000, 5000, 10000])
+                    .build();
+
+                connection.on('dashboardChanged', () => {
+                    queueRefresh();
+                });
+
+                connection.onreconnected(async () => {
+                    try {
+                        await connection.invoke('JoinAll');
+                    } catch {
+                        // ignore
+                    }
+
+                    queueRefresh();
+                });
+
+                return connection;
+            }
+
+            async function startRealtime(connection) {
+                if (!connection) {
+                    return;
+                }
+
+                try {
+                    await connection.start();
+                    await connection.invoke('JoinAll');
+                } catch {
+                    window.setTimeout(() => {
+                        startRealtime(connection);
+                    }, 5000);
+                }
+            }
+
+            realtimeConnection = createRealtimeConnection();
+            startRealtime(realtimeConnection);
+            loadConversations();
+
+            window.addEventListener('beforeunload', () => {
+                if (realtimeConnection) {
+                    realtimeConnection.invoke('LeaveAll').catch(() => {
+                        // ignore
+                    });
+                    realtimeConnection.stop().catch(() => {
+                        // ignore
+                    });
+                }
+            });
+        })();
+    </script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

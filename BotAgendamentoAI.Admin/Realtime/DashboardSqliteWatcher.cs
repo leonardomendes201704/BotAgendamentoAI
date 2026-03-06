@@ -179,6 +179,20 @@ public sealed class DashboardSqliteWatcher : BackgroundService
                 cancellationToken);
         }
 
+        if (await TableExistsAsync(connection, "tg_human_handoff_sessions", cancellationToken))
+        {
+            await MergeTextWatermarksAsync(
+                connection,
+                """
+                SELECT tenant_id, MAX(last_message_at_utc)
+                FROM tg_human_handoff_sessions
+                GROUP BY tenant_id;
+                """,
+                output,
+                static (watermark, value) => watermark.MaxHandoffUpdatedAtUtc = value,
+                cancellationToken);
+        }
+
         return output;
     }
 
@@ -294,6 +308,7 @@ public sealed class DashboardSqliteWatcher : BackgroundService
         public long MaxJobId { get; set; }
         public string MaxStateUpdatedAtUtc { get; set; } = string.Empty;
         public string MaxSessionUpdatedAtUtc { get; set; } = string.Empty;
+        public string MaxHandoffUpdatedAtUtc { get; set; } = string.Empty;
 
         public bool IsNewerThan(TenantWatermark? previous)
         {
@@ -304,7 +319,8 @@ public sealed class DashboardSqliteWatcher : BackgroundService
                        || MaxBookingRowId > 0
                        || MaxJobId > 0
                        || !string.IsNullOrWhiteSpace(MaxStateUpdatedAtUtc)
-                       || !string.IsNullOrWhiteSpace(MaxSessionUpdatedAtUtc);
+                       || !string.IsNullOrWhiteSpace(MaxSessionUpdatedAtUtc)
+                       || !string.IsNullOrWhiteSpace(MaxHandoffUpdatedAtUtc);
             }
 
             return MaxLegacyMessageId > previous.MaxLegacyMessageId
@@ -312,7 +328,8 @@ public sealed class DashboardSqliteWatcher : BackgroundService
                    || MaxBookingRowId > previous.MaxBookingRowId
                    || MaxJobId > previous.MaxJobId
                    || string.CompareOrdinal(MaxStateUpdatedAtUtc, previous.MaxStateUpdatedAtUtc) > 0
-                   || string.CompareOrdinal(MaxSessionUpdatedAtUtc, previous.MaxSessionUpdatedAtUtc) > 0;
+                   || string.CompareOrdinal(MaxSessionUpdatedAtUtc, previous.MaxSessionUpdatedAtUtc) > 0
+                   || string.CompareOrdinal(MaxHandoffUpdatedAtUtc, previous.MaxHandoffUpdatedAtUtc) > 0;
         }
     }
 }

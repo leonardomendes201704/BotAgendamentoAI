@@ -10,6 +10,10 @@ public interface IAdminRepository
     Task<IReadOnlyList<DashboardMapPinItem>> GetDashboardMapPinsAsync(string tenantId, DateTimeOffset? sinceUtc, int limit);
     Task<IReadOnlyList<ConversationThreadSummary>> GetConversationThreadsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ConversationMessageItem>> GetConversationMessagesAsync(string tenantId, string phone, int limit);
+    Task<ConversationHandoffStatus> GetConversationHandoffStatusAsync(string tenantId, string phone);
+    Task<ConversationHandoffStatus> OpenConversationHandoffAsync(string tenantId, string phone, string? agent);
+    Task<ConversationHandoffStatus> CloseConversationHandoffAsync(string tenantId, string phone, string? agent, string? reason);
+    Task<SendHumanMessageResult> SendHumanMessageAsync(string tenantId, string phone, string message, string? agent);
     Task<IReadOnlyList<BookingListItem>> GetBookingsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ClientListItem>> GetClientsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ProviderListItem>> GetProvidersAsync(string tenantId, int limit);

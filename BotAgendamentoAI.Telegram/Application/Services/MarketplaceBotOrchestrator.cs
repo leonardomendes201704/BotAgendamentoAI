@@ -9,6 +9,8 @@ using BotAgendamentoAI.Telegram.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using BotAgendamentoAI.Telegram.TelegramCompat;
 using BotAgendamentoAI.Telegram.TelegramCompat.Types;
+using System.Globalization;
+using System.Text;
 
 namespace BotAgendamentoAI.Telegram.Application.Services;
 
@@ -21,6 +23,7 @@ public sealed class MarketplaceBotOrchestrator
     private readonly ClientFlowHandler _clientFlow;
     private readonly ProviderFlowHandler _providerFlow;
     private readonly ChatMediatorService _chatMediator;
+    private readonly HumanHandoffService _humanHandoff;
     private readonly ILogger<MarketplaceBotOrchestrator> _logger;
 
     public MarketplaceBotOrchestrator(
@@ -31,6 +34,7 @@ public sealed class MarketplaceBotOrchestrator
         ClientFlowHandler clientFlow,
         ProviderFlowHandler providerFlow,
         ChatMediatorService chatMediator,
+        HumanHandoffService humanHandoff,
         ILogger<MarketplaceBotOrchestrator> logger)
     {
         _dbFactory = dbFactory;
@@ -40,6 +44,7 @@ public sealed class MarketplaceBotOrchestrator
         _clientFlow = clientFlow;
         _providerFlow = providerFlow;
         _chatMediator = chatMediator;
+        _humanHandoff = humanHandoff;
         _logger = logger;
     }
 
@@ -113,6 +118,11 @@ public sealed class MarketplaceBotOrchestrator
             message.MessageId,
             user.Session.ActiveJobId,
             cancellationToken);
+
+        if (await TryHandleHumanHandoffMessageAsync(db, botClient, tenantId, user, message, cancellationToken))
+        {
+            return;
+        }
 
         if (string.Equals(message.Text?.Trim(), "/start", StringComparison.OrdinalIgnoreCase))
         {
@@ -268,6 +278,10 @@ public sealed class MarketplaceBotOrchestrator
         }
 
         var chatId = callback.Message?.Chat.Id ?? user.TelegramUserId;
+        if (await TryHandleHumanHandoffCallbackAsync(db, botClient, tenantId, user, callback, route, chatId, cancellationToken))
+        {
+            return;
+        }
 
         if (route.Scope == "U" && route.Action == "ROLE")
         {
@@ -491,6 +505,130 @@ public sealed class MarketplaceBotOrchestrator
         }
 
         return false;
+    }
+
+    private async Task<bool> TryHandleHumanHandoffMessageAsync(
+        BotDbContext db,
+        ITelegramBotClient botClient,
+        string tenantId,
+        Domain.Entities.AppUser user,
+        Message message,
+        CancellationToken cancellationToken)
+    {
+        var safeText = message.Text?.Trim();
+        if (IsHumanHandoffRequestText(safeText))
+        {
+            var request = await _humanHandoff.RequestAsync(db, tenantId, user, cancellationToken);
+            await _sender.SendTextAsync(
+                db,
+                botClient,
+                tenantId,
+                user.TelegramUserId,
+                message.Chat.Id,
+                request.ResponseText,
+                null,
+                user.Session?.ActiveJobId,
+                cancellationToken);
+            return true;
+        }
+
+        var openSession = await _humanHandoff.GetOpenSessionAsync(db, tenantId, user.TelegramUserId, cancellationToken);
+        if (openSession is null)
+        {
+            return false;
+        }
+
+        await _humanHandoff.MarkActivityAsync(db, openSession, cancellationToken);
+        // Atendimento humano aberto: a mensagem do cliente segue para o painel humano,
+        // sem reenviar resposta automatica a cada interacao.
+        return true;
+    }
+
+    private async Task<bool> TryHandleHumanHandoffCallbackAsync(
+        BotDbContext db,
+        ITelegramBotClient botClient,
+        string tenantId,
+        Domain.Entities.AppUser user,
+        CallbackQuery callback,
+        CallbackRoute route,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        if (route.Scope == "S" && route.Action == "ATD" && route.Arg1 == "REQ")
+        {
+            var request = await _humanHandoff.RequestAsync(db, tenantId, user, cancellationToken);
+            await _sender.SendTextAsync(
+                db,
+                botClient,
+                tenantId,
+                user.TelegramUserId,
+                chatId,
+                request.ResponseText,
+                null,
+                user.Session?.ActiveJobId,
+                cancellationToken);
+
+            await botClient.AnswerCallbackQuery(
+                callback.Id,
+                request.IsAlreadyOpen ? "Atendimento humano ja esta ativo." : "Atendente acionado.",
+                false,
+                cancellationToken);
+
+            return true;
+        }
+
+        var openSession = await _humanHandoff.GetOpenSessionAsync(db, tenantId, user.TelegramUserId, cancellationToken);
+        if (openSession is null)
+        {
+            return false;
+        }
+
+        await _humanHandoff.MarkActivityAsync(db, openSession, cancellationToken);
+        await botClient.AnswerCallbackQuery(
+            callback.Id,
+            "Atendimento humano ativo. Aguarde o atendente.",
+            false,
+            cancellationToken);
+        return true;
+    }
+
+    private static bool IsHumanHandoffRequestText(string? text)
+    {
+        var safe = NormalizeText(text);
+        if (safe.Length == 0)
+        {
+            return false;
+        }
+
+        return safe == "/atendente"
+               || safe == "atendente"
+               || safe == "humano"
+               || safe == NormalizeText(MenuTexts.HumanHandoff)
+               || safe.Contains("falar com atendente", StringComparison.Ordinal)
+               || safe.Contains("falar com humano", StringComparison.Ordinal)
+               || safe.Contains("atendimento humano", StringComparison.Ordinal);
+    }
+
+    private static string NormalizeText(string? text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant()
+            .Normalize(NormalizationForm.FormD);
+
+        var builder = new StringBuilder(normalized.Length);
+        foreach (var ch in normalized)
+        {
+            var category = CharUnicodeInfo.GetUnicodeCategory(ch);
+            if (category != UnicodeCategory.NonSpacingMark)
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return builder
+            .ToString()
+            .Normalize(NormalizationForm.FormC);
     }
 
     private static BotExecutionContext BuildContext(

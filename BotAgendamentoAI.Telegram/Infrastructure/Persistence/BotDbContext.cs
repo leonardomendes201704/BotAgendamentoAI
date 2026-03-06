@@ -16,6 +16,7 @@ public sealed class BotDbContext : DbContext
     public DbSet<ProviderProfile> ProvidersProfile => Set<ProviderProfile>();
     public DbSet<ProviderPortfolioPhoto> ProviderPortfolioPhotos => Set<ProviderPortfolioPhoto>();
     public DbSet<ProviderJobRejection> ProviderJobRejections => Set<ProviderJobRejection>();
+    public DbSet<HumanHandoffSession> HumanHandoffSessions => Set<HumanHandoffSession>();
     public DbSet<Job> Jobs => Set<Job>();
     public DbSet<JobPhoto> JobPhotos => Set<JobPhoto>();
     public DbSet<MessageLog> MessagesLog => Set<MessageLog>();
@@ -112,6 +113,41 @@ public sealed class BotDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.JobId, x.ProviderUserId })
                 .IsUnique()
                 .HasDatabaseName("uq_tg_provider_job_rejections_tenant_job_provider");
+        });
+
+        modelBuilder.Entity<HumanHandoffSession>(entity =>
+        {
+            entity.ToTable("tg_human_handoff_sessions", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id).HasColumnName("id");
+            entity.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired().HasMaxLength(32);
+            entity.Property(x => x.TelegramUserId).HasColumnName("telegram_user_id").IsRequired();
+            entity.Property(x => x.AppUserId).HasColumnName("app_user_id");
+            entity.Property(x => x.RequestedByRole).HasColumnName("requested_by_role").IsRequired().HasMaxLength(32);
+            entity.Property(x => x.IsOpen).HasColumnName("is_open").IsRequired();
+            entity.Property(x => x.RequestedAtUtc)
+                .HasColumnName("requested_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+            entity.Property(x => x.AcceptedAtUtc)
+                .HasColumnName("accepted_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(nullableDateTimeOffsetTextConverter);
+            entity.Property(x => x.ClosedAtUtc)
+                .HasColumnName("closed_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(nullableDateTimeOffsetTextConverter);
+            entity.Property(x => x.AssignedAgent).HasColumnName("assigned_agent").HasMaxLength(128);
+            entity.Property(x => x.PreviousState).HasColumnName("previous_state").HasMaxLength(64);
+            entity.Property(x => x.CloseReason).HasColumnName("close_reason").HasMaxLength(256);
+            entity.Property(x => x.LastMessageAtUtc)
+                .HasColumnName("last_message_at_utc")
+                .HasMaxLength(64)
+                .HasConversion(dateTimeOffsetTextConverter);
+
+            entity.HasIndex(x => new { x.TenantId, x.IsOpen, x.RequestedAtUtc })
+                .HasDatabaseName("ix_tg_human_handoff_sessions_tenant_open_requested");
         });
 
         modelBuilder.Entity<Job>(entity =>
