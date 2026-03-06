@@ -5,6 +5,7 @@ using BotAgendamentoAI.Telegram.Features.Provider;
 using BotAgendamentoAI.Telegram.Features.Shared;
 using BotAgendamentoAI.Telegram.Infrastructure.Persistence;
 using BotAgendamentoAI.Telegram.Infrastructure.Services;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -44,6 +45,8 @@ builder.Services.AddSingleton<UserContextService>();
 builder.Services.AddSingleton<ConversationHistoryService>();
 builder.Services.AddSingleton<TelegramMessageSender>();
 builder.Services.AddSingleton<BotExceptionLogService>();
+builder.Services.AddSingleton<CalendarSyncQueueService>();
+builder.Services.AddSingleton<GoogleCalendarApiService>();
 builder.Services.AddSingleton<JobWorkflowService>();
 builder.Services.AddSingleton<IPhotoValidator, StubPhotoValidator>();
 builder.Services.AddSingleton<ChatMediatorService>();
@@ -51,6 +54,7 @@ builder.Services.AddSingleton<ClientFlowHandler>();
 builder.Services.AddSingleton<ProviderFlowHandler>();
 builder.Services.AddSingleton<MarketplaceBotOrchestrator>();
 builder.Services.AddHostedService<TelegramPollingWorker>();
+builder.Services.AddHostedService<GoogleCalendarSyncWorker>();
 
 var host = builder.Build();
 
@@ -63,7 +67,101 @@ static async Task EnsureDatabaseMigrated(IServiceProvider serviceProvider)
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<BotDbContext>>();
     await using var db = await factory.CreateDbContextAsync();
     await db.Database.MigrateAsync();
+    await EnsureGoogleCalendarTables(db);
     await EnsureExceptionLogsTable(db);
+}
+
+static async Task EnsureGoogleCalendarTables(BotDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS tenant_google_calendar_config
+    (
+        tenant_id TEXT PRIMARY KEY,
+        is_enabled INTEGER NOT NULL DEFAULT 0,
+        calendar_id TEXT NOT NULL DEFAULT '',
+        service_account_json TEXT NOT NULL DEFAULT '',
+        time_zone_id TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
+        default_duration_minutes INTEGER NOT NULL DEFAULT 60,
+        max_attempts INTEGER NOT NULL DEFAULT 8,
+        retry_base_seconds INTEGER NOT NULL DEFAULT 10,
+        retry_max_seconds INTEGER NOT NULL DEFAULT 600,
+        event_title_template TEXT NOT NULL DEFAULT '',
+        event_description_template TEXT NOT NULL DEFAULT '',
+        updated_at_utc TEXT NOT NULL
+    );
+    """);
+
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "max_attempts", "INTEGER NOT NULL DEFAULT 8");
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "retry_base_seconds", "INTEGER NOT NULL DEFAULT 10");
+    await EnsureColumnAsync(db, "tenant_google_calendar_config", "retry_max_seconds", "INTEGER NOT NULL DEFAULT 600");
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS calendar_sync_queue
+    (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        job_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        available_at_utc TEXT NOT NULL,
+        locked_at_utc TEXT NULL,
+        last_error TEXT NULL,
+        created_at_utc TEXT NOT NULL,
+        updated_at_utc TEXT NOT NULL
+    );
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_calendar_sync_queue_status_available
+    ON calendar_sync_queue (status, available_at_utc, id);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_calendar_sync_queue_tenant_job
+    ON calendar_sync_queue (tenant_id, job_id, id);
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE TABLE IF NOT EXISTS job_calendar_links
+    (
+        job_id INTEGER PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        calendar_event_id TEXT NOT NULL,
+        updated_at_utc TEXT NOT NULL
+    );
+    """);
+
+    await db.Database.ExecuteSqlRawAsync(
+    """
+    CREATE INDEX IF NOT EXISTS ix_job_calendar_links_tenant
+    ON job_calendar_links (tenant_id, updated_at_utc);
+    """);
+}
+
+static async Task EnsureColumnAsync(BotDbContext db, string tableName, string columnName, string columnDefinitionSql)
+{
+    try
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinitionSql};";
+        await command.ExecuteNonQueryAsync();
+    }
+    catch (SqliteException ex) when (ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+    {
+        // Column already exists.
+    }
 }
 
 static async Task EnsureExceptionLogsTable(BotDbContext db)

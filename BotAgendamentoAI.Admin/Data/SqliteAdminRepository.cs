@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS tenant_telegram_config (
   updated_at_utc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tenant_google_calendar_config (
+  tenant_id TEXT PRIMARY KEY,
+  is_enabled INTEGER NOT NULL DEFAULT 0,
+  calendar_id TEXT NOT NULL DEFAULT '',
+  service_account_json TEXT NOT NULL DEFAULT '',
+  time_zone_id TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
+  default_duration_minutes INTEGER NOT NULL DEFAULT 60,
+  max_attempts INTEGER NOT NULL DEFAULT 8,
+  retry_base_seconds INTEGER NOT NULL DEFAULT 10,
+  retry_max_seconds INTEGER NOT NULL DEFAULT 600,
+  event_title_template TEXT NOT NULL DEFAULT '',
+  event_description_template TEXT NOT NULL DEFAULT '',
+  updated_at_utc TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS shared_settings (
   setting_key TEXT PRIMARY KEY,
   setting_value TEXT NOT NULL,
@@ -150,6 +165,10 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText = AdminSchemaSql;
         await command.ExecuteNonQueryAsync();
+
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "max_attempts", "INTEGER NOT NULL DEFAULT 8");
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "retry_base_seconds", "INTEGER NOT NULL DEFAULT 10");
+        await EnsureColumnAsync(connection, "tenant_google_calendar_config", "retry_max_seconds", "INTEGER NOT NULL DEFAULT 600");
 
         _logger.LogInformation("Admin SQLite path: {Path}", _dbPath);
     }
@@ -189,6 +208,7 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         await CollectFromTableAsync("conversation_state", "tenant_id");
         await CollectFromTableAsync("tenant_bot_config", "tenant_id");
         await CollectFromTableAsync("tenant_telegram_config", "tenant_id");
+        await CollectFromTableAsync("tenant_google_calendar_config", "tenant_id");
         await CollectFromTableAsync("Users", "TenantId");
         await CollectFromTableAsync("MessagesLog", "TenantId");
 
@@ -1586,6 +1606,45 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             }
         }
 
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            SELECT
+                is_enabled,
+                calendar_id,
+                service_account_json,
+                time_zone_id,
+                default_duration_minutes,
+                max_attempts,
+                retry_base_seconds,
+                retry_max_seconds,
+                event_title_template,
+                event_description_template
+            FROM tenant_google_calendar_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                model.GoogleCalendarEnabled = !reader.IsDBNull(0) && reader.GetInt32(0) == 1;
+                model.GoogleCalendarId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                var serviceAccountJson = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                model.HasGoogleCalendarServiceAccountJson = !string.IsNullOrWhiteSpace(serviceAccountJson);
+                model.GoogleCalendarServiceAccountJson = string.Empty;
+                model.GoogleCalendarTimeZoneId = reader.IsDBNull(3) ? "America/Sao_Paulo" : reader.GetString(3);
+                model.GoogleCalendarDefaultDurationMinutes = ClampGoogleCalendarDuration(reader.IsDBNull(4) ? 60 : reader.GetInt32(4));
+                model.GoogleCalendarMaxAttempts = ClampGoogleCalendarMaxAttempts(reader.IsDBNull(5) ? 8 : reader.GetInt32(5));
+                model.GoogleCalendarRetryBaseSeconds = ClampGoogleCalendarRetryBaseSeconds(reader.IsDBNull(6) ? 10 : reader.GetInt32(6));
+                model.GoogleCalendarRetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(reader.IsDBNull(7) ? 600 : reader.GetInt32(7));
+                model.GoogleCalendarEventTitleTemplate = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
+                model.GoogleCalendarEventDescriptionTemplate = reader.IsDBNull(9) ? string.Empty : reader.GetString(9);
+            }
+        }
+
         var openAiApiKey = await GetSharedSettingAsync(connection, OpenAiApiKeySettingKey);
         model.HasOpenAiApiKey = !string.IsNullOrWhiteSpace(openAiApiKey);
         model.OpenAiApiKey = string.Empty;
@@ -1764,6 +1823,8 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         var tokenToPersist = incomingToken;
         var incomingOpenAiApiKey = input.OpenAiApiKey?.Trim() ?? string.Empty;
         var openAiApiKeyToPersist = incomingOpenAiApiKey;
+        var incomingServiceAccountJson = input.GoogleCalendarServiceAccountJson?.Trim() ?? string.Empty;
+        var serviceAccountJsonToPersist = incomingServiceAccountJson;
 
         if (string.IsNullOrWhiteSpace(tokenToPersist))
         {
@@ -1784,6 +1845,20 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             openAiApiKeyToPersist = await GetSharedSettingAsync(connection, OpenAiApiKeySettingKey);
         }
 
+        if (string.IsNullOrWhiteSpace(serviceAccountJsonToPersist))
+        {
+            await using var existingGoogleJsonCommand = connection.CreateCommand();
+            existingGoogleJsonCommand.CommandText =
+            """
+            SELECT service_account_json
+            FROM tenant_google_calendar_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+            existingGoogleJsonCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            serviceAccountJsonToPersist = Convert.ToString(await existingGoogleJsonCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
         var telegram = new TelegramConfigStorage
         {
             BotId = input.TelegramBotId?.Trim() ?? string.Empty,
@@ -1792,6 +1867,21 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             IsActive = input.TelegramIsActive,
             PollingTimeoutSeconds = ClampTelegramPollingSeconds(input.TelegramPollingTimeoutSeconds),
             LastUpdateId = Math.Max(0L, input.TelegramLastUpdateId)
+        };
+        var googleCalendar = new GoogleCalendarConfigStorage
+        {
+            IsEnabled = input.GoogleCalendarEnabled,
+            CalendarId = input.GoogleCalendarId?.Trim() ?? string.Empty,
+            ServiceAccountJson = serviceAccountJsonToPersist,
+            TimeZoneId = string.IsNullOrWhiteSpace(input.GoogleCalendarTimeZoneId)
+                ? "America/Sao_Paulo"
+                : input.GoogleCalendarTimeZoneId.Trim(),
+            DefaultDurationMinutes = ClampGoogleCalendarDuration(input.GoogleCalendarDefaultDurationMinutes),
+            MaxAttempts = ClampGoogleCalendarMaxAttempts(input.GoogleCalendarMaxAttempts),
+            RetryBaseSeconds = ClampGoogleCalendarRetryBaseSeconds(input.GoogleCalendarRetryBaseSeconds),
+            RetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(input.GoogleCalendarRetryMaxSeconds),
+            EventTitleTemplate = input.GoogleCalendarEventTitleTemplate?.Trim() ?? string.Empty,
+            EventDescriptionTemplate = input.GoogleCalendarEventDescriptionTemplate?.Trim() ?? string.Empty
         };
 
         await using (var command = connection.CreateCommand())
@@ -1836,6 +1926,68 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             command.Parameters.AddWithValue("@is_active", telegram.IsActive ? 1 : 0);
             command.Parameters.AddWithValue("@polling_timeout_seconds", telegram.PollingTimeoutSeconds);
             command.Parameters.AddWithValue("@last_update_id", telegram.LastUpdateId);
+            command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            INSERT INTO tenant_google_calendar_config
+            (
+                tenant_id,
+                is_enabled,
+                calendar_id,
+                service_account_json,
+                time_zone_id,
+                default_duration_minutes,
+                max_attempts,
+                retry_base_seconds,
+                retry_max_seconds,
+                event_title_template,
+                event_description_template,
+                updated_at_utc
+            )
+            VALUES
+            (
+                @tenant_id,
+                @is_enabled,
+                @calendar_id,
+                @service_account_json,
+                @time_zone_id,
+                @default_duration_minutes,
+                @max_attempts,
+                @retry_base_seconds,
+                @retry_max_seconds,
+                @event_title_template,
+                @event_description_template,
+                @updated_at_utc
+            )
+            ON CONFLICT(tenant_id) DO UPDATE SET
+                is_enabled = excluded.is_enabled,
+                calendar_id = excluded.calendar_id,
+                service_account_json = excluded.service_account_json,
+                time_zone_id = excluded.time_zone_id,
+                default_duration_minutes = excluded.default_duration_minutes,
+                max_attempts = excluded.max_attempts,
+                retry_base_seconds = excluded.retry_base_seconds,
+                retry_max_seconds = excluded.retry_max_seconds,
+                event_title_template = excluded.event_title_template,
+                event_description_template = excluded.event_description_template,
+                updated_at_utc = excluded.updated_at_utc;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@is_enabled", googleCalendar.IsEnabled ? 1 : 0);
+            command.Parameters.AddWithValue("@calendar_id", googleCalendar.CalendarId);
+            command.Parameters.AddWithValue("@service_account_json", googleCalendar.ServiceAccountJson);
+            command.Parameters.AddWithValue("@time_zone_id", googleCalendar.TimeZoneId);
+            command.Parameters.AddWithValue("@default_duration_minutes", googleCalendar.DefaultDurationMinutes);
+            command.Parameters.AddWithValue("@max_attempts", googleCalendar.MaxAttempts);
+            command.Parameters.AddWithValue("@retry_base_seconds", googleCalendar.RetryBaseSeconds);
+            command.Parameters.AddWithValue("@retry_max_seconds", googleCalendar.RetryMaxSeconds);
+            command.Parameters.AddWithValue("@event_title_template", googleCalendar.EventTitleTemplate);
+            command.Parameters.AddWithValue("@event_description_template", googleCalendar.EventDescriptionTemplate);
             command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
             await command.ExecuteNonQueryAsync();
         }
@@ -2234,7 +2386,18 @@ CREATE TABLE IF NOT EXISTS shared_settings (
             ClosingText = "Atendimento encerrado. Envie MENU para iniciar novamente.",
             FallbackText = "Nao entendi. Escolha uma opcao do menu.",
             MessagePoolingSeconds = 15,
-            TelegramPollingTimeoutSeconds = 30
+            TelegramPollingTimeoutSeconds = 30,
+            GoogleCalendarEnabled = false,
+            GoogleCalendarId = string.Empty,
+            GoogleCalendarServiceAccountJson = string.Empty,
+            HasGoogleCalendarServiceAccountJson = false,
+            GoogleCalendarTimeZoneId = "America/Sao_Paulo",
+            GoogleCalendarDefaultDurationMinutes = 60,
+            GoogleCalendarMaxAttempts = 8,
+            GoogleCalendarRetryBaseSeconds = 10,
+            GoogleCalendarRetryMaxSeconds = 600,
+            GoogleCalendarEventTitleTemplate = "Agendamento #{job_id} - {category}",
+            GoogleCalendarEventDescriptionTemplate = "Cliente: {client_name}\nTelefone: {client_phone}\nCategoria: {category}\nDescricao: {description}\nStatus: {status}\nEndereco: {address}\nTenant: {tenant_id}\nJobId: {job_id}"
         };
     }
 
@@ -2271,6 +2434,18 @@ CREATE TABLE IF NOT EXISTS shared_settings (
 
     private static int ClampTelegramPollingSeconds(int value)
         => Math.Clamp(value, 5, 50);
+
+    private static int ClampGoogleCalendarDuration(int value)
+        => Math.Clamp(value, 15, 720);
+
+    private static int ClampGoogleCalendarMaxAttempts(int value)
+        => Math.Clamp(value, 1, 30);
+
+    private static int ClampGoogleCalendarRetryBaseSeconds(int value)
+        => Math.Clamp(value, 5, 600);
+
+    private static int ClampGoogleCalendarRetryMaxSeconds(int value)
+        => Math.Clamp(value, 10, 86400);
 
     private static async Task<GeocodeResult> TryGeocodeAddressAsync(string address)
     {
@@ -2902,6 +3077,29 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         return scalar is not null && scalar is not DBNull;
     }
 
+    private static async Task EnsureColumnAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        string columnDefinitionSql)
+    {
+        if (!await TableExistsAsync(connection, tableName))
+        {
+            return;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinitionSql};";
+        try
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+        catch (SqliteException ex) when (ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+        {
+            // Column already exists.
+        }
+    }
+
     private static async Task<int> QueryIntAsync(SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)
     {
         await using var command = connection.CreateCommand();
@@ -3080,6 +3278,20 @@ CREATE TABLE IF NOT EXISTS shared_settings (
         public bool IsActive { get; set; }
         public int PollingTimeoutSeconds { get; set; }
         public long LastUpdateId { get; set; }
+    }
+
+    private sealed class GoogleCalendarConfigStorage
+    {
+        public bool IsEnabled { get; set; }
+        public string CalendarId { get; set; } = string.Empty;
+        public string ServiceAccountJson { get; set; } = string.Empty;
+        public string TimeZoneId { get; set; } = "America/Sao_Paulo";
+        public int DefaultDurationMinutes { get; set; } = 60;
+        public int MaxAttempts { get; set; } = 8;
+        public int RetryBaseSeconds { get; set; } = 10;
+        public int RetryMaxSeconds { get; set; } = 600;
+        public string EventTitleTemplate { get; set; } = string.Empty;
+        public string EventDescriptionTemplate { get; set; } = string.Empty;
     }
 
     private sealed class DashboardMapRow

@@ -13,10 +13,12 @@ public sealed class JobWorkflowService
 {
     private static readonly Regex CepRegex = new(@"\b\d{5}-?\d{3}\b", RegexOptions.Compiled);
     private readonly TelegramMessageSender _sender;
+    private readonly CalendarSyncQueueService? _calendarQueue;
 
-    public JobWorkflowService(TelegramMessageSender sender)
+    public JobWorkflowService(TelegramMessageSender sender, CalendarSyncQueueService? calendarQueue = null)
     {
         _sender = sender;
+        _calendarQueue = calendarQueue;
     }
 
     public async Task<IReadOnlyList<ServiceCategoryEntity>> GetCategoriesAsync(BotDbContext db, string tenantId, CancellationToken cancellationToken)
@@ -126,6 +128,11 @@ public sealed class JobWorkflowService
         }
 
         await context.Db.SaveChangesAsync(cancellationToken);
+
+        if (_calendarQueue is not null)
+        {
+            await _calendarQueue.EnqueueUpsertAsync(context.Db, job, "job_confirmed", cancellationToken);
+        }
 
         await _sender.SendTextAsync(
             context.Db,

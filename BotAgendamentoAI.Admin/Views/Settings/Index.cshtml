@@ -122,6 +122,77 @@
         <label asp-for="TelegramIsActive" class="form-check-label">Ativar integracao Telegram para este tenant</label>
     </div>
 
+    <hr />
+    <h2 class="h5">Google Calendar</h2>
+    <p class="text-muted">Integra com Google Calendar via Service Account para criar/atualizar/cancelar eventos dos agendamentos.</p>
+
+    <div class="form-check mb-3">
+        <input asp-for="GoogleCalendarEnabled" class="form-check-input" />
+        <label asp-for="GoogleCalendarEnabled" class="form-check-label">Ativar sincronizacao com Google Calendar para este tenant</label>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Calendar ID</label>
+        <input asp-for="GoogleCalendarId" class="form-control" placeholder="Ex.: primary ou calendario@group.calendar.google.com" />
+    </div>
+
+    @if (Model.HasGoogleCalendarServiceAccountJson)
+    {
+        <div class="alert alert-success py-2">
+            Credencial Service Account ja configurada.
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning py-2">
+            Credencial Service Account ainda nao configurada.
+        </div>
+    }
+
+    <div class="mb-3">
+        <label class="form-label">Service Account JSON</label>
+        <textarea asp-for="GoogleCalendarServiceAccountJson" class="form-control" rows="6" placeholder="{ ... }"></textarea>
+        <small class="text-muted">Se deixar em branco, o valor atual (se existir) sera mantido.</small>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-sm-6">
+            <label class="form-label">Timezone do calendario</label>
+            <input asp-for="GoogleCalendarTimeZoneId" class="form-control" placeholder="America/Sao_Paulo" />
+        </div>
+        <div class="col-sm-6">
+            <label class="form-label">Duracao padrao (minutos)</label>
+            <input asp-for="GoogleCalendarDefaultDurationMinutes" type="number" class="form-control" min="15" max="720" />
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-sm-4">
+            <label class="form-label">Tentativas maximas</label>
+            <input asp-for="GoogleCalendarMaxAttempts" type="number" class="form-control" min="1" max="30" />
+        </div>
+        <div class="col-sm-4">
+            <label class="form-label">Retry base (segundos)</label>
+            <input asp-for="GoogleCalendarRetryBaseSeconds" type="number" class="form-control" min="5" max="600" />
+        </div>
+        <div class="col-sm-4">
+            <label class="form-label">Retry maximo (segundos)</label>
+            <input asp-for="GoogleCalendarRetryMaxSeconds" type="number" class="form-control" min="10" max="86400" />
+        </div>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Template do titulo do evento</label>
+        <input asp-for="GoogleCalendarEventTitleTemplate" class="form-control" />
+        <small class="text-muted">Placeholders: {job_id}, {category}, {status}, {tenant_id}</small>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Template da descricao do evento</label>
+        <textarea asp-for="GoogleCalendarEventDescriptionTemplate" class="form-control" rows="5"></textarea>
+        <small class="text-muted">Placeholders: {job_id}, {category}, {description}, {status}, {client_name}, {client_phone}, {provider_name}, {address}, {scheduled_at_local}, {tenant_id}</small>
+    </div>
+
     <div>
         <button type="submit" class="btn btn-primary">Salvar</button>
     </div>

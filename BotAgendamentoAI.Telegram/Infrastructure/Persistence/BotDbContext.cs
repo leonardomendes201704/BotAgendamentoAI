@@ -24,6 +24,9 @@ public sealed class BotDbContext : DbContext
     public DbSet<ServiceCategoryEntity> ServiceCategories => Set<ServiceCategoryEntity>();
     public DbSet<SharedSetting> SharedSettings => Set<SharedSetting>();
     public DbSet<TenantBotConfig> TenantBotConfigs => Set<TenantBotConfig>();
+    public DbSet<TenantGoogleCalendarConfig> TenantGoogleCalendarConfigs => Set<TenantGoogleCalendarConfig>();
+    public DbSet<CalendarSyncQueueItem> CalendarSyncQueue => Set<CalendarSyncQueueItem>();
+    public DbSet<JobCalendarLink> JobCalendarLinks => Set<JobCalendarLink>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -210,6 +213,51 @@ public sealed class BotDbContext : DbContext
             entity.Property(x => x.TenantId).HasColumnName("tenant_id");
             entity.Property(x => x.MenuJson).HasColumnName("menu_json");
             entity.Property(x => x.MessagesJson).HasColumnName("messages_json");
+            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<TenantGoogleCalendarConfig>(entity =>
+        {
+            entity.ToTable("tenant_google_calendar_config", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.HasKey(x => x.TenantId);
+            entity.Property(x => x.TenantId).HasColumnName("tenant_id");
+            entity.Property(x => x.IsEnabled).HasColumnName("is_enabled");
+            entity.Property(x => x.CalendarId).HasColumnName("calendar_id");
+            entity.Property(x => x.ServiceAccountJson).HasColumnName("service_account_json");
+            entity.Property(x => x.TimeZoneId).HasColumnName("time_zone_id");
+            entity.Property(x => x.DefaultDurationMinutes).HasColumnName("default_duration_minutes");
+            entity.Property(x => x.MaxAttempts).HasColumnName("max_attempts");
+            entity.Property(x => x.RetryBaseSeconds).HasColumnName("retry_base_seconds");
+            entity.Property(x => x.RetryMaxSeconds).HasColumnName("retry_max_seconds");
+            entity.Property(x => x.EventTitleTemplate).HasColumnName("event_title_template");
+            entity.Property(x => x.EventDescriptionTemplate).HasColumnName("event_description_template");
+            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<CalendarSyncQueueItem>(entity =>
+        {
+            entity.ToTable("calendar_sync_queue", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).HasColumnName("id");
+            entity.Property(x => x.TenantId).HasColumnName("tenant_id");
+            entity.Property(x => x.JobId).HasColumnName("job_id");
+            entity.Property(x => x.Action).HasColumnName("action");
+            entity.Property(x => x.Status).HasColumnName("status");
+            entity.Property(x => x.Attempts).HasColumnName("attempts");
+            entity.Property(x => x.AvailableAtUtc).HasColumnName("available_at_utc");
+            entity.Property(x => x.LockedAtUtc).HasColumnName("locked_at_utc");
+            entity.Property(x => x.LastError).HasColumnName("last_error");
+            entity.Property(x => x.CreatedAtUtc).HasColumnName("created_at_utc");
+            entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<JobCalendarLink>(entity =>
+        {
+            entity.ToTable("job_calendar_links", tableBuilder => tableBuilder.ExcludeFromMigrations());
+            entity.HasKey(x => x.JobId);
+            entity.Property(x => x.JobId).HasColumnName("job_id");
+            entity.Property(x => x.TenantId).HasColumnName("tenant_id");
+            entity.Property(x => x.CalendarEventId).HasColumnName("calendar_event_id");
             entity.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc");
         });
 

@@ -157,6 +157,17 @@ public sealed class BotConfigViewModel
     public bool TelegramIsActive { get; set; }
     public int TelegramPollingTimeoutSeconds { get; set; } = 30;
     public long TelegramLastUpdateId { get; set; }
+    public bool GoogleCalendarEnabled { get; set; }
+    public string GoogleCalendarId { get; set; } = string.Empty;
+    public string GoogleCalendarServiceAccountJson { get; set; } = string.Empty;
+    public bool HasGoogleCalendarServiceAccountJson { get; set; }
+    public string GoogleCalendarTimeZoneId { get; set; } = "America/Sao_Paulo";
+    public int GoogleCalendarDefaultDurationMinutes { get; set; } = 60;
+    public int GoogleCalendarMaxAttempts { get; set; } = 8;
+    public int GoogleCalendarRetryBaseSeconds { get; set; } = 10;
+    public int GoogleCalendarRetryMaxSeconds { get; set; } = 600;
+    public string GoogleCalendarEventTitleTemplate { get; set; } = string.Empty;
+    public string GoogleCalendarEventDescriptionTemplate { get; set; } = string.Empty;
     public IReadOnlyList<TelegramUserOption> TelegramUsers { get; set; } = Array.Empty<TelegramUserOption>();
     public IReadOnlyList<string> Tenants { get; set; } = Array.Empty<string>();
 }

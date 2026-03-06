@@ -15,11 +15,16 @@ public sealed class ProviderFlowHandler
 {
     private readonly TelegramMessageSender _sender;
     private readonly JobWorkflowService _jobWorkflow;
+    private readonly CalendarSyncQueueService? _calendarQueue;
 
-    public ProviderFlowHandler(TelegramMessageSender sender, JobWorkflowService jobWorkflow)
+    public ProviderFlowHandler(
+        TelegramMessageSender sender,
+        JobWorkflowService jobWorkflow,
+        CalendarSyncQueueService? calendarQueue = null)
     {
         _sender = sender;
         _jobWorkflow = jobWorkflow;
+        _calendarQueue = calendarQueue;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -335,6 +340,11 @@ public sealed class ProviderFlowHandler
             context.Session.UpdatedAt = DateTimeOffset.UtcNow;
             await context.Db.SaveChangesAsync(cancellationToken);
 
+            if (_calendarQueue is not null)
+            {
+                await _calendarQueue.EnqueueUpsertAsync(context.Db, job, "provider_accepted", cancellationToken);
+            }
+
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
                 $"Voce aceitou o pedido #{job.Id}.", KeyboardFactory.ProviderTimeline(job.Id), job.Id, cancellationToken);
@@ -445,6 +455,11 @@ public sealed class ProviderFlowHandler
             job.UpdatedAt = DateTimeOffset.UtcNow;
             await context.Db.SaveChangesAsync(cancellationToken);
 
+            if (_calendarQueue is not null)
+            {
+                await _calendarQueue.EnqueueUpsertAsync(context.Db, job, $"provider_status_{step}", cancellationToken);
+            }
+
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
                 $"Status atualizado: {job.Status}", KeyboardFactory.ProviderTimeline(job.Id), job.Id, cancellationToken);
@@ -492,6 +507,11 @@ public sealed class ProviderFlowHandler
             context.Session.DraftJson = "{}";
             context.Session.UpdatedAt = DateTimeOffset.UtcNow;
             await context.Db.SaveChangesAsync(cancellationToken);
+
+            if (_calendarQueue is not null)
+            {
+                await _calendarQueue.EnqueueUpsertAsync(context.Db, job, "provider_finished", cancellationToken);
+            }
 
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,

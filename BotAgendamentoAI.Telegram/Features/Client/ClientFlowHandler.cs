@@ -28,19 +28,22 @@ public sealed class ClientFlowHandler
     private readonly IPhotoValidator _photoValidator;
     private readonly BotExceptionLogService _exceptionLog;
     private readonly ILogger<ClientFlowHandler> _logger;
+    private readonly CalendarSyncQueueService? _calendarQueue;
 
     public ClientFlowHandler(
         TelegramMessageSender sender,
         JobWorkflowService jobWorkflow,
         IPhotoValidator photoValidator,
         BotExceptionLogService exceptionLog,
-        ILogger<ClientFlowHandler> logger)
+        ILogger<ClientFlowHandler> logger,
+        CalendarSyncQueueService? calendarQueue = null)
     {
         _sender = sender;
         _jobWorkflow = jobWorkflow;
         _photoValidator = photoValidator;
         _exceptionLog = exceptionLog;
         _logger = logger;
+        _calendarQueue = calendarQueue;
     }
 
     public async Task HandleTextAsync(BotExecutionContext context, Message message, CancellationToken cancellationToken)
@@ -1791,6 +1794,11 @@ public sealed class ClientFlowHandler
 
         await context.Db.SaveChangesAsync(cancellationToken);
 
+        if (_calendarQueue is not null)
+        {
+            await _calendarQueue.EnqueueCancelAsync(context.Db, job, "client_cancelled", cancellationToken);
+        }
+
         await _sender.SendTextAsync(
             context.Db,
             context.Bot,
@@ -1932,6 +1940,11 @@ public sealed class ClientFlowHandler
             context.Session.State = BotStates.C_TRACKING;
             context.Session.UpdatedAt = DateTimeOffset.UtcNow;
             await context.Db.SaveChangesAsync(cancellationToken);
+
+            if (_calendarQueue is not null)
+            {
+                await _calendarQueue.EnqueueUpsertAsync(context.Db, job, "client_rescheduled", cancellationToken);
+            }
 
             await _sender.SendTextAsync(
                 context.Db,
