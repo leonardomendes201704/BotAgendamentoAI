@@ -95,6 +95,35 @@
     .handoff-status-card {
         border: 1px solid #dce5eb;
     }
+
+    .wizard-step {
+        display: none;
+    }
+
+    .wizard-step.active {
+        display: block;
+    }
+
+    .wizard-progress-badge {
+        min-width: 2rem;
+    }
+
+    .wizard-summary {
+        white-space: pre-wrap;
+        font-size: 0.95rem;
+        color: #1f2a33;
+        background: #f8fbfd;
+        border: 1px solid #dce5eb;
+        border-radius: 12px;
+        padding: 1rem;
+    }
+
+    .wizard-muted-box {
+        border: 1px dashed #c5d1db;
+        border-radius: 12px;
+        padding: 0.9rem 1rem;
+        background: #fbfdff;
+    }
 </style>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -117,6 +146,7 @@
                 </div>
             </div>
             <div class="d-flex gap-2">
+                <button id="orderAssistBtn" type="button" class="btn btn-sm btn-outline-primary">Abrir pedido</button>
                 <button id="handoffOpenBtn" type="button" class="btn btn-sm btn-outline-success">Iniciar atendimento</button>
                 <button id="handoffCloseBtn" type="button" class="btn btn-sm btn-outline-danger">Encerrar atendimento</button>
             </div>
@@ -127,6 +157,9 @@
         </div>
 
         <div class="mt-3">
+            <div class="small text-muted mb-2">
+                Pedido assistido: o atendente monta o pedido aqui e o cliente recebe no Telegram somente a confirmacao final.
+            </div>
             <label class="form-label" for="humanMessageInput">Mensagem do atendente</label>
             <textarea id="humanMessageInput" class="form-control" rows="3" maxlength="1200" placeholder="Digite a mensagem para o cliente ou prestador..."></textarea>
             <div class="d-flex justify-content-between align-items-center mt-2">
@@ -185,6 +218,170 @@
     </div>
 </div>
 
+<div class="modal fade" id="assistOrderModal" tabindex="-1" aria-labelledby="assistOrderModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h2 id="assistOrderModalLabel" class="h5 mb-1">Abrir pedido assistido</h2>
+                    <div class="text-muted small">O cliente recebe no Telegram o resumo final para confirmar, editar ou cancelar.</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap gap-2 mb-3" id="orderWizardProgress">
+                    <span class="badge text-bg-primary wizard-progress-badge" data-step-badge="0">1</span>
+                    <span class="badge text-bg-secondary wizard-progress-badge" data-step-badge="1">2</span>
+                    <span class="badge text-bg-secondary wizard-progress-badge" data-step-badge="2">3</span>
+                    <span class="badge text-bg-secondary wizard-progress-badge" data-step-badge="3">4</span>
+                    <span class="badge text-bg-secondary wizard-progress-badge" data-step-badge="4">5</span>
+                    <span class="badge text-bg-secondary wizard-progress-badge" data-step-badge="5">6</span>
+                </div>
+
+                <div id="orderWizardAlert" class="alert alert-danger d-none"></div>
+
+                <div class="wizard-step active" data-order-step="0">
+                    <h3 class="h6">1. Servico</h3>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label" for="orderCategory">Categoria</label>
+                            <select id="orderCategory" class="form-select"></select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="orderDescription">Descricao do problema</label>
+                            <textarea id="orderDescription" class="form-control" rows="4" maxlength="2000" placeholder="Descreva o que precisa ser resolvido."></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="wizard-step" data-order-step="1">
+                    <h3 class="h6">2. Endereco</h3>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label" for="orderCep">CEP</label>
+                            <div class="input-group">
+                                <input id="orderCep" class="form-control" maxlength="9" placeholder="00000-000" />
+                                <button id="orderResolveCepBtn" type="button" class="btn btn-outline-secondary">Resolver CEP</button>
+                            </div>
+                            <div id="orderCepHelp" class="form-text">Os dados do endereco sao resolvidos pelo CEP; informe apenas numero e complemento.</div>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label" for="orderStreet">Logradouro</label>
+                            <input id="orderStreet" class="form-control" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" for="orderNumber">Numero</label>
+                            <input id="orderNumber" class="form-control" maxlength="20" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="orderComplement">Complemento</label>
+                            <input id="orderComplement" class="form-control" maxlength="80" placeholder="Opcional" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="orderNeighborhood">Bairro</label>
+                            <input id="orderNeighborhood" class="form-control" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" for="orderCity">Cidade</label>
+                            <input id="orderCity" class="form-control" />
+                        </div>
+                        <div class="col-md-1">
+                            <label class="form-label" for="orderState">UF</label>
+                            <input id="orderState" class="form-control text-uppercase" maxlength="2" />
+                        </div>
+                        <div class="col-12">
+                            <div class="wizard-muted-box">
+                                <div class="small text-muted mb-1">Previa do endereco</div>
+                                <div id="orderAddressPreview" class="fw-semibold">Resolva o CEP para montar o endereco.</div>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input id="orderAddressConfirmed" class="form-check-input" type="checkbox" />
+                                <label class="form-check-label" for="orderAddressConfirmed">Confirmo que o endereco esta correto.</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="wizard-step" data-order-step="2">
+                    <h3 class="h6">3. Quando</h3>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="orderScheduleMode" id="orderScheduleUrgent" value="URG">
+                                <label class="form-check-label" for="orderScheduleUrgent">Urgente</label>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="radio" name="orderScheduleMode" id="orderScheduleToday" value="TOD" checked>
+                                <label class="form-check-label" for="orderScheduleToday">Hoje no proximo horario</label>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="radio" name="orderScheduleMode" id="orderScheduleCalendar" value="CAL">
+                                <label class="form-check-label" for="orderScheduleCalendar">Agendar data e hora</label>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="orderScheduledAt">Data/hora</label>
+                            <input id="orderScheduledAt" type="datetime-local" class="form-control" disabled />
+                            <div class="form-text">Obrigatorio apenas quando a opcao "Agendar data e hora" estiver selecionada.</div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="wizard-muted-box">
+                                <div class="small text-muted mb-1">Observacao</div>
+                                <div>Antes de confirmar, o cliente ainda pode tocar em <strong>Editar</strong> no Telegram e ajustar o horario.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="wizard-step" data-order-step="3">
+                    <h3 class="h6">4. Preferencia</h3>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="orderPreference">Regra de distribuicao</label>
+                            <select id="orderPreference" class="form-select"></select>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="wizard-muted-box">
+                                <div class="small text-muted mb-1">Fotos</div>
+                                <div>Neste modo assistido, as fotos nao sao enviadas pelo Admin. Se precisar, o cliente pode tocar em <strong>Editar</strong> no Telegram e anexar as imagens antes de confirmar.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="wizard-step" data-order-step="4">
+                    <h3 class="h6">5. Contato</h3>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="orderContactName">Nome do contato</label>
+                            <input id="orderContactName" class="form-control" maxlength="120" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="orderContactPhone">Telefone do contato</label>
+                            <input id="orderContactPhone" class="form-control" maxlength="30" />
+                        </div>
+                    </div>
+                </div>
+
+                <div class="wizard-step" data-order-step="5">
+                    <h3 class="h6">6. Revisao</h3>
+                    <div class="wizard-summary" id="orderSummaryBox"></div>
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <small id="orderWizardStatus" class="text-muted"></small>
+                <div class="d-flex gap-2">
+                    <button id="orderWizardPrevBtn" type="button" class="btn btn-outline-secondary">Voltar</button>
+                    <button id="orderWizardNextBtn" type="button" class="btn btn-primary">Avancar</button>
+                    <button id="orderWizardSubmitBtn" type="button" class="btn btn-success d-none">Enviar para confirmacao do cliente</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
     <script>
         (() => {
@@ -195,6 +392,9 @@
             const handoffOpenEndpoint = '@Url.Action("HandoffOpen", "Conversations")';
             const handoffCloseEndpoint = '@Url.Action("HandoffClose", "Conversations")';
             const sendHumanEndpoint = '@Url.Action("SendHumanMessage", "Conversations")';
+            const orderWizardBootstrapEndpoint = '@Url.Action("OrderWizardBootstrap", "Conversations")';
+            const orderResolveCepEndpoint = '@Url.Action("ResolveCep", "Conversations")';
+            const createAssistedOrderEndpoint = '@Url.Action("CreateAssistedOrder", "Conversations")';
             const initialMessages = @Html.Raw(JsonSerializer.Serialize(
                 visibleMessages.Select(message => new
                 {
@@ -233,7 +433,36 @@
             const humanMessageInput = document.getElementById('humanMessageInput');
             const humanSendBtn = document.getElementById('humanSendBtn');
             const humanSendStatus = document.getElementById('humanSendStatus');
+            const orderAssistBtn = document.getElementById('orderAssistBtn');
+            const assistOrderModalElement = document.getElementById('assistOrderModal');
+            const orderWizardAlert = document.getElementById('orderWizardAlert');
+            const orderWizardStatus = document.getElementById('orderWizardStatus');
+            const orderWizardPrevBtn = document.getElementById('orderWizardPrevBtn');
+            const orderWizardNextBtn = document.getElementById('orderWizardNextBtn');
+            const orderWizardSubmitBtn = document.getElementById('orderWizardSubmitBtn');
+            const orderWizardProgressBadges = Array.from(document.querySelectorAll('[data-step-badge]'));
+            const orderWizardSteps = Array.from(document.querySelectorAll('[data-order-step]'));
+            const orderCategory = document.getElementById('orderCategory');
+            const orderDescription = document.getElementById('orderDescription');
+            const orderCep = document.getElementById('orderCep');
+            const orderResolveCepBtn = document.getElementById('orderResolveCepBtn');
+            const orderStreet = document.getElementById('orderStreet');
+            const orderNumber = document.getElementById('orderNumber');
+            const orderComplement = document.getElementById('orderComplement');
+            const orderNeighborhood = document.getElementById('orderNeighborhood');
+            const orderCity = document.getElementById('orderCity');
+            const orderState = document.getElementById('orderState');
+            const orderAddressPreview = document.getElementById('orderAddressPreview');
+            const orderAddressConfirmed = document.getElementById('orderAddressConfirmed');
+            const orderScheduledAt = document.getElementById('orderScheduledAt');
+            const orderPreference = document.getElementById('orderPreference');
+            const orderContactName = document.getElementById('orderContactName');
+            const orderContactPhone = document.getElementById('orderContactPhone');
+            const orderSummaryBox = document.getElementById('orderSummaryBox');
             const storageKey = `conversation-realtime:${tenantId}:${phone}`;
+            const assistOrderModal = assistOrderModalElement && window.bootstrap
+                ? new bootstrap.Modal(assistOrderModalElement)
+                : null;
 
             let realtimeConnection = null;
             let realtimeEnabled = true;
@@ -241,6 +470,9 @@
             let lastSignature = '';
             let lastHandoffSignature = '';
             let currentHandoff = normalizeHandoff(initialHandoff);
+            let orderWizardBootstrap = null;
+            let orderWizardStepIndex = 0;
+            let orderWizardBusy = false;
 
             try {
                 const storedValue = window.localStorage.getItem(storageKey);
@@ -410,6 +642,12 @@
                 if (humanSendBtn) {
                     humanSendBtn.disabled = !status.isTelegramThread || !status.isOpen;
                 }
+
+                syncOrderAssistButtonState(
+                    status.isTelegramThread,
+                    status.isTelegramThread
+                        ? 'Abrir pedido assistido para este cliente'
+                        : 'Pedido assistido disponivel apenas para conversas Telegram');
             }
 
             async function postForm(endpoint, payload) {
@@ -428,6 +666,576 @@
                 }
 
                 return { ok: response.ok, payload: parsed, status: response.status };
+            }
+
+            async function fetchJson(endpoint, query) {
+                const queryString = query instanceof URLSearchParams ? query.toString() : new URLSearchParams(query ?? {}).toString();
+                const response = await fetch(queryString ? `${endpoint}?${queryString}` : endpoint, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    cache: 'no-store'
+                });
+
+                let parsed = null;
+                try {
+                    parsed = await response.json();
+                } catch {
+                    parsed = null;
+                }
+
+                return { ok: response.ok, payload: parsed, status: response.status };
+            }
+
+            async function postJson(endpoint, payload) {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json; charset=UTF-8',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(payload ?? {})
+                });
+
+                let parsed = null;
+                try {
+                    parsed = await response.json();
+                } catch {
+                    parsed = null;
+                }
+
+                return { ok: response.ok, payload: parsed, status: response.status };
+            }
+
+            function setOrderWizardAlert(text, isError) {
+                if (!orderWizardAlert) {
+                    return;
+                }
+
+                orderWizardAlert.textContent = text ?? '';
+                orderWizardAlert.className = isError
+                    ? 'alert alert-danger'
+                    : 'alert alert-info';
+                orderWizardAlert.classList.toggle('d-none', !text);
+            }
+
+            function setOrderWizardStatus(text, isError) {
+                if (!orderWizardStatus) {
+                    return;
+                }
+
+                orderWizardStatus.textContent = text ?? '';
+                orderWizardStatus.className = isError ? 'text-danger' : 'text-muted';
+            }
+
+            function formatPhonePreview(value) {
+                return (value ?? '').toString().trim();
+            }
+
+            function buildOrderAddressPreview() {
+                const safeCep = (orderCep?.value ?? '').trim();
+                const parts = [];
+                const firstLine = [orderStreet?.value, orderNumber?.value, orderComplement?.value]
+                    .map(value => (value ?? '').toString().trim())
+                    .filter(value => value);
+
+                if (firstLine.length > 0) {
+                    parts.push(firstLine.join(', '));
+                }
+
+                const neighborhood = (orderNeighborhood?.value ?? '').trim();
+                if (neighborhood) {
+                    parts.push(neighborhood);
+                }
+
+                const city = (orderCity?.value ?? '').trim();
+                const state = (orderState?.value ?? '').trim().toUpperCase();
+                const cityUf = [city, state].filter(value => value).join(' - ');
+                if (cityUf) {
+                    parts.push(cityUf);
+                }
+
+                if (safeCep) {
+                    parts.push(`CEP ${safeCep}`);
+                }
+
+                return parts.length > 0 ? parts.join(', ') : 'Resolva o CEP para montar o endereco.';
+            }
+
+            function renderOrderAddressPreview() {
+                if (orderAddressPreview) {
+                    orderAddressPreview.textContent = buildOrderAddressPreview();
+                }
+            }
+
+            function getSelectedScheduleMode() {
+                return document.querySelector('input[name="orderScheduleMode"]:checked')?.value ?? 'TOD';
+            }
+
+            function normalizeCepInput() {
+                if (!orderCep) {
+                    return '';
+                }
+
+                const digits = (orderCep.value ?? '').replace(/\D/g, '').slice(0, 8);
+                orderCep.value = digits.length > 5
+                    ? `${digits.slice(0, 5)}-${digits.slice(5)}`
+                    : digits;
+                return digits;
+            }
+
+            function updateScheduleControls() {
+                if (!orderScheduledAt) {
+                    return;
+                }
+
+                const scheduleMode = getSelectedScheduleMode();
+                orderScheduledAt.disabled = scheduleMode !== 'CAL';
+            }
+
+            function populateSelectOptions(selectElement, items, valueSelector, labelSelector, selectedValue) {
+                if (!selectElement) {
+                    return;
+                }
+
+                const safeItems = Array.isArray(items) ? items : [];
+                selectElement.innerHTML = safeItems.map(item => {
+                    const value = valueSelector(item);
+                    const label = labelSelector(item);
+                    const selected = value === selectedValue ? ' selected' : '';
+                    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(label)}</option>`;
+                }).join('');
+            }
+
+            function resetOrderWizardForm() {
+                orderWizardStepIndex = 0;
+                setOrderWizardAlert('', false);
+                setOrderWizardStatus('', false);
+
+                if (orderDescription) {
+                    orderDescription.value = '';
+                }
+
+                if (orderCep) {
+                    orderCep.value = '';
+                }
+
+                if (orderStreet) {
+                    orderStreet.value = '';
+                }
+
+                if (orderNumber) {
+                    orderNumber.value = '';
+                }
+
+                if (orderComplement) {
+                    orderComplement.value = '';
+                }
+
+                if (orderNeighborhood) {
+                    orderNeighborhood.value = '';
+                }
+
+                if (orderCity) {
+                    orderCity.value = '';
+                }
+
+                if (orderState) {
+                    orderState.value = '';
+                }
+
+                if (orderAddressConfirmed) {
+                    orderAddressConfirmed.checked = false;
+                }
+
+                if (orderScheduledAt) {
+                    orderScheduledAt.value = '';
+                }
+
+                const todayRadio = document.getElementById('orderScheduleToday');
+                if (todayRadio) {
+                    todayRadio.checked = true;
+                }
+
+                if (orderContactName) {
+                    orderContactName.value = '';
+                }
+
+                if (orderContactPhone) {
+                    orderContactPhone.value = '';
+                }
+
+                renderOrderAddressPreview();
+                updateScheduleControls();
+                renderOrderWizardStep();
+            }
+
+            function getOrderContextEligibilityError(context) {
+                if (!context?.isTelegramThread) {
+                    return 'Pedido assistido disponivel apenas para conversas Telegram.';
+                }
+
+                if (!context?.userExists) {
+                    return 'Usuario desta conversa ainda nao existe no cadastro do bot.';
+                }
+
+                if (!context?.isClientEligible) {
+                    return 'Esta conversa pertence a um prestador. Pedido assistido so pode ser aberto para clientes.';
+                }
+
+                if (!context?.isRegistrationComplete) {
+                    return 'O cliente ainda nao concluiu o cadastro obrigatorio. Finalize o cadastro antes de abrir um pedido assistido.';
+                }
+
+                return '';
+            }
+
+            function applyOrderBootstrap(payload) {
+                const context = payload?.context ?? {};
+                orderWizardBootstrap = {
+                    context,
+                    categories: Array.isArray(payload?.categories) ? payload.categories : [],
+                    preferences: Array.isArray(payload?.preferences) ? payload.preferences : []
+                };
+
+                populateSelectOptions(
+                    orderCategory,
+                    orderWizardBootstrap.categories,
+                    item => item?.name ?? '',
+                    item => item?.name ?? '',
+                    orderWizardBootstrap.categories[0]?.name ?? '');
+
+                populateSelectOptions(
+                    orderPreference,
+                    orderWizardBootstrap.preferences,
+                    item => item?.code ?? '',
+                    item => item?.label ?? '',
+                    'RAT');
+
+                if (orderContactName) {
+                    orderContactName.value = context.clientName ?? '';
+                }
+
+                if (orderContactPhone) {
+                    orderContactPhone.value = context.contactPhone ?? '';
+                }
+
+                if (orderCep) {
+                    orderCep.value = context.cep ?? '';
+                }
+
+                if (orderStreet) {
+                    orderStreet.value = context.street ?? '';
+                }
+
+                if (orderNumber) {
+                    orderNumber.value = context.number ?? '';
+                }
+
+                if (orderComplement) {
+                    orderComplement.value = context.complement ?? '';
+                }
+
+                if (orderNeighborhood) {
+                    orderNeighborhood.value = context.neighborhood ?? '';
+                }
+
+                if (orderCity) {
+                    orderCity.value = context.city ?? '';
+                }
+
+                if (orderState) {
+                    orderState.value = context.state ?? '';
+                }
+
+                renderOrderAddressPreview();
+            }
+
+            function renderOrderWizardStep() {
+                orderWizardSteps.forEach((step, index) => {
+                    step.classList.toggle('active', index === orderWizardStepIndex);
+                });
+
+                orderWizardProgressBadges.forEach((badge, index) => {
+                    badge.className = index <= orderWizardStepIndex
+                        ? 'badge text-bg-primary wizard-progress-badge'
+                        : 'badge text-bg-secondary wizard-progress-badge';
+                });
+
+                if (orderWizardPrevBtn) {
+                    orderWizardPrevBtn.disabled = orderWizardBusy || orderWizardStepIndex === 0;
+                }
+
+                if (orderWizardNextBtn) {
+                    orderWizardNextBtn.disabled = orderWizardBusy || orderWizardStepIndex >= orderWizardSteps.length - 1;
+                    orderWizardNextBtn.classList.toggle('d-none', orderWizardStepIndex >= orderWizardSteps.length - 1);
+                }
+
+                if (orderWizardSubmitBtn) {
+                    orderWizardSubmitBtn.disabled = orderWizardBusy;
+                    orderWizardSubmitBtn.classList.toggle('d-none', orderWizardStepIndex !== orderWizardSteps.length - 1);
+                }
+
+                if (orderWizardStepIndex === orderWizardSteps.length - 1) {
+                    renderOrderSummary();
+                }
+            }
+
+            function validateOrderWizardStep(stepIndex) {
+                switch (stepIndex) {
+                    case 0:
+                        if (!(orderCategory?.value ?? '').trim()) {
+                            setOrderWizardAlert('Selecione a categoria do servico.', true);
+                            return false;
+                        }
+
+                        if (!(orderDescription?.value ?? '').trim()) {
+                            setOrderWizardAlert('Informe a descricao do pedido.', true);
+                            return false;
+                        }
+
+                        break;
+
+                    case 1:
+                        normalizeCepInput();
+                        if ((orderCep?.value ?? '').replace(/\D/g, '').length !== 8
+                            || !(orderStreet?.value ?? '').trim()
+                            || !(orderNumber?.value ?? '').trim()
+                            || !(orderNeighborhood?.value ?? '').trim()
+                            || !(orderCity?.value ?? '').trim()
+                            || !(orderState?.value ?? '').trim()) {
+                            setOrderWizardAlert('Preencha o endereco completo e resolva um CEP valido.', true);
+                            return false;
+                        }
+
+                        if (!orderAddressConfirmed?.checked) {
+                            setOrderWizardAlert('Confirme os dados do endereco antes de continuar.', true);
+                            return false;
+                        }
+
+                        break;
+
+                    case 2:
+                        if (getSelectedScheduleMode() === 'CAL' && !(orderScheduledAt?.value ?? '').trim()) {
+                            setOrderWizardAlert('Informe a data e hora do agendamento.', true);
+                            return false;
+                        }
+
+                        break;
+
+                    case 3:
+                        if (!(orderPreference?.value ?? '').trim()) {
+                            setOrderWizardAlert('Selecione a preferencia de distribuicao.', true);
+                            return false;
+                        }
+
+                        break;
+
+                    case 4:
+                        if (!(orderContactName?.value ?? '').trim() || !(orderContactPhone?.value ?? '').trim()) {
+                            setOrderWizardAlert('Informe nome e telefone do contato.', true);
+                            return false;
+                        }
+
+                        break;
+                }
+
+                setOrderWizardAlert('', false);
+                return true;
+            }
+
+            function buildOrderSummaryText() {
+                const scheduleMode = getSelectedScheduleMode();
+                const whenText = scheduleMode === 'URG'
+                    ? 'Urgente'
+                    : scheduleMode === 'TOD'
+                        ? 'Hoje no proximo horario'
+                        : (() => {
+                            const raw = (orderScheduledAt?.value ?? '').trim();
+                            if (!raw) {
+                                return 'Agendar';
+                            }
+
+                            const parsed = new Date(raw);
+                            return Number.isNaN(parsed.getTime())
+                                ? raw
+                                : parsed.toLocaleString('pt-BR', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit'
+                                });
+                        })();
+
+                const preferenceLabel = orderPreference?.selectedOptions?.[0]?.textContent?.trim() ?? '';
+                return [
+                    `Categoria: ${(orderCategory?.value ?? '').trim()}`,
+                    `Descricao: ${(orderDescription?.value ?? '').trim()}`,
+                    `Contato: ${(orderContactName?.value ?? '').trim()}`,
+                    `Telefone contato: ${formatPhonePreview(orderContactPhone?.value)}`,
+                    `Endereco: ${buildOrderAddressPreview()}`,
+                    `Quando: ${whenText}`,
+                    `Preferencia: ${preferenceLabel}`
+                ].join('\n');
+            }
+
+            function renderOrderSummary() {
+                if (orderSummaryBox) {
+                    orderSummaryBox.textContent = buildOrderSummaryText();
+                }
+            }
+
+            function setOrderWizardBusyState(isBusy, statusText) {
+                orderWizardBusy = isBusy;
+                setOrderWizardStatus(statusText ?? '', false);
+
+                if (orderAssistBtn) {
+                    orderAssistBtn.disabled = isBusy;
+                }
+
+                if (orderResolveCepBtn) {
+                    orderResolveCepBtn.disabled = isBusy;
+                }
+
+                renderOrderWizardStep();
+            }
+
+            function syncOrderAssistButtonState(isTelegramThread, titleText) {
+                if (!orderAssistBtn) {
+                    return;
+                }
+
+                orderAssistBtn.disabled = !isTelegramThread || orderWizardBusy;
+                orderAssistBtn.title = titleText ?? '';
+            }
+
+            async function openAssistedOrderWizard() {
+                if (!assistOrderModal) {
+                    setHumanSendStatus('Bootstrap Modal indisponivel nesta tela.', true);
+                    return;
+                }
+
+                setOrderWizardBusyState(true, 'Carregando dados do cliente...');
+                resetOrderWizardForm();
+
+                const result = await fetchJson(orderWizardBootstrapEndpoint, {
+                    tenant: tenantId,
+                    phone
+                });
+
+                if (!result.ok) {
+                    setOrderWizardBusyState(false, '');
+                    setHumanSendStatus(result.payload?.error ?? `Falha HTTP ${result.status} ao carregar o pedido assistido.`, true);
+                    return;
+                }
+
+                applyOrderBootstrap(result.payload);
+                const eligibilityError = getOrderContextEligibilityError(orderWizardBootstrap?.context);
+                if (eligibilityError) {
+                    setOrderWizardBusyState(false, '');
+                    setHumanSendStatus(eligibilityError, true);
+                    return;
+                }
+
+                setOrderWizardBusyState(false, '');
+                assistOrderModal.show();
+            }
+
+            async function resolveCepForOrderWizard() {
+                const digits = normalizeCepInput();
+                if (digits.length !== 8) {
+                    setOrderWizardAlert('Informe um CEP valido com 8 digitos.', true);
+                    return;
+                }
+
+                setOrderWizardBusyState(true, 'Consultando CEP...');
+                const result = await fetchJson(orderResolveCepEndpoint, { cep: digits });
+                setOrderWizardBusyState(false, '');
+
+                if (!result.ok) {
+                    setOrderWizardAlert(result.payload?.error ?? `Falha HTTP ${result.status} ao consultar o CEP.`, true);
+                    return;
+                }
+
+                const payload = result.payload ?? {};
+                if (orderCep) {
+                    orderCep.value = payload.cep ?? orderCep.value;
+                }
+
+                if (orderStreet) {
+                    orderStreet.value = payload.street ?? '';
+                }
+
+                if (orderNeighborhood) {
+                    orderNeighborhood.value = payload.neighborhood ?? '';
+                }
+
+                if (orderCity) {
+                    orderCity.value = payload.city ?? '';
+                }
+
+                if (orderState) {
+                    orderState.value = (payload.state ?? '').toString().toUpperCase();
+                }
+
+                orderWizardBootstrap = orderWizardBootstrap ?? {};
+                orderWizardBootstrap.latitude = payload.latitude ?? null;
+                orderWizardBootstrap.longitude = payload.longitude ?? null;
+
+                renderOrderAddressPreview();
+                setOrderWizardAlert(payload.geocodeOk === false
+                    ? 'Endereco resolvido. O geocode nao retornou coordenadas agora, mas o pedido pode seguir mesmo assim.'
+                    : '', !payload.geocodeOk);
+            }
+
+            async function submitAssistedOrder() {
+                for (let stepIndex = 0; stepIndex < orderWizardSteps.length - 1; stepIndex += 1) {
+                    if (!validateOrderWizardStep(stepIndex)) {
+                        orderWizardStepIndex = stepIndex;
+                        renderOrderWizardStep();
+                        return;
+                    }
+                }
+
+                const payload = {
+                    tenantId,
+                    phone,
+                    category: (orderCategory?.value ?? '').trim(),
+                    description: (orderDescription?.value ?? '').trim(),
+                    cep: (orderCep?.value ?? '').trim(),
+                    street: (orderStreet?.value ?? '').trim(),
+                    number: (orderNumber?.value ?? '').trim(),
+                    complement: (orderComplement?.value ?? '').trim(),
+                    neighborhood: (orderNeighborhood?.value ?? '').trim(),
+                    city: (orderCity?.value ?? '').trim(),
+                    state: (orderState?.value ?? '').trim().toUpperCase(),
+                    latitude: orderWizardBootstrap?.latitude ?? orderWizardBootstrap?.context?.latitude ?? orderWizardBootstrap?.context?.Latitude ?? null,
+                    longitude: orderWizardBootstrap?.longitude ?? orderWizardBootstrap?.context?.longitude ?? orderWizardBootstrap?.context?.Longitude ?? null,
+                    scheduleMode: getSelectedScheduleMode(),
+                    scheduledAtLocal: (orderScheduledAt?.value ?? '').trim(),
+                    preferenceCode: (orderPreference?.value ?? '').trim(),
+                    contactName: (orderContactName?.value ?? '').trim(),
+                    contactPhone: (orderContactPhone?.value ?? '').trim()
+                };
+
+                setOrderWizardBusyState(true, 'Enviando confirmacao para o cliente...');
+                const result = await postJson(createAssistedOrderEndpoint, payload);
+                setOrderWizardBusyState(false, '');
+
+                if (!result.ok) {
+                    setOrderWizardAlert(result.payload?.error ?? `Falha HTTP ${result.status} ao enviar a confirmacao.`, true);
+                    const fallbackHandoff = normalizeHandoff(result.payload?.handoff);
+                    renderHandoff(fallbackHandoff);
+                    lastHandoffSignature = buildHandoffSignature(fallbackHandoff);
+                    return;
+                }
+
+                const updatedStatus = normalizeHandoff(result.payload?.handoff);
+                renderHandoff(updatedStatus);
+                lastHandoffSignature = buildHandoffSignature(updatedStatus);
+                assistOrderModal.hide();
+                setHumanSendStatus('Pedido assistido enviado para confirmacao do cliente.', false);
+                await refreshConversation('pedido assistido');
             }
 
             function updateRealtimeStatus(text, enabled) {
@@ -774,6 +1582,84 @@
                 });
             }
 
+            if (orderAssistBtn) {
+                orderAssistBtn.addEventListener('click', async () => {
+                    await openAssistedOrderWizard();
+                });
+            }
+
+            if (orderResolveCepBtn) {
+                orderResolveCepBtn.addEventListener('click', async () => {
+                    await resolveCepForOrderWizard();
+                });
+            }
+
+            if (orderWizardPrevBtn) {
+                orderWizardPrevBtn.addEventListener('click', () => {
+                    if (orderWizardStepIndex > 0) {
+                        orderWizardStepIndex -= 1;
+                        setOrderWizardAlert('', false);
+                        renderOrderWizardStep();
+                    }
+                });
+            }
+
+            if (orderWizardNextBtn) {
+                orderWizardNextBtn.addEventListener('click', () => {
+                    if (!validateOrderWizardStep(orderWizardStepIndex)) {
+                        return;
+                    }
+
+                    if (orderWizardStepIndex < orderWizardSteps.length - 1) {
+                        orderWizardStepIndex += 1;
+                        renderOrderWizardStep();
+                    }
+                });
+            }
+
+            if (orderWizardSubmitBtn) {
+                orderWizardSubmitBtn.addEventListener('click', async () => {
+                    await submitAssistedOrder();
+                });
+            }
+
+            document.querySelectorAll('input[name="orderScheduleMode"]').forEach(element => {
+                element.addEventListener('change', () => {
+                    updateScheduleControls();
+                    renderOrderSummary();
+                });
+            });
+
+            [orderCep, orderStreet, orderNumber, orderComplement, orderNeighborhood, orderCity, orderState].forEach(element => {
+                if (!element) {
+                    return;
+                }
+
+                element.addEventListener('input', () => {
+                    renderOrderAddressPreview();
+                });
+            });
+
+            [orderCategory, orderDescription, orderScheduledAt, orderPreference, orderContactName, orderContactPhone].forEach(element => {
+                if (!element) {
+                    return;
+                }
+
+                element.addEventListener('input', () => {
+                    renderOrderSummary();
+                });
+                element.addEventListener('change', () => {
+                    renderOrderSummary();
+                });
+            });
+
+            if (assistOrderModalElement) {
+                assistOrderModalElement.addEventListener('hidden.bs.modal', () => {
+                    setOrderWizardAlert('', false);
+                    setOrderWizardStatus('', false);
+                });
+            }
+
             if (realtimeToggleBtn) {
                 realtimeToggleBtn.addEventListener('click', async () => {
                     if (realtimeEnabled) {
@@ -789,6 +1675,7 @@
             lastHandoffSignature = buildHandoffSignature(initialHandoff);
             renderMessages(normalizedInitial, true);
             renderHandoff(initialHandoff);
+            resetOrderWizardForm();
             setHumanSendStatus('', false);
             updateUpdatedAt('carregado');
             updateToggleButton();

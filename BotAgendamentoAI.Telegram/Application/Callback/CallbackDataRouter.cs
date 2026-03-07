@@ -40,6 +40,10 @@ public static class CallbackDataRouter
     public static string ClientMenuRequest() => "M:C:HOME";
     public static string ProviderMenuRequest() => "M:P:HOME";
     public static string HumanHandoffRequest() => "S:ATD:REQ";
+    public static string ClientEndAttendanceRequest() => "S:END:ASK";
+    public static string ClientEndAttendanceConfirm() => "S:END:OK";
+    public static string ClientEndAttendanceKeep() => "S:END:KEEP";
     public static string Cancel() => "NAV:CANCEL";
     public static string Back() => "NAV:BACK";
+    public static string Close() => "NAV:CLOSE";
 }

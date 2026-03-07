@@ -72,6 +72,53 @@ public sealed class ConversationDetailsViewModel
     public IReadOnlyList<ConversationMessageItem> Messages { get; set; } = Array.Empty<ConversationMessageItem>();
 }
 
+public sealed class ConversationOrderClientContext
+{
+    public string TenantId { get; set; } = "A";
+    public string Phone { get; set; } = string.Empty;
+    public bool IsTelegramThread { get; set; }
+    public bool UserExists { get; set; }
+    public bool IsClientEligible { get; set; }
+    public bool IsRegistrationComplete { get; set; }
+    public string UserRole { get; set; } = string.Empty;
+    public string ClientName { get; set; } = string.Empty;
+    public string ContactPhone { get; set; } = string.Empty;
+    public string Cep { get; set; } = string.Empty;
+    public string Street { get; set; } = string.Empty;
+    public string Number { get; set; } = string.Empty;
+    public string Complement { get; set; } = string.Empty;
+    public string Neighborhood { get; set; } = string.Empty;
+    public string City { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+}
+
+public sealed class ConversationOrderDraftCommand
+{
+    public string TenantId { get; set; } = "A";
+    public string Phone { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string AddressText { get; set; } = string.Empty;
+    public string Cep { get; set; } = string.Empty;
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+    public bool IsUrgent { get; set; }
+    public DateTimeOffset? ScheduledAt { get; set; }
+    public string PreferenceCode { get; set; } = string.Empty;
+    public string ContactName { get; set; } = string.Empty;
+    public string ContactPhone { get; set; } = string.Empty;
+}
+
+public sealed class ConversationOrderDraftResult
+{
+    public bool Success { get; set; }
+    public string Error { get; set; } = string.Empty;
+    public long? TelegramMessageId { get; set; }
+    public ConversationHandoffStatus Handoff { get; set; } = new();
+}
+
 public sealed class ConversationHandoffStatus
 {
     public string TenantId { get; set; } = "A";
@@ -319,6 +366,7 @@ public sealed class BotConfigViewModel
     public string MainMenuText { get; set; } = string.Empty;
     public string GreetingText { get; set; } = string.Empty;
     public string HumanHandoffText { get; set; } = string.Empty;
+    public string CloseConfirmationText { get; set; } = string.Empty;
     public string ClosingText { get; set; } = string.Empty;
     public string FallbackText { get; set; } = string.Empty;
     public int MessagePoolingSeconds { get; set; } = 15;

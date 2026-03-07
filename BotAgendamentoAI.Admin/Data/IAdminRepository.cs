@@ -14,6 +14,8 @@ public interface IAdminRepository
     Task<ConversationHandoffStatus> OpenConversationHandoffAsync(string tenantId, string phone, string? agent);
     Task<ConversationHandoffStatus> CloseConversationHandoffAsync(string tenantId, string phone, string? agent, string? reason);
     Task<SendHumanMessageResult> SendHumanMessageAsync(string tenantId, string phone, string message, string? agent);
+    Task<ConversationOrderClientContext> GetConversationOrderClientContextAsync(string tenantId, string phone);
+    Task<ConversationOrderDraftResult> SendClientOrderConfirmationAsync(ConversationOrderDraftCommand input, string? agent);
     Task<IReadOnlyList<BookingListItem>> GetBookingsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ClientListItem>> GetClientsAsync(string tenantId, int limit);
     Task<IReadOnlyList<ProviderListItem>> GetProvidersAsync(string tenantId, int limit);

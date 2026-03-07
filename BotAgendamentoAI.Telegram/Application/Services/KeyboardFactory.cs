@@ -30,6 +30,7 @@ public static class KeyboardFactory
             new KeyboardButton[] { MenuTexts.ClientRequestService, MenuTexts.ClientMyBookings },
             new KeyboardButton[] { MenuTexts.ClientFavorites, MenuTexts.ClientHelp },
             new KeyboardButton[] { MenuTexts.HumanHandoff },
+            new KeyboardButton[] { MenuTexts.EndAttendance },
             new KeyboardButton[] { MenuTexts.ClientSwitchToProvider }
         })
         {
@@ -61,6 +62,10 @@ public static class KeyboardFactory
             new[]
             {
                 InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest())
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.EndAttendance, CallbackDataRouter.ClientEndAttendanceRequest())
             }
         };
 
@@ -111,7 +116,7 @@ public static class KeyboardFactory
             });
         }
 
-        rows.Add(NavigationRow());
+        rows.Add(ClientNavigationRow());
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -120,7 +125,7 @@ public static class KeyboardFactory
         return new InlineKeyboardMarkup(new[]
         {
             new[] { InlineKeyboardButton.WithCallbackData("Concluir fotos", "C:PH:DONE") },
-            NavigationRow()
+            ClientNavigationRow()
         });
     }
 
@@ -161,6 +166,10 @@ public static class KeyboardFactory
             new KeyboardButton[]
             {
                 new KeyboardButton(MenuTexts.HumanHandoff)
+            },
+            new KeyboardButton[]
+            {
+                new KeyboardButton(MenuTexts.EndAttendance)
             }
         })
         {
@@ -179,7 +188,7 @@ public static class KeyboardFactory
                 InlineKeyboardButton.WithCallbackData("Correto", "C:ADDR:OK"),
                 InlineKeyboardButton.WithCallbackData("Alterar", "C:ADDR:EDIT")
             },
-            NavigationRow()
+            ClientNavigationRow()
         });
     }
 
@@ -196,7 +205,7 @@ public static class KeyboardFactory
             {
                 InlineKeyboardButton.WithCallbackData("Agendar", "C:SCH:CAL")
             },
-            NavigationRow()
+            ClientNavigationRow()
         });
     }
 
@@ -223,7 +232,7 @@ public static class KeyboardFactory
             });
         }
 
-        rows.Add(NavigationRow());
+        rows.Add(ClientNavigationRow());
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -251,7 +260,7 @@ public static class KeyboardFactory
             });
         }
 
-        rows.Add(NavigationRow());
+        rows.Add(ClientNavigationRow());
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -269,7 +278,7 @@ public static class KeyboardFactory
                 InlineKeyboardButton.WithCallbackData("Mais rapido", "C:PRF:FAST"),
                 InlineKeyboardButton.WithCallbackData("Escolher prestador", "C:PRF:CHO")
             },
-            NavigationRow()
+            ClientNavigationRow()
         });
     }
 
@@ -285,6 +294,10 @@ public static class KeyboardFactory
             new[]
             {
                 InlineKeyboardButton.WithCallbackData("Cancelar", "C:CONF:CANCEL")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.EndAttendance, CallbackDataRouter.ClientEndAttendanceRequest())
             }
         });
     }
@@ -349,6 +362,21 @@ public static class KeyboardFactory
         });
     }
 
+    public static InlineKeyboardMarkup ClientChatActions(long jobId)
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Encerrar chat", $"J:{jobId}:CHAT:EXIT")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.EndAttendance, CallbackDataRouter.ClientEndAttendanceRequest())
+            }
+        });
+    }
+
     public static InlineKeyboardMarkup ClientRescheduleDaySelection(long jobId, DateTimeOffset nowLocal)
     {
         var days = new List<DateTime>();
@@ -372,7 +400,7 @@ public static class KeyboardFactory
             });
         }
 
-        rows.Add(NavigationRow());
+        rows.Add(ClientNavigationRow());
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -400,7 +428,7 @@ public static class KeyboardFactory
             });
         }
 
-        rows.Add(NavigationRow());
+        rows.Add(ClientNavigationRow());
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -415,6 +443,22 @@ public static class KeyboardFactory
                 InlineKeyboardButton.WithCallbackData("3", $"R:{jobId}:3"),
                 InlineKeyboardButton.WithCallbackData("4", $"R:{jobId}:4"),
                 InlineKeyboardButton.WithCallbackData("5", $"R:{jobId}:5")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.EndAttendance, CallbackDataRouter.ClientEndAttendanceRequest())
+            }
+        });
+    }
+
+    public static InlineKeyboardMarkup ClientEndAttendanceConfirmation()
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Sim, encerrar", CallbackDataRouter.ClientEndAttendanceConfirm()),
+                InlineKeyboardButton.WithCallbackData("Continuar atendimento", CallbackDataRouter.ClientEndAttendanceKeep())
             }
         });
     }
@@ -531,6 +575,17 @@ public static class KeyboardFactory
             InlineKeyboardButton.WithCallbackData(MenuTexts.Back, CallbackDataRouter.Back()),
             InlineKeyboardButton.WithCallbackData(MenuTexts.Cancel, CallbackDataRouter.Cancel()),
             InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest())
+        };
+    }
+
+    public static InlineKeyboardButton[] ClientNavigationRow()
+    {
+        return new[]
+        {
+            InlineKeyboardButton.WithCallbackData(MenuTexts.Back, CallbackDataRouter.Back()),
+            InlineKeyboardButton.WithCallbackData(MenuTexts.Cancel, CallbackDataRouter.Cancel()),
+            InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest()),
+            InlineKeyboardButton.WithCallbackData(MenuTexts.EndAttendance, CallbackDataRouter.Close())
         };
     }
 }

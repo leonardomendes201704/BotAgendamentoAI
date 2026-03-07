@@ -18,6 +18,8 @@ namespace BotAgendamentoAI.Telegram.Features.Client;
 
 public sealed class ClientFlowHandler
 {
+    private const string DefaultCloseConfirmationText = "O atendimento sera encerrado e qualquer pedido em andamento sera descartado. Deseja continuar?";
+    private const string DefaultClosingText = "Atendimento encerrado. Se precisar de alguma coisa, e so mandar um Oi.";
     private static readonly HttpClient ViaCepHttpClient = BuildViaCepHttpClient();
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
     private static readonly Regex ClientRegistrationCpfRegex = new(@"\D", RegexOptions.Compiled);
@@ -99,6 +101,12 @@ public sealed class ClientFlowHandler
         }
 
         var safeText = (message.Text ?? string.Empty).Trim();
+        if (string.Equals(safeText, MenuTexts.EndAttendance, StringComparison.OrdinalIgnoreCase))
+        {
+            await PromptEndAttendanceConfirmationAsync(context, message.Chat.Id, cancellationToken);
+            return true;
+        }
+
         if (string.Equals(safeText, MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase)
             || string.Equals(safeText, MenuTexts.Back, StringComparison.OrdinalIgnoreCase))
         {
@@ -178,6 +186,30 @@ public sealed class ClientFlowHandler
             return true;
         }
 
+        if (route.Scope == "NAV" && route.Action == "CLOSE")
+        {
+            await PromptEndAttendanceConfirmationAsync(context, chatId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "S" && route.Action == "END")
+        {
+            switch ((route.Arg1 ?? string.Empty).Trim().ToUpperInvariant())
+            {
+                case "ASK":
+                    await PromptEndAttendanceConfirmationAsync(context, chatId, cancellationToken);
+                    return true;
+
+                case "OK":
+                    await CompleteEndAttendanceAsync(context, chatId, cancellationToken);
+                    return true;
+
+                case "KEEP":
+                    await SendClientRegistrationPromptAsync(context, chatId, profile, null, cancellationToken);
+                    return true;
+            }
+        }
+
         await SendClientRegistrationPromptAsync(
             context,
             chatId,
@@ -192,6 +224,12 @@ public sealed class ClientFlowHandler
         var text = (message.Text ?? string.Empty).Trim();
         var state = context.Session.State;
         var normalizedText = NormalizeClientMenuInput(text, state);
+
+        if (string.Equals(normalizedText, MenuTexts.EndAttendance, StringComparison.OrdinalIgnoreCase))
+        {
+            await PromptEndAttendanceConfirmationAsync(context, message.Chat.Id, cancellationToken);
+            return;
+        }
 
         if (string.Equals(text, MenuTexts.Cancel, StringComparison.OrdinalIgnoreCase))
         {
@@ -398,9 +436,32 @@ public sealed class ClientFlowHandler
             return true;
         }
 
+        if (route.Scope == "NAV" && route.Action == "CLOSE")
+        {
+            await PromptEndAttendanceConfirmationAsync(context, chatId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "S" && route.Action == "END")
+        {
+            switch ((route.Arg1 ?? string.Empty).Trim().ToUpperInvariant())
+            {
+                case "ASK":
+                    await PromptEndAttendanceConfirmationAsync(context, chatId, cancellationToken);
+                    return true;
+
+                case "OK":
+                    await CompleteEndAttendanceAsync(context, chatId, cancellationToken);
+                    return true;
+
+                case "KEEP":
+                    return true;
+            }
+        }
+
         if (route.Scope == "C" && route.Action == "HOME")
         {
-            await HandleHomeCallbackAsync(context, chatId, route.Arg1, cancellationToken);
+            await HandleHomeCallbackAsync(context, chatId, route.Arg1 ?? string.Empty, cancellationToken);
             return true;
         }
 
@@ -1160,7 +1221,7 @@ public sealed class ClientFlowHandler
             context.User.TelegramUserId,
             chatId,
             BotMessages.ChatOpened(),
-            KeyboardFactory.ChatActions(job.Id),
+            KeyboardFactory.ClientChatActions(job.Id),
             job.Id,
             cancellationToken);
     }
@@ -1834,6 +1895,10 @@ public sealed class ClientFlowHandler
                     cancellationToken);
                 return;
 
+            case "END":
+                await PromptEndAttendanceConfirmationAsync(context, chatId, cancellationToken);
+                return;
+
             default:
                 await SendClientHomeMenuAsync(
                     context,
@@ -1887,6 +1952,71 @@ public sealed class ClientFlowHandler
             cancellationToken);
     }
 
+    private async Task PromptEndAttendanceConfirmationAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        var confirmationText = await ResolveConfiguredClientCloseConfirmationTextAsync(context, cancellationToken);
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            confirmationText,
+            KeyboardFactory.ClientEndAttendanceConfirmation(),
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task CompleteEndAttendanceAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        var nowUtc = DateTimeOffset.UtcNow;
+
+        await CloseOpenHumanHandoffSessionsAsync(context, nowUtc, cancellationToken);
+
+        UserContextService.ResetSession(context.Session, BotStates.C_HOME);
+        context.Session.ActiveJobId = null;
+        context.Session.UpdatedAt = nowUtc;
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        var closingText = await ResolveConfiguredClientClosingTextAsync(context, cancellationToken);
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            closingText,
+            null,
+            null,
+            cancellationToken);
+    }
+
+    private async Task CloseOpenHumanHandoffSessionsAsync(
+        BotExecutionContext context,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var openSessions = await context.Db.HumanHandoffSessions
+            .Where(x => x.TenantId == context.TenantId
+                        && x.TelegramUserId == context.User.TelegramUserId
+                        && x.IsOpen)
+            .ToListAsync(cancellationToken);
+
+        foreach (var session in openSessions)
+        {
+            session.IsOpen = false;
+            session.ClosedAtUtc = nowUtc;
+            session.CloseReason = "client_closed_attendance";
+            session.LastMessageAtUtc = nowUtc;
+        }
+    }
+
     private async Task GoHomeAsync(BotExecutionContext context, ChatId chatId, CancellationToken cancellationToken)
     {
         context.Session.State = BotStates.C_HOME;
@@ -1902,6 +2032,53 @@ public sealed class ClientFlowHandler
             chatId,
             context.Session.ActiveJobId,
             cancellationToken);
+    }
+
+    private async Task<string> ResolveConfiguredClientCloseConfirmationTextAsync(
+        BotExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var configured = await ResolveConfiguredClientMessageTextAsync(
+            context,
+            static payload => payload.CloseConfirmationText,
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(configured) ? DefaultCloseConfirmationText : configured;
+    }
+
+    private async Task<string> ResolveConfiguredClientClosingTextAsync(
+        BotExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var configured = await ResolveConfiguredClientMessageTextAsync(
+            context,
+            static payload => payload.ClosingText,
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(configured) ? DefaultClosingText : configured;
+    }
+
+    private async Task<string> ResolveConfiguredClientMessageTextAsync(
+        BotExecutionContext context,
+        Func<ClientMessagesConfigStorage, string?> selector,
+        CancellationToken cancellationToken)
+    {
+        var row = await context.Db.TenantBotConfigs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == context.TenantId, cancellationToken);
+        if (row is null || string.IsNullOrWhiteSpace(row.MessagesJson))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Deserialize<ClientMessagesConfigStorage>(row.MessagesJson, JsonOptions)
+                          ?? new ClientMessagesConfigStorage();
+            return selector(payload)?.Trim() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private async Task<ClientProfile> GetOrCreateClientProfileAsync(
@@ -2958,6 +3135,11 @@ public sealed class ClientFlowHandler
             });
         }
 
+        rows.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(MenuTexts.EndAttendance, CallbackDataRouter.ClientEndAttendanceRequest())
+        });
+
         return rows.Count == 0 ? null : new InlineKeyboardMarkup(rows);
     }
 
@@ -3405,6 +3587,7 @@ public sealed class ClientFlowHandler
                 3 => MenuTexts.ClientFavorites,
                 4 => MenuTexts.ClientHelp,
                 5 => MenuTexts.ClientSwitchToProvider,
+                6 => MenuTexts.EndAttendance,
                 _ => safe
             };
         }
@@ -3416,6 +3599,7 @@ public sealed class ClientFlowHandler
             MenuTexts.ClientFavorites => MenuTexts.ClientFavorites,
             MenuTexts.ClientHelp => MenuTexts.ClientHelp,
             MenuTexts.ClientSwitchToProvider => MenuTexts.ClientSwitchToProvider,
+            MenuTexts.EndAttendance => MenuTexts.EndAttendance,
             _ => safe
         };
     }
@@ -3535,5 +3719,11 @@ public sealed class ClientFlowHandler
                 Error = error ?? string.Empty
             };
         }
+    }
+
+    private sealed class ClientMessagesConfigStorage
+    {
+        public string CloseConfirmationText { get; set; } = string.Empty;
+        public string ClosingText { get; set; } = string.Empty;
     }
 }

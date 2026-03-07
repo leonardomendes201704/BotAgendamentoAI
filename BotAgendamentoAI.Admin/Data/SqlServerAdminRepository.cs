@@ -1782,6 +1782,382 @@ END;
         };
     }
 
+    public async Task<ConversationOrderClientContext> GetConversationOrderClientContextAsync(string tenantId, string phone)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var normalizedPhone = phone?.Trim() ?? string.Empty;
+        var output = new ConversationOrderClientContext
+        {
+            TenantId = tenant,
+            Phone = normalizedPhone
+        };
+
+        if (!TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
+        {
+            return output;
+        }
+
+        output.IsTelegramThread = true;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        if (!await TableExistsAsync(connection, "tg_Users"))
+        {
+            return output;
+        }
+
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = hasClientProfiles
+            ? """
+              SELECT TOP (1)
+                COALESCE(u.Role, ''),
+                COALESCE(cp.is_registration_complete, 0),
+                COALESCE(cp.full_name, u.Name, ''),
+                COALESCE(cp.phone_number, u.Phone, ''),
+                COALESCE(cp.cep, ''),
+                COALESCE(cp.street, ''),
+                COALESCE(cp.number, ''),
+                COALESCE(cp.complement, ''),
+                COALESCE(cp.neighborhood, ''),
+                COALESCE(cp.city, ''),
+                COALESCE(cp.state, ''),
+                cp.latitude,
+                cp.longitude
+              FROM tg_Users u
+              LEFT JOIN tg_client_profiles cp ON cp.user_id = u.Id
+              WHERE u.TenantId = @tenant_id
+                AND u.TelegramUserId = @telegram_user_id;
+              """
+            : """
+              SELECT TOP (1)
+                COALESCE(u.Role, ''),
+                0,
+                COALESCE(u.Name, ''),
+                COALESCE(u.Phone, ''),
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                NULL,
+                NULL
+              FROM tg_Users u
+              WHERE u.TenantId = @tenant_id
+                AND u.TelegramUserId = @telegram_user_id;
+              """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            return output;
+        }
+
+        output.UserExists = true;
+        output.UserRole = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+        output.IsRegistrationComplete = ReadBool(reader, 1);
+        output.ClientName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+        output.ContactPhone = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+        output.Cep = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+        output.Street = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+        output.Number = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+        output.Complement = reader.IsDBNull(7) ? string.Empty : reader.GetString(7);
+        output.Neighborhood = reader.IsDBNull(8) ? string.Empty : reader.GetString(8);
+        output.City = reader.IsDBNull(9) ? string.Empty : reader.GetString(9);
+        output.State = reader.IsDBNull(10) ? string.Empty : reader.GetString(10);
+        output.Latitude = reader.IsDBNull(11) ? null : reader.GetDouble(11);
+        output.Longitude = reader.IsDBNull(12) ? null : reader.GetDouble(12);
+
+        var role = output.UserRole.Trim();
+        output.IsClientEligible = !string.Equals(role, "Provider", StringComparison.OrdinalIgnoreCase);
+
+        return output;
+    }
+
+    public async Task<ConversationOrderDraftResult> SendClientOrderConfirmationAsync(ConversationOrderDraftCommand input, string? agent)
+    {
+        var tenant = NormalizeTenant(input.TenantId);
+        var normalizedPhone = input.Phone?.Trim() ?? string.Empty;
+        var safeAgent = string.IsNullOrWhiteSpace(agent) ? "admin" : agent.Trim();
+        var output = new ConversationOrderDraftResult
+        {
+            Success = false,
+            Error = string.Empty,
+            Handoff = BuildUnavailableHandoffStatus(tenant, normalizedPhone)
+        };
+
+        if (!TryParseTelegramUserId(normalizedPhone, out var telegramUserId))
+        {
+            output.Error = "A conversa nao pertence ao canal Telegram.";
+            return output;
+        }
+
+        if (string.IsNullOrWhiteSpace(input.Category)
+            || string.IsNullOrWhiteSpace(input.Description)
+            || string.IsNullOrWhiteSpace(input.AddressText)
+            || string.IsNullOrWhiteSpace(input.PreferenceCode)
+            || string.IsNullOrWhiteSpace(input.ContactName)
+            || string.IsNullOrWhiteSpace(input.ContactPhone))
+        {
+            output.Error = "Preencha todos os dados obrigatorios do pedido.";
+            return output;
+        }
+
+        if (!input.IsUrgent && !input.ScheduledAt.HasValue)
+        {
+            output.Error = "Informe a data e hora do atendimento.";
+            return output;
+        }
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var hasUsers = await TableExistsAsync(connection, "tg_Users");
+        var hasUserSessions = await TableExistsAsync(connection, "tg_UserSessions");
+        var hasTelegramConfig = await TableExistsAsync(connection, "tg_tenant_telegram_config");
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
+        var hasMessagesLog = await TableExistsAsync(connection, "tg_MessagesLog");
+        var hasHandoffSessions = await TableExistsAsync(connection, "tg_human_handoff_sessions");
+
+        if (!hasUsers || !hasUserSessions)
+        {
+            output.Error = "A estrutura do bot nao esta pronta para receber o pedido assistido.";
+            return output;
+        }
+
+        if (!hasTelegramConfig)
+        {
+            output.Error = "Configuracao Telegram nao encontrada para este tenant.";
+            return output;
+        }
+
+        long? appUserId = null;
+        string role = string.Empty;
+        var registrationComplete = false;
+        await using (var userCommand = connection.CreateCommand())
+        {
+            userCommand.CommandText = hasClientProfiles
+                ? """
+                  SELECT TOP (1)
+                    u.Id,
+                    COALESCE(u.Role, ''),
+                    COALESCE(cp.is_registration_complete, 0)
+                  FROM tg_Users u
+                  LEFT JOIN tg_client_profiles cp ON cp.user_id = u.Id
+                  WHERE u.TenantId = @tenant_id
+                    AND u.TelegramUserId = @telegram_user_id;
+                  """
+                : """
+                  SELECT TOP (1)
+                    u.Id,
+                    COALESCE(u.Role, ''),
+                    0
+                  FROM tg_Users u
+                  WHERE u.TenantId = @tenant_id
+                    AND u.TelegramUserId = @telegram_user_id;
+                  """;
+            userCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            userCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+
+            await using var reader = await userCommand.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                appUserId = reader.IsDBNull(0) ? null : reader.GetInt64(0);
+                role = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                registrationComplete = ReadBool(reader, 2);
+            }
+        }
+
+        if (!appUserId.HasValue)
+        {
+            output.Error = "Cliente nao encontrado neste tenant.";
+            return output;
+        }
+
+        if (string.Equals(role?.Trim(), "Provider", StringComparison.OrdinalIgnoreCase))
+        {
+            output.Error = "Esta conversa pertence a um prestador. O pedido assistido so pode ser aberto para clientes.";
+            return output;
+        }
+
+        if (!registrationComplete)
+        {
+            output.Error = "O cliente ainda nao concluiu o cadastro. Conclua o cadastro antes de abrir um pedido assistido.";
+            return output;
+        }
+
+        string token;
+        await using (var tokenCommand = connection.CreateCommand())
+        {
+            tokenCommand.CommandText =
+                """
+                SELECT TOP (1) bot_token
+                FROM tg_tenant_telegram_config
+                WHERE tenant_id = @tenant_id;
+                """;
+            tokenCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            token = Convert.ToString(await tokenCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            output.Error = "Token do bot Telegram nao configurado para este tenant.";
+            return output;
+        }
+
+        var normalizedCommand = new ConversationOrderDraftCommand
+        {
+            TenantId = tenant,
+            Phone = normalizedPhone,
+            Category = input.Category.Trim(),
+            Description = input.Description.Trim(),
+            AddressText = input.AddressText.Trim(),
+            Cep = NormalizeCepDigits(input.Cep),
+            Latitude = input.Latitude,
+            Longitude = input.Longitude,
+            IsUrgent = input.IsUrgent,
+            ScheduledAt = input.IsUrgent ? DateTimeOffset.UtcNow : input.ScheduledAt,
+            PreferenceCode = input.PreferenceCode.Trim().ToUpperInvariant(),
+            ContactName = input.ContactName.Trim(),
+            ContactPhone = input.ContactPhone.Trim()
+        };
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        var nowText = ToUtcText(nowUtc);
+        var draftJson = BuildAssistedOrderDraftJson(normalizedCommand);
+        var confirmationText = BuildAssistedOrderConfirmationText(normalizedCommand);
+        var confirmationKeyboard = BuildClientOrderConfirmationKeyboard();
+
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+        try
+        {
+            await using (var sessionCommand = connection.CreateCommand())
+            {
+                sessionCommand.Transaction = transaction;
+                sessionCommand.CommandText =
+                    """
+                    UPDATE tg_UserSessions
+                    SET State = 'C_CONFIRM',
+                        DraftJson = @draft_json,
+                        ActiveJobId = NULL,
+                        ChatJobId = NULL,
+                        ChatPeerUserId = NULL,
+                        IsChatActive = 0,
+                        UpdatedAt = @updated_at
+                    WHERE UserId = @user_id;
+                    """;
+                sessionCommand.Parameters.AddWithValue("@draft_json", draftJson);
+                sessionCommand.Parameters.AddWithValue("@updated_at", nowText);
+                sessionCommand.Parameters.AddWithValue("@user_id", appUserId.Value);
+                var affected = await sessionCommand.ExecuteNonQueryAsync();
+
+                if (affected == 0)
+                {
+                    await using var insertSessionCommand = connection.CreateCommand();
+                    insertSessionCommand.Transaction = transaction;
+                    insertSessionCommand.CommandText =
+                        """
+                        INSERT INTO tg_UserSessions
+                        (UserId, State, DraftJson, ActiveJobId, ChatJobId, ChatPeerUserId, IsChatActive, UpdatedAt)
+                        VALUES
+                        (@user_id, 'C_CONFIRM', @draft_json, NULL, NULL, NULL, 0, @updated_at);
+                        """;
+                    insertSessionCommand.Parameters.AddWithValue("@user_id", appUserId.Value);
+                    insertSessionCommand.Parameters.AddWithValue("@draft_json", draftJson);
+                    insertSessionCommand.Parameters.AddWithValue("@updated_at", nowText);
+                    await insertSessionCommand.ExecuteNonQueryAsync();
+                }
+            }
+
+            var telegramResult = await SendTelegramTextAsync(token, telegramUserId, confirmationText, confirmationKeyboard);
+            if (!telegramResult.Success)
+            {
+                await transaction.RollbackAsync();
+                output.Error = telegramResult.Error;
+                return output;
+            }
+
+            if (hasMessagesLog)
+            {
+                await using var messageCommand = connection.CreateCommand();
+                messageCommand.Transaction = transaction;
+                messageCommand.CommandText =
+                    """
+                    INSERT INTO tg_MessagesLog
+                    (
+                        TenantId,
+                        TelegramUserId,
+                        Direction,
+                        MessageType,
+                        Text,
+                        TelegramMessageId,
+                        RelatedJobId,
+                        CreatedAt
+                    )
+                    VALUES
+                    (
+                        @tenant_id,
+                        @telegram_user_id,
+                        'Out',
+                        'Text',
+                        @text,
+                        @telegram_message_id,
+                        NULL,
+                        @created_at
+                    );
+                    """;
+                messageCommand.Parameters.AddWithValue("@tenant_id", tenant);
+                messageCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+                messageCommand.Parameters.AddWithValue("@text", confirmationText);
+                messageCommand.Parameters.AddWithValue("@telegram_message_id", telegramResult.MessageId.HasValue ? telegramResult.MessageId.Value : DBNull.Value);
+                messageCommand.Parameters.AddWithValue("@created_at", nowText);
+                await messageCommand.ExecuteNonQueryAsync();
+            }
+
+            if (hasHandoffSessions)
+            {
+                await using var handoffCommand = connection.CreateCommand();
+                handoffCommand.Transaction = transaction;
+                handoffCommand.CommandText =
+                    """
+                    UPDATE tg_human_handoff_sessions
+                    SET is_open = 0,
+                        closed_at_utc = @closed_at_utc,
+                        close_reason = @close_reason,
+                        last_message_at_utc = @last_message_at_utc
+                    WHERE tenant_id = @tenant_id
+                      AND telegram_user_id = @telegram_user_id
+                      AND is_open = 1;
+                    """;
+                handoffCommand.Parameters.AddWithValue("@closed_at_utc", nowText);
+                handoffCommand.Parameters.AddWithValue("@close_reason", "pedido_enviado_para_confirmacao");
+                handoffCommand.Parameters.AddWithValue("@last_message_at_utc", nowText);
+                handoffCommand.Parameters.AddWithValue("@tenant_id", tenant);
+                handoffCommand.Parameters.AddWithValue("@telegram_user_id", telegramUserId);
+                await handoffCommand.ExecuteNonQueryAsync();
+            }
+
+            await transaction.CommitAsync();
+
+            output.Success = true;
+            output.Error = string.Empty;
+            output.TelegramMessageId = telegramResult.MessageId;
+            output.Handoff = await GetConversationHandoffStatusAsync(tenant, normalizedPhone);
+            return output;
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
+    }
+
     public async Task<IReadOnlyList<BookingListItem>> GetBookingsAsync(string tenantId, int limit)
     {
         var output = new List<BookingListItem>();
@@ -3015,6 +3391,7 @@ END;
                 model.MainMenuText = menu.MainMenuText;
                 model.GreetingText = messages.GreetingText;
                 model.HumanHandoffText = messages.HumanHandoffText;
+                model.CloseConfirmationText = messages.CloseConfirmationText;
                 model.ClosingText = messages.ClosingText;
                 model.FallbackText = messages.FallbackText;
                 model.MessagePoolingSeconds = ClampPoolingSeconds(messages.MessagePoolingSeconds);
@@ -3256,6 +3633,7 @@ END;
         {
             GreetingText = input.GreetingText?.Trim() ?? string.Empty,
             HumanHandoffText = input.HumanHandoffText?.Trim() ?? string.Empty,
+            CloseConfirmationText = input.CloseConfirmationText?.Trim() ?? string.Empty,
             ClosingText = input.ClosingText?.Trim() ?? string.Empty,
             FallbackText = input.FallbackText?.Trim() ?? string.Empty,
             MessagePoolingSeconds = ClampPoolingSeconds(input.MessagePoolingSeconds),
@@ -3876,7 +4254,8 @@ END;
             MainMenuText = "1 - Agendar Servico\n2 - Consultar Agendamentos\n3 - Cancelar Agendamento\n4 - Alterar Agendamento\n5 - Falar com atendente\n6 - Encerrar atendimento",
             GreetingText = "Como posso ajudar voce hoje?",
             HumanHandoffText = "Vou te direcionar para um atendente humano.",
-            ClosingText = "Atendimento encerrado. Envie MENU para iniciar novamente.",
+            CloseConfirmationText = "O atendimento sera encerrado e qualquer pedido em andamento sera descartado. Deseja continuar?",
+            ClosingText = "Atendimento encerrado. Se precisar de alguma coisa, e so mandar um Oi.",
             FallbackText = "Nao entendi. Escolha uma opcao do menu.",
             MessagePoolingSeconds = 15,
             TelegramPollingTimeoutSeconds = 30,
@@ -4969,14 +5348,18 @@ END;
             : "C_HOME";
     }
 
-    private static async Task<TelegramSendResult> SendTelegramTextAsync(string token, long chatId, string text)
+    private static Task<TelegramSendResult> SendTelegramTextAsync(string token, long chatId, string text)
+        => SendTelegramTextAsync(token, chatId, text, null);
+
+    private static async Task<TelegramSendResult> SendTelegramTextAsync(string token, long chatId, string text, object? replyMarkup)
     {
         try
         {
             var requestPayload = JsonSerializer.Serialize(new
             {
                 chat_id = chatId,
-                text
+                text,
+                reply_markup = replyMarkup
             });
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
@@ -5024,6 +5407,114 @@ END;
         {
             return TelegramSendResult.Fail($"Erro ao enviar mensagem ao Telegram: {ex.Message}");
         }
+    }
+
+    private static string NormalizeCepDigits(string? value)
+    {
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        return digits.Length == 8 ? digits : string.Empty;
+    }
+
+    private static string BuildAssistedOrderDraftJson(ConversationOrderDraftCommand input)
+    {
+        var payload = new
+        {
+            Category = input.Category,
+            Description = input.Description,
+            PhotoFileIds = Array.Empty<string>(),
+            AddressText = input.AddressText,
+            Cep = input.Cep,
+            AddressBaseFromCep = string.Empty,
+            WaitingAddressNumber = false,
+            WaitingAddressConfirmation = false,
+            Latitude = input.Latitude,
+            Longitude = input.Longitude,
+            IsUrgent = input.IsUrgent,
+            ScheduledAt = input.ScheduledAt,
+            PreferenceCode = input.PreferenceCode,
+            ContactName = input.ContactName,
+            ContactPhone = input.ContactPhone,
+            FinalAmount = (decimal?)null,
+            FinalNotes = (string?)null,
+            AfterPhotoFileIds = Array.Empty<string>(),
+            HiddenFeedJobIds = Array.Empty<long>(),
+            ProviderCategoryNames = Array.Empty<string>(),
+            ProviderProfileReminderLastSentUtc = (DateTimeOffset?)null,
+            ProviderProfileReminderSnoozeUntilUtc = (DateTimeOffset?)null
+        };
+
+        return JsonSerializer.Serialize(payload);
+    }
+
+    private static string BuildAssistedOrderConfirmationText(ConversationOrderDraftCommand input)
+    {
+        return string.Join(
+            "\n\n",
+            new[]
+            {
+                "O atendente preparou seu pedido. Revise os dados abaixo e toque em Confirmar.",
+                "7/7 - Confirme seu pedido:",
+                BuildAssistedOrderSummary(input)
+            });
+    }
+
+    private static string BuildAssistedOrderSummary(ConversationOrderDraftCommand input)
+    {
+        var lines = new List<string>
+        {
+            $"Categoria: {input.Category}",
+            $"Descricao: {input.Description}",
+            string.IsNullOrWhiteSpace(input.ContactName) ? string.Empty : $"Contato: {input.ContactName}",
+            string.IsNullOrWhiteSpace(input.ContactPhone) ? string.Empty : $"Telefone contato: {input.ContactPhone}",
+            $"Endereco: {input.AddressText}",
+            $"Quando: {(input.IsUrgent ? "Urgente" : input.ScheduledAt?.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture) ?? "Hoje")}",
+            $"Preferencia: {ResolvePreferenceLabel(input.PreferenceCode)}"
+        };
+
+        return string.Join("\n", lines.Where(static line => !string.IsNullOrWhiteSpace(line)));
+    }
+
+    private static string ResolvePreferenceLabel(string? code)
+    {
+        return (code ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "LOW" => "Menor preco",
+            "RAT" => "Melhor avaliados",
+            "FAST" => "Mais rapido",
+            "CHO" => "Escolher prestador",
+            _ => string.IsNullOrWhiteSpace(code) ? "Melhor avaliados" : code.Trim()
+        };
+    }
+
+    private static object BuildClientOrderConfirmationKeyboard()
+    {
+        return new
+        {
+            inline_keyboard = new object[]
+            {
+                new object[]
+                {
+                    new
+                    {
+                        text = "Confirmar",
+                        callback_data = "C:CONF:OK"
+                    },
+                    new
+                    {
+                        text = "Editar",
+                        callback_data = "C:CONF:EDIT"
+                    }
+                },
+                new object[]
+                {
+                    new
+                    {
+                        text = "Cancelar",
+                        callback_data = "C:CONF:CANCEL"
+                    }
+                }
+            }
+        };
     }
 
     private static DateTime ParseLocalDateTime(string value)
@@ -5172,6 +5663,7 @@ END;
     {
         public string GreetingText { get; set; } = string.Empty;
         public string HumanHandoffText { get; set; } = string.Empty;
+        public string CloseConfirmationText { get; set; } = string.Empty;
         public string ClosingText { get; set; } = string.Empty;
         public string FallbackText { get; set; } = string.Empty;
         public int? MessagePoolingSeconds { get; set; }

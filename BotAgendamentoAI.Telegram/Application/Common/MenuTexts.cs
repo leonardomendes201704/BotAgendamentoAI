@@ -6,6 +6,7 @@ public static class MenuTexts
     public const string Cancel = "Cancelar";
     public const string FinishPhotos = "Concluir fotos";
     public const string ExitChat = "Encerrar chat";
+    public const string EndAttendance = "Encerrar atendimento";
     public const string HumanHandoff = "Falar com atendente";
 
     public const string ClientRequestService = "Pedir servico";
