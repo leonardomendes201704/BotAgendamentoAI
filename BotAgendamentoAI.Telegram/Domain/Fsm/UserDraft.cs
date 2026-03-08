@@ -8,7 +8,11 @@ public sealed class UserDraft
     public string? AddressText { get; set; }
     public string? Cep { get; set; }
     public string? AddressBaseFromCep { get; set; }
+    public string? AddressNumber { get; set; }
+    public string? AddressComplement { get; set; }
     public bool WaitingAddressNumber { get; set; }
+    public bool WaitingAddressComplementChoice { get; set; }
+    public bool WaitingAddressComplement { get; set; }
     public bool WaitingAddressConfirmation { get; set; }
     public double? Latitude { get; set; }
     public double? Longitude { get; set; }

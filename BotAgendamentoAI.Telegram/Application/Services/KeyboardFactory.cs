@@ -192,6 +192,19 @@ public static class KeyboardFactory
         });
     }
 
+    public static InlineKeyboardMarkup AddressComplementChoice(string yesCallbackData, string noCallbackData)
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Sim", yesCallbackData),
+                InlineKeyboardButton.WithCallbackData("Nao", noCallbackData)
+            },
+            ClientNavigationRow()
+        });
+    }
+
     public static InlineKeyboardMarkup ScheduleMode()
     {
         return new InlineKeyboardMarkup(new[]

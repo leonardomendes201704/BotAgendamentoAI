@@ -20,6 +20,8 @@ public static class BotStates
     public const string C_REG_CPF = "C_REG_CPF";
     public const string C_REG_CEP = "C_REG_CEP";
     public const string C_REG_ADDRESS_NUMBER = "C_REG_ADDRESS_NUMBER";
+    public const string C_REG_ADDRESS_COMPLEMENT_CONFIRM = "C_REG_ADDRESS_COMPLEMENT_CONFIRM";
+    public const string C_REG_ADDRESS_COMPLEMENT = "C_REG_ADDRESS_COMPLEMENT";
     public const string C_REG_ADDRESS_CONFIRM = "C_REG_ADDRESS_CONFIRM";
     public const string C_REG_PHONE = "C_REG_PHONE";
 

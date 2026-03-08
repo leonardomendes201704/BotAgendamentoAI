@@ -143,6 +143,14 @@ public sealed class ClientFlowHandler
                 await HandleClientRegistrationAddressNumberAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
                 return true;
 
+            case BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM:
+                await HandleClientRegistrationAddressComplementDecisionAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
+            case BotStates.C_REG_ADDRESS_COMPLEMENT:
+                await HandleClientRegistrationAddressComplementAsync(context, profile, message.Chat.Id, safeText, cancellationToken);
+                return true;
+
             case BotStates.C_REG_ADDRESS_CONFIRM:
                 await SendClientRegistrationPromptAsync(
                     context,
@@ -185,6 +193,14 @@ public sealed class ClientFlowHandler
         if (route.Scope == "C" && route.Action == "ADDR" && string.Equals(nextState, BotStates.C_REG_ADDRESS_CONFIRM, StringComparison.Ordinal))
         {
             await HandleClientRegistrationAddressConfirmationAsync(context, profile, chatId, route.Arg1, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "C"
+            && route.Action == "RADDRCOMP"
+            && string.Equals(nextState, BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM, StringComparison.Ordinal))
+        {
+            await HandleClientRegistrationAddressComplementDecisionAsync(context, profile, chatId, route.Arg1, cancellationToken);
             return true;
         }
 
@@ -575,7 +591,11 @@ public sealed class ClientFlowHandler
             context.Draft.AddressText = null;
             context.Draft.Cep = null;
             context.Draft.AddressBaseFromCep = null;
+            context.Draft.AddressNumber = null;
+            context.Draft.AddressComplement = null;
             context.Draft.WaitingAddressNumber = false;
+            context.Draft.WaitingAddressComplementChoice = false;
+            context.Draft.WaitingAddressComplement = false;
             context.Draft.WaitingAddressConfirmation = false;
             context.Draft.Latitude = null;
             context.Draft.Longitude = null;
@@ -604,7 +624,11 @@ public sealed class ClientFlowHandler
                 context.Draft.AddressText = null;
                 context.Draft.Cep = null;
                 context.Draft.AddressBaseFromCep = null;
+                context.Draft.AddressNumber = null;
+                context.Draft.AddressComplement = null;
                 context.Draft.WaitingAddressNumber = false;
+                context.Draft.WaitingAddressComplementChoice = false;
+                context.Draft.WaitingAddressComplement = false;
                 context.Draft.WaitingAddressConfirmation = false;
                 context.Draft.Latitude = null;
                 context.Draft.Longitude = null;
@@ -643,8 +667,12 @@ public sealed class ClientFlowHandler
                 }
 
                 context.Draft.WaitingAddressNumber = false;
+                context.Draft.WaitingAddressComplementChoice = false;
+                context.Draft.WaitingAddressComplement = false;
                 context.Draft.WaitingAddressConfirmation = false;
                 context.Draft.AddressBaseFromCep = null;
+                context.Draft.AddressNumber = null;
+                context.Draft.AddressComplement = null;
                 await AdvanceToScheduleAsync(context, chatId, cancellationToken);
                 return true;
             }
@@ -659,6 +687,12 @@ public sealed class ClientFlowHandler
                 KeyboardFactory.AddressConfirmation(),
                 context.Session.ActiveJobId,
                 cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "C" && route.Action == "ADDCOMP")
+        {
+            await HandleDraftAddressComplementDecisionAsync(context, chatId, route.Arg1, cancellationToken);
             return true;
         }
 
@@ -1411,7 +1445,11 @@ public sealed class ClientFlowHandler
         context.Draft.AddressText = null;
         context.Draft.Cep = null;
         context.Draft.AddressBaseFromCep = null;
+        context.Draft.AddressNumber = null;
+        context.Draft.AddressComplement = null;
         context.Draft.WaitingAddressNumber = false;
+        context.Draft.WaitingAddressComplementChoice = false;
+        context.Draft.WaitingAddressComplement = false;
         context.Draft.WaitingAddressConfirmation = false;
         context.Draft.Latitude = null;
         context.Draft.Longitude = null;
@@ -1473,7 +1511,11 @@ public sealed class ClientFlowHandler
             context.Draft.AddressText = null;
             context.Draft.Cep = null;
             context.Draft.AddressBaseFromCep = null;
+            context.Draft.AddressNumber = null;
+            context.Draft.AddressComplement = null;
             context.Draft.WaitingAddressNumber = false;
+            context.Draft.WaitingAddressComplementChoice = false;
+            context.Draft.WaitingAddressComplement = false;
             context.Draft.WaitingAddressConfirmation = false;
             context.Draft.Latitude = null;
             context.Draft.Longitude = null;
@@ -1525,10 +1567,73 @@ public sealed class ClientFlowHandler
             return;
         }
 
+        if (context.Draft.WaitingAddressComplementChoice)
+        {
+            if (!TryParseYesNo(safeText, out var hasComplement))
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    message.Chat.Id,
+                    "Esse endereco possui complemento?",
+                    KeyboardFactory.AddressComplementChoice("C:ADDCOMP:YES", "C:ADDCOMP:NO"),
+                    context.Session.ActiveJobId,
+                    cancellationToken);
+                return;
+            }
+
+            await HandleDraftAddressComplementDecisionAsync(
+                context,
+                message.Chat.Id,
+                hasComplement ? "YES" : "NO",
+                cancellationToken);
+            return;
+        }
+
+        if (context.Draft.WaitingAddressComplement)
+        {
+            var complement = NormalizeAddressComplement(text);
+            if (string.IsNullOrWhiteSpace(complement))
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    message.Chat.Id,
+                    "Informe o complemento do endereco.",
+                    KeyboardFactory.CepRequestKeyboard(),
+                    context.Session.ActiveJobId,
+                    cancellationToken);
+                return;
+            }
+
+            if (JobWorkflowService.HasCep(complement))
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    message.Chat.Id,
+                    "Informe apenas o complemento, sem CEP.",
+                    KeyboardFactory.CepRequestKeyboard(),
+                    context.Session.ActiveJobId,
+                    cancellationToken);
+                return;
+            }
+
+            context.Draft.AddressComplement = complement;
+            await FinalizeDraftAddressAsync(context, message.Chat.Id, cancellationToken);
+            return;
+        }
+
         if (context.Draft.WaitingAddressNumber)
         {
-            var numberAndComplement = safeText;
-            if (string.IsNullOrWhiteSpace(numberAndComplement))
+            var numberInput = safeText;
+            if (string.IsNullOrWhiteSpace(numberInput))
             {
                 await _sender.SendTextAsync(
                     context.Db,
@@ -1536,14 +1641,14 @@ public sealed class ClientFlowHandler
                     context.TenantId,
                     context.User.TelegramUserId,
                     message.Chat.Id,
-                    "Informe o numero e complemento, se houver.",
+                    "Informe o numero do endereco.",
                     KeyboardFactory.CepRequestKeyboard(),
                     context.Session.ActiveJobId,
                     cancellationToken);
                 return;
             }
 
-            if (JobWorkflowService.HasCep(numberAndComplement))
+            if (JobWorkflowService.HasCep(numberInput))
             {
                 await _sender.SendTextAsync(
                     context.Db,
@@ -1551,14 +1656,14 @@ public sealed class ClientFlowHandler
                     context.TenantId,
                     context.User.TelegramUserId,
                     message.Chat.Id,
-                    "Informe somente numero e complemento, sem CEP.",
+                    "Informe apenas o numero do endereco, sem CEP.",
                     KeyboardFactory.CepRequestKeyboard(),
                     context.Session.ActiveJobId,
                     cancellationToken);
                 return;
             }
 
-            if (!numberAndComplement.Any(char.IsDigit))
+            if (!TryParseAddressNumberOnly(numberInput, out var addressNumber))
             {
                 await _sender.SendTextAsync(
                     context.Db,
@@ -1566,47 +1671,23 @@ public sealed class ClientFlowHandler
                     context.TenantId,
                     context.User.TelegramUserId,
                     message.Chat.Id,
-                    "Informe ao menos o numero do local (ex.: 136, apto 34).",
+                    "Informe apenas o numero do local (ex.: 136).",
                     KeyboardFactory.CepRequestKeyboard(),
                     context.Session.ActiveJobId,
                     cancellationToken);
                 return;
-            }
-
-            context.Draft.AddressText = MergeAddressWithNumber(
-                context.Draft.AddressBaseFromCep,
-                numberAndComplement,
-                context.Draft.Cep);
-
-            var exactGeo = await TryGeocodeByAddressAsync(context.Draft.AddressText, cancellationToken);
-            var exactGeoResolved = false;
-            if (exactGeo.Success)
-            {
-                context.Draft.Latitude = exactGeo.Latitude;
-                context.Draft.Longitude = exactGeo.Longitude;
-                exactGeoResolved = true;
-            }
-            else
-            {
-                var fallbackGeo = await TryGeocodeByCepAsync(context.Draft.Cep, cancellationToken);
-                if (fallbackGeo.Success)
-                {
-                    context.Draft.Latitude = fallbackGeo.Latitude;
-                    context.Draft.Longitude = fallbackGeo.Longitude;
-                }
             }
 
             context.Draft.WaitingAddressNumber = false;
-            context.Draft.WaitingAddressConfirmation = true;
+            context.Draft.WaitingAddressComplementChoice = true;
+            context.Draft.WaitingAddressComplement = false;
+            context.Draft.WaitingAddressConfirmation = false;
+            context.Draft.AddressNumber = addressNumber;
+            context.Draft.AddressComplement = null;
+            context.Draft.AddressText = null;
 
             UserContextService.SaveDraft(context.Session, context.Draft);
             await context.Db.SaveChangesAsync(cancellationToken);
-
-            var geoNote = exactGeoResolved
-                ? "Localizacao geocodificada com endereco completo."
-                : "Nao localizei o numero exato; vou usar localizacao aproximada do CEP.";
-            
-            geoNote = "";
 
             await _sender.SendTextAsync(
                 context.Db,
@@ -1614,8 +1695,8 @@ public sealed class ClientFlowHandler
                 context.TenantId,
                 context.User.TelegramUserId,
                 message.Chat.Id,
-                $"Endereco completo:\n{context.Draft.AddressText}\n\n{geoNote}\n\nEste endereco esta correto?",
-                KeyboardFactory.AddressConfirmation(),
+                "Esse endereco possui complemento?",
+                KeyboardFactory.AddressComplementChoice("C:ADDCOMP:YES", "C:ADDCOMP:NO"),
                 context.Session.ActiveJobId,
                 cancellationToken);
             return;
@@ -1674,7 +1755,11 @@ public sealed class ClientFlowHandler
         context.Draft.Longitude = cepGeo.Success ? cepGeo.Longitude : null;
         context.Draft.Cep = lookup.Cep;
         context.Draft.AddressBaseFromCep = baseAddress;
+        context.Draft.AddressNumber = null;
+        context.Draft.AddressComplement = null;
         context.Draft.WaitingAddressNumber = true;
+        context.Draft.WaitingAddressComplementChoice = false;
+        context.Draft.WaitingAddressComplement = false;
         context.Draft.WaitingAddressConfirmation = false;
         context.Draft.AddressText = null;
         UserContextService.SaveDraft(context.Session, context.Draft);
@@ -1686,7 +1771,7 @@ public sealed class ClientFlowHandler
             context.TenantId,
             context.User.TelegramUserId,
             message.Chat.Id,
-            $"Endereco resolvido pelo CEP:\n{baseAddress}\n\nInforme apenas numero e complemento (se houver).",
+            $"Endereco resolvido pelo CEP:\n{baseAddress}\n\nInforme o numero do endereco.",
             KeyboardFactory.CepRequestKeyboard(),
             context.Session.ActiveJobId,
             cancellationToken);
@@ -1730,6 +1815,102 @@ public sealed class ClientFlowHandler
             chatId,
             $"{BotMessages.AskContactPhone()}{suggestedPhone}",
             null,
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task HandleDraftAddressComplementDecisionAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        string action,
+        CancellationToken cancellationToken)
+    {
+        var normalizedAction = (action ?? string.Empty).Trim().ToUpperInvariant();
+        if (normalizedAction == "YES" || normalizedAction == "SIM")
+        {
+            context.Draft.WaitingAddressNumber = false;
+            context.Draft.WaitingAddressComplementChoice = false;
+            context.Draft.WaitingAddressComplement = true;
+            context.Draft.WaitingAddressConfirmation = false;
+            context.Draft.AddressComplement = null;
+            UserContextService.SaveDraft(context.Session, context.Draft);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                "Informe o complemento do endereco.",
+                KeyboardFactory.CepRequestKeyboard(),
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
+        if (normalizedAction == "NO" || normalizedAction == "NAO" || normalizedAction == "NÃO")
+        {
+            context.Draft.AddressComplement = string.Empty;
+            await FinalizeDraftAddressAsync(context, chatId, cancellationToken);
+            return;
+        }
+
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            "Esse endereco possui complemento?",
+            KeyboardFactory.AddressComplementChoice("C:ADDCOMP:YES", "C:ADDCOMP:NO"),
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task FinalizeDraftAddressAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        context.Draft.AddressText = MergeAddressWithParts(
+            context.Draft.AddressBaseFromCep,
+            context.Draft.AddressNumber,
+            context.Draft.AddressComplement,
+            context.Draft.Cep);
+
+        var exactGeo = await TryGeocodeByAddressAsync(context.Draft.AddressText, cancellationToken);
+        if (exactGeo.Success)
+        {
+            context.Draft.Latitude = exactGeo.Latitude;
+            context.Draft.Longitude = exactGeo.Longitude;
+        }
+        else
+        {
+            var fallbackGeo = await TryGeocodeByCepAsync(context.Draft.Cep, cancellationToken);
+            if (fallbackGeo.Success)
+            {
+                context.Draft.Latitude = fallbackGeo.Latitude;
+                context.Draft.Longitude = fallbackGeo.Longitude;
+            }
+        }
+
+        context.Draft.WaitingAddressNumber = false;
+        context.Draft.WaitingAddressComplementChoice = false;
+        context.Draft.WaitingAddressComplement = false;
+        context.Draft.WaitingAddressConfirmation = true;
+
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            $"Endereco completo:\n{context.Draft.AddressText}\n\nEste endereco esta correto?",
+            KeyboardFactory.AddressConfirmation(),
             context.Session.ActiveJobId,
             cancellationToken);
     }
@@ -2116,7 +2297,7 @@ public sealed class ClientFlowHandler
 
     private static string? ResolveClientRegistrationState(BotExecutionContext context, ClientProfile profile)
     {
-        var nextState = DetermineClientRegistrationState(profile);
+        var nextState = DetermineClientRegistrationState(context, profile);
         if (nextState is null)
         {
             return null;
@@ -2134,7 +2315,7 @@ public sealed class ClientFlowHandler
         return nextState;
     }
 
-    private static string? DetermineClientRegistrationState(ClientProfile profile)
+    private static string? DetermineClientRegistrationState(BotExecutionContext context, ClientProfile profile)
     {
         if (string.IsNullOrWhiteSpace(profile.FullName))
         {
@@ -2163,6 +2344,18 @@ public sealed class ClientFlowHandler
         if (string.IsNullOrWhiteSpace(profile.Number))
         {
             return BotStates.C_REG_ADDRESS_NUMBER;
+        }
+
+        if (!profile.IsAddressConfirmed
+            && string.Equals(context.Session.State, BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM, StringComparison.Ordinal))
+        {
+            return BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM;
+        }
+
+        if (!profile.IsAddressConfirmed
+            && string.Equals(context.Session.State, BotStates.C_REG_ADDRESS_COMPLEMENT, StringComparison.Ordinal))
+        {
+            return BotStates.C_REG_ADDRESS_COMPLEMENT;
         }
 
         if (!profile.IsAddressConfirmed)
@@ -2206,7 +2399,9 @@ public sealed class ClientFlowHandler
             BotStates.C_REG_EMAIL => "Cadastro do cliente - 2/6\nInforme seu e-mail.",
             BotStates.C_REG_CPF => "Cadastro do cliente - 3/6\nInforme seu CPF.",
             BotStates.C_REG_CEP => "Cadastro do cliente - 4/6\nEnvie o CEP do seu endereco (8 digitos, com ou sem hifen).",
-            BotStates.C_REG_ADDRESS_NUMBER => $"Cadastro do cliente - 5/6\nEndereco resolvido pelo CEP:\n{BuildClientProfileBaseAddress(profile)}\n\nInforme apenas numero e complemento (se houver).",
+            BotStates.C_REG_ADDRESS_NUMBER => $"Cadastro do cliente - 5/6\nEndereco resolvido pelo CEP:\n{BuildClientProfileBaseAddress(profile)}\n\nInforme o numero do endereco.",
+            BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM => $"Cadastro do cliente - 5/6\nEndereco base:\n{BuildClientProfileAddressWithoutComplement(profile)}\n\nEsse endereco possui complemento?",
+            BotStates.C_REG_ADDRESS_COMPLEMENT => $"Cadastro do cliente - 5/6\nEndereco base:\n{BuildClientProfileAddressWithoutComplement(profile)}\n\nInforme o complemento do endereco.",
             BotStates.C_REG_ADDRESS_CONFIRM => $"Cadastro do cliente - 5/6\nConfirme seu endereco:\n{BuildClientProfileFullAddress(profile)}",
             BotStates.C_REG_PHONE => string.IsNullOrWhiteSpace(suggestedPhone)
                 ? "Cadastro do cliente - 6/6\nInforme seu telefone com DDD (ex.: 13999998888)."
@@ -2222,6 +2417,7 @@ public sealed class ClientFlowHandler
         IReplyMarkup? keyboard = state switch
         {
             BotStates.C_REG_CEP or BotStates.C_REG_ADDRESS_NUMBER => KeyboardFactory.CepRequestKeyboard(),
+            BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM => KeyboardFactory.AddressComplementChoice("C:RADDRCOMP:YES", "C:RADDRCOMP:NO"),
             BotStates.C_REG_ADDRESS_CONFIRM => KeyboardFactory.AddressConfirmation(),
             _ => null
         };
@@ -2366,19 +2562,99 @@ public sealed class ClientFlowHandler
         string text,
         CancellationToken cancellationToken)
     {
-        if (!TryParseClientRegistrationNumber(text, out var number, out var complement))
+        if (!TryParseAddressNumberOnly(text, out var number))
         {
             await SendClientRegistrationPromptAsync(
                 context,
                 chatId,
                 profile,
-                "Informe ao menos o numero do local. Ex.: 136, apto 34.",
+                "Informe apenas o numero do local. Ex.: 136.",
                 cancellationToken);
             return;
         }
 
         profile.Number = number;
+        profile.Complement = string.Empty;
+        profile.IsAddressConfirmed = false;
+        profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        UserContextService.SetState(context.Session, BotStates.C_REG_ADDRESS_COMPLEMENT_CONFIRM);
+        await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationAddressComplementDecisionAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string action,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseYesNo(action, out var hasComplement))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Responda se o endereco possui complemento.",
+                cancellationToken);
+            return;
+        }
+
+        if (hasComplement)
+        {
+            profile.Complement = string.Empty;
+            profile.IsAddressConfirmed = false;
+            profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            UserContextService.SetState(context.Session, BotStates.C_REG_ADDRESS_COMPLEMENT);
+            await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
+            return;
+        }
+
+        profile.Complement = string.Empty;
+        profile.IsAddressConfirmed = false;
+        await FinalizeClientRegistrationAddressAsync(context, profile, chatId, BotStates.C_REG_ADDRESS_CONFIRM, cancellationToken);
+    }
+
+    private async Task HandleClientRegistrationAddressComplementAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var complement = NormalizeAddressComplement(text);
+        if (string.IsNullOrWhiteSpace(complement))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Informe o complemento do endereco.",
+                cancellationToken);
+            return;
+        }
+
+        if (JobWorkflowService.HasCep(complement))
+        {
+            await SendClientRegistrationPromptAsync(
+                context,
+                chatId,
+                profile,
+                "Informe apenas o complemento, sem CEP.",
+                cancellationToken);
+            return;
+        }
+
         profile.Complement = complement;
+        await FinalizeClientRegistrationAddressAsync(context, profile, chatId, BotStates.C_REG_ADDRESS_CONFIRM, cancellationToken);
+    }
+
+    private async Task FinalizeClientRegistrationAddressAsync(
+        BotExecutionContext context,
+        ClientProfile profile,
+        ChatId chatId,
+        string nextState,
+        CancellationToken cancellationToken)
+    {
         profile.IsAddressConfirmed = false;
 
         var exactAddress = BuildClientProfileFullAddress(profile);
@@ -2396,6 +2672,7 @@ public sealed class ClientFlowHandler
         }
 
         profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        UserContextService.SetState(context.Session, nextState);
         await ContinueClientRegistrationAsync(context, profile, chatId, cancellationToken);
     }
 
@@ -2530,8 +2807,12 @@ public sealed class ClientFlowHandler
         CancellationToken cancellationToken)
     {
         context.Draft.WaitingAddressNumber = false;
+        context.Draft.WaitingAddressComplementChoice = false;
+        context.Draft.WaitingAddressComplement = false;
         context.Draft.WaitingAddressConfirmation = false;
         context.Draft.AddressBaseFromCep = null;
+        context.Draft.AddressNumber = null;
+        context.Draft.AddressComplement = null;
         UserContextService.SaveDraft(context.Session, context.Draft);
         UserContextService.SetState(context.Session, BotStates.C_SCHEDULE);
         await context.Db.SaveChangesAsync(cancellationToken);
@@ -2669,10 +2950,9 @@ public sealed class ClientFlowHandler
         return digits[9] - '0' == digit1 && digits[10] - '0' == digit2;
     }
 
-    private static bool TryParseClientRegistrationNumber(string? text, out string number, out string complement)
+    private static bool TryParseAddressNumberOnly(string? text, out string number)
     {
         number = string.Empty;
-        complement = string.Empty;
 
         var safe = (text ?? string.Empty).Trim();
         if (safe.Length == 0 || !safe.Any(char.IsDigit))
@@ -2684,12 +2964,37 @@ public sealed class ClientFlowHandler
         if (match.Success)
         {
             number = match.Groups["number"].Value.Trim();
-            complement = match.Groups["complement"].Value.Trim().Trim(',', '-', '/').Trim();
-            return !string.IsNullOrWhiteSpace(number);
+            var complement = match.Groups["complement"].Value.Trim().Trim(',', '-', '/').Trim();
+            return !string.IsNullOrWhiteSpace(number) && string.IsNullOrWhiteSpace(complement);
         }
 
         number = safe;
         return true;
+    }
+
+    private static string NormalizeAddressComplement(string? text)
+    {
+        var safe = (text ?? string.Empty).Trim();
+        return safe.Length <= 160 ? safe : safe[..160].Trim();
+    }
+
+    private static bool TryParseYesNo(string? text, out bool value)
+    {
+        value = false;
+        var safe = (text ?? string.Empty).Trim().ToUpperInvariant();
+        if (safe is "SIM" or "S" or "YES" or "Y")
+        {
+            value = true;
+            return true;
+        }
+
+        if (safe is "NAO" or "NÃO" or "N" or "NO")
+        {
+            value = false;
+            return true;
+        }
+
+        return false;
     }
 
     private static string BuildClientProfileBaseAddress(ClientProfile profile)
@@ -2717,6 +3022,45 @@ public sealed class ClientFlowHandler
             : string.IsNullOrWhiteSpace(assembled)
                 ? $"CEP {FormatCep(profile.Cep)}"
                 : $"{assembled}, CEP {FormatCep(profile.Cep)}";
+    }
+
+    private static string BuildClientProfileAddressWithoutComplement(ClientProfile profile)
+    {
+        var parts = new List<string>();
+        var firstLine = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(profile.Street))
+        {
+            firstLine.Add(profile.Street.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Number))
+        {
+            firstLine.Add(profile.Number.Trim());
+        }
+
+        if (firstLine.Count > 0)
+        {
+            parts.Add(string.Join(", ", firstLine));
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Neighborhood))
+        {
+            parts.Add(profile.Neighborhood.Trim());
+        }
+
+        var cityUf = BuildCityUf(profile.City, profile.State);
+        if (!string.IsNullOrWhiteSpace(cityUf))
+        {
+            parts.Add(cityUf);
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Cep))
+        {
+            parts.Add($"CEP {FormatCep(profile.Cep)}");
+        }
+
+        return string.Join(", ", parts.Where(x => !string.IsNullOrWhiteSpace(x)));
     }
 
     private static string BuildClientProfileFullAddress(ClientProfile profile)
@@ -2798,14 +3142,19 @@ public sealed class ClientFlowHandler
         return assembled;
     }
 
-    private static string MergeAddressWithNumber(string? baseAddress, string numberAndComplement, string? cep)
+    private static string MergeAddressWithParts(string? baseAddress, string? number, string? complement, string? cep)
     {
         var trimmedBase = RemoveTrailingCep((baseAddress ?? string.Empty).Trim());
-        var numberPart = (numberAndComplement ?? string.Empty).Trim();
+        var numberPart = (number ?? string.Empty).Trim();
+        var complementPart = (complement ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(numberPart))
         {
             return string.IsNullOrWhiteSpace(trimmedBase) ? string.Empty : trimmedBase;
         }
+
+        var composedFirstLine = string.IsNullOrWhiteSpace(complementPart)
+            ? numberPart
+            : $"{numberPart}, {complementPart}";
 
         string merged;
         var firstComma = trimmedBase.IndexOf(',');
@@ -2814,16 +3163,16 @@ public sealed class ClientFlowHandler
             var firstPart = trimmedBase[..firstComma].Trim();
             var rest = trimmedBase[(firstComma + 1)..].Trim();
             merged = string.IsNullOrWhiteSpace(rest)
-                ? $"{firstPart}, {numberPart}"
-                : $"{firstPart}, {numberPart}, {rest}";
+                ? $"{firstPart}, {composedFirstLine}"
+                : $"{firstPart}, {composedFirstLine}, {rest}";
         }
         else if (!string.IsNullOrWhiteSpace(trimmedBase))
         {
-            merged = $"{trimmedBase}, {numberPart}";
+            merged = $"{trimmedBase}, {composedFirstLine}";
         }
         else
         {
-            merged = numberPart;
+            merged = composedFirstLine;
         }
 
         return string.IsNullOrWhiteSpace(cep)
