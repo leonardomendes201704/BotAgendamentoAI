@@ -3820,6 +3820,45 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         return model;
     }
 
+    public async Task<IReadOnlyList<WhatsAppTenantConfigItem>> GetWhatsAppTenantConfigsAsync(bool activeOnly)
+    {
+        var output = new List<WhatsAppTenantConfigItem>();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = activeOnly
+            ? """
+            SELECT tenant_id, is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            FROM tg_tenant_whatsapp_config
+            WHERE is_active = 1
+            ORDER BY tenant_id;
+            """
+            : """
+            SELECT tenant_id, is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            FROM tg_tenant_whatsapp_config
+            ORDER BY tenant_id;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            output.Add(new WhatsAppTenantConfigItem
+            {
+                TenantId = reader.IsDBNull(0) ? "A" : reader.GetString(0),
+                IsActive = !reader.IsDBNull(1) && reader.GetInt32(1) == 1,
+                PhoneNumberId = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                BusinessAccountId = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                AccessToken = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                AppSecret = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                WebhookVerifyToken = reader.IsDBNull(6) ? string.Empty : reader.GetString(6)
+            });
+        }
+
+        return output;
+    }
+
     public async Task<IReadOnlyList<TelegramUserOption>> GetTelegramUsersAsync(string tenantId, int limit = 200)
     {
         var tenant = NormalizeTenant(tenantId);

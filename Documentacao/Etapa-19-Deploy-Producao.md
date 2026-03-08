@@ -19,6 +19,12 @@
   - Worker .NET 8 com polling do Telegram.
   - Sem porta HTTP exposta.
 
+- `bottelegram-whatsapp`
+  - Webhook HTTP do WhatsApp Cloud API.
+  - Porta interna `8080`.
+  - Publicado somente em `127.0.0.1:${WHATSAPP_PORT}`.
+  - O callback publico continua no mesmo dominio do Admin via rota `https://bottelegram.consertapramim.com/webhooks/whatsapp`.
+
 ## Variaveis de ambiente
 
 Arquivo `.env`:
@@ -26,6 +32,8 @@ Arquivo `.env`:
 - `ADMIN_PORT`
 - `ConnectionStrings__DefaultConnection`
 - `Admin__DashboardRealtimePollSeconds`
+- `WHATSAPP_PORT`
+- `WhatsAppRuntime__DatabasePath`
 - `TelegramWorker__TimeZoneId`
 - `TelegramWorker__TenantIdleDelaySeconds`
 - `TelegramWorker__SessionExpiryMinutes`
@@ -53,4 +61,5 @@ Fluxo:
 1. `git pull` no diretorio da app.
 2. `docker compose up -d --build --remove-orphans`
 3. Nginx faz proxy para `127.0.0.1:5300`.
-4. Certbot emite HTTPS para `bottelegram.consertapramim.com`.
+4. O callback do WhatsApp entra pelo proprio Admin em `https://bottelegram.consertapramim.com/webhooks/whatsapp`.
+5. Certbot emite HTTPS para `bottelegram.consertapramim.com`.
