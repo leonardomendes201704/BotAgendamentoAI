@@ -166,6 +166,47 @@ public sealed class BookingsPageViewModel
     public IReadOnlyList<BookingListItem> Bookings { get; set; } = Array.Empty<BookingListItem>();
 }
 
+public sealed class BookingDetailsViewModel
+{
+    public string TenantId { get; set; } = "A";
+    public string Id { get; set; } = string.Empty;
+    public bool IsLegacy { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public string StatusLabel { get; set; } = string.Empty;
+    public string CustomerName { get; set; } = string.Empty;
+    public string CustomerPhone { get; set; } = string.Empty;
+    public string ContactName { get; set; } = string.Empty;
+    public string ContactPhone { get; set; } = string.Empty;
+    public string ServiceCategory { get; set; } = string.Empty;
+    public string ServiceTitle { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+    public DateTime StartLocal { get; set; }
+    public int DurationMinutes { get; set; }
+    public bool IsUrgent { get; set; }
+    public string PreferenceCode { get; set; } = string.Empty;
+    public string PreferenceLabel { get; set; } = string.Empty;
+    public string TechnicianName { get; set; } = string.Empty;
+    public string TechnicianPhone { get; set; } = string.Empty;
+    public decimal? FinalAmount { get; set; }
+    public string FinalNotes { get; set; } = string.Empty;
+    public int PhotoCount { get; set; }
+    public int? RatingStars { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public IReadOnlyList<BookingStatusHistoryItem> StatusHistory { get; set; } = Array.Empty<BookingStatusHistoryItem>();
+}
+
+public sealed class BookingStatusHistoryItem
+{
+    public string Status { get; set; } = string.Empty;
+    public string StatusLabel { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public DateTimeOffset AtUtc { get; set; }
+}
+
 public sealed class ClientListItem
 {
     public long Id { get; set; }

@@ -253,17 +253,6 @@
 </div>
 
 <div class="card mb-4">
-    <div class="card-body">
-        <h2 class="h6 text-muted">Periodo</h2>
-        <p id="periodText" class="mb-0">
-            @Model.FromUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
-            ate
-            @Model.ToUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
-        </p>
-    </div>
-</div>
-
-<div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <strong>Mapa de agendamentos</strong>
         <span id="mapStatus" class="map-meta">Carregando mapa...</span>
@@ -368,7 +357,6 @@
             const metricConvertedPhonesEl = document.getElementById('metricConvertedPhones');
             const metricConversionRateEl = document.getElementById('metricConversionRate');
             const metricHumanHandoffEl = document.getElementById('metricHumanHandoff');
-            const periodTextEl = document.getElementById('periodText');
             const recentConversationsBodyEl = document.getElementById('recentConversationsBody');
             const recentBookingsBodyEl = document.getElementById('recentBookingsBody');
 
@@ -532,9 +520,6 @@
                 const convertedPhones = snapshot.convertedPhones ?? snapshot.ConvertedPhones;
                 const conversionRatePercent = snapshot.conversionRatePercent ?? snapshot.ConversionRatePercent;
                 const humanHandoffOpen = snapshot.humanHandoffOpen ?? snapshot.HumanHandoffOpen;
-                const fromUtc = snapshot.fromUtc ?? snapshot.FromUtc;
-                const toUtc = snapshot.toUtc ?? snapshot.ToUtc;
-
                 if (metricConversationsEl) {
                     metricConversationsEl.textContent = toInt(totalIncomingConversations).toString();
                 }
@@ -571,9 +556,6 @@
                     metricConversionRateEl.textContent = `${toDecimal(conversionRatePercent).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%`;
                 }
 
-                if (periodTextEl) {
-                    periodTextEl.textContent = `${formatDateTime(fromUtc)} ate ${formatDateTime(toUtc)}`;
-                }
             }
 
             function renderRecentConversations(items) {

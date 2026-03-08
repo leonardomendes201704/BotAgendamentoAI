@@ -15,7 +15,6 @@ builder.Services.Configure<TelegramWorkerOptions>(builder.Configuration.GetSecti
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
-    .WriteTo.Console()
     .CreateLogger();
 
 builder.Services.AddSerilog();

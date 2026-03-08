@@ -26,4 +26,22 @@ public sealed class BookingsController : Controller
         ViewData["Tenants"] = await _repository.GetTenantIdsAsync();
         return View(model);
     }
+
+    [HttpGet]
+    public async Task<IActionResult> Details(string tenant, string id)
+    {
+        var normalizedTenant = string.IsNullOrWhiteSpace(tenant) ? "A" : tenant.Trim();
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return BadRequest(new { error = "Agendamento invalido." });
+        }
+
+        var details = await _repository.GetBookingDetailsAsync(normalizedTenant, id.Trim());
+        if (details is null)
+        {
+            return NotFound(new { error = "Agendamento nao encontrado." });
+        }
+
+        return Json(details);
+    }
 }

@@ -78,6 +78,7 @@
                     <th>Inicio</th>
                     <th>Duracao</th>
                     <th>Tecnico</th>
+                    <th class="text-end">Acoes</th>
                 </tr>
             </thead>
             <tbody>
@@ -107,9 +108,344 @@
                     <td>@item.StartLocal.ToString("dd/MM/yyyy HH:mm")</td>
                     <td>@item.DurationMinutes min</td>
                     <td>@item.TechnicianName</td>
+                    <td class="text-end">
+                        <button
+                            type="button"
+                            class="btn btn-sm btn-outline-primary js-booking-details"
+                            data-tenant="@Model.TenantId"
+                            data-booking-id="@item.Id">
+                            Ver pedido
+                        </button>
+                    </td>
                 </tr>
             }
             </tbody>
         </table>
     </div>
 </div>
+
+<div class="modal fade" id="bookingDetailsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Detalhes do pedido</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div id="bookingDetailsLoading" class="py-5 text-center text-muted">
+                    Carregando detalhes do pedido...
+                </div>
+                <div id="bookingDetailsError" class="alert alert-danger d-none" role="alert"></div>
+                <div id="bookingDetailsContent" class="d-none"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts
+{
+    <script>
+        (() => {
+            const modalElement = document.getElementById('bookingDetailsModal');
+            if (!modalElement || typeof bootstrap === 'undefined') {
+                return;
+            }
+
+            const detailsModal = new bootstrap.Modal(modalElement);
+            const loadingElement = document.getElementById('bookingDetailsLoading');
+            const errorElement = document.getElementById('bookingDetailsError');
+            const contentElement = document.getElementById('bookingDetailsContent');
+            const detailsUrl = '@Url.Action("Details", "Bookings")';
+
+            function escapeHtml(value) {
+                return String(value ?? '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function valueOrDash(value) {
+                if (value === null || value === undefined) {
+                    return '<span class="text-muted">-</span>';
+                }
+
+                const text = String(value).trim();
+                return text.length === 0
+                    ? '<span class="text-muted">-</span>'
+                    : escapeHtml(text);
+            }
+
+            function statusColorHex(status) {
+                switch (String(status ?? '').trim().toUpperCase()) {
+                    case 'REQUESTED':
+                    case 'WAITINGPROVIDER':
+                        return '#f6bf26';
+                    case 'ACCEPTED':
+                        return '#3f51b5';
+                    case 'ONTHEWAY':
+                        return '#039be5';
+                    case 'ARRIVED':
+                        return '#f4511e';
+                    case 'INPROGRESS':
+                        return '#0b8043';
+                    case 'FINISHED':
+                        return '#33b679';
+                    case 'CANCELLED':
+                        return '#d50000';
+                    case 'RESCHEDULED':
+                        return '#8e24aa';
+                    case 'LEGACY':
+                    default:
+                        return '#616161';
+                }
+            }
+
+            function statusTextColor(status) {
+                const code = String(status ?? '').trim().toUpperCase();
+                return code === 'REQUESTED' || code === 'WAITINGPROVIDER'
+                    ? '#212529'
+                    : '#ffffff';
+            }
+
+            function statusBadge(status, label) {
+                const safeLabel = escapeHtml(label || status || 'Sem status');
+                return `<span class="badge" style="background-color:${statusColorHex(status)}; color:${statusTextColor(status)};">${safeLabel}</span>`;
+            }
+
+            function formatDateTime(value) {
+                if (!value) {
+                    return '-';
+                }
+
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) {
+                    return escapeHtml(value);
+                }
+
+                return new Intl.DateTimeFormat('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                }).format(date);
+            }
+
+            function formatCurrency(value) {
+                if (value === null || value === undefined || value === '') {
+                    return '<span class="text-muted">-</span>';
+                }
+
+                const numericValue = Number(value);
+                if (Number.isNaN(numericValue)) {
+                    return escapeHtml(value);
+                }
+
+                return new Intl.NumberFormat('pt-BR', {
+                    style: 'currency',
+                    currency: 'BRL'
+                }).format(numericValue);
+            }
+
+            function renderHistory(items) {
+                if (!Array.isArray(items) || items.length === 0) {
+                    return '<div class="text-muted">Sem historico registrado.</div>';
+                }
+
+                return `
+                    <div class="list-group">
+                        ${items.map(item => `
+                            <div class="list-group-item">
+                                <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+                                    <div>
+                                        <div class="mb-1">${statusBadge(item.status, item.statusLabel)}</div>
+                                        <div>${valueOrDash(item.description)}</div>
+                                    </div>
+                                    <small class="text-muted">${formatDateTime(item.atUtc)}</small>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            function renderDetails(details) {
+                const geoText = details.latitude !== null && details.latitude !== undefined
+                    && details.longitude !== null && details.longitude !== undefined
+                    ? `${Number(details.latitude).toFixed(6)}, ${Number(details.longitude).toFixed(6)}`
+                    : '';
+
+                return `
+                    <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
+                        <div>
+                            <div class="text-muted small mb-1">Pedido</div>
+                            <h4 class="mb-0">${escapeHtml(details.id)}</h4>
+                        </div>
+                        <div class="text-end">
+                            <div class="text-muted small mb-1">Status</div>
+                            ${statusBadge(details.status, details.statusLabel)}
+                        </div>
+                    </div>
+
+                    ${details.isLegacy ? '<div class="alert alert-secondary py-2">Registro legado. O historico detalhado pode ser limitado.</div>' : ''}
+
+                    <div class="row g-4">
+                        <div class="col-lg-7">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h6 class="card-title">Dados do pedido</h6>
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Categoria</div>
+                                            <div>${valueOrDash(details.serviceCategory)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Preferencia</div>
+                                            <div>${valueOrDash(details.preferenceLabel)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Servico</div>
+                                            <div>${valueOrDash(details.serviceTitle)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Descricao</div>
+                                            <div style="white-space: pre-wrap;">${valueOrDash(details.description)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Quando</div>
+                                            <div>${formatDateTime(details.startLocal)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Duracao</div>
+                                            <div>${escapeHtml(details.durationMinutes)} min</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Urgencia</div>
+                                            <div>${details.isUrgent ? 'Urgente' : 'Agendado'}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Fotos</div>
+                                            <div>${escapeHtml(details.photoCount)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Valor final</div>
+                                            <div>${formatCurrency(details.finalAmount)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Avaliacao</div>
+                                            <div>${details.ratingStars === null || details.ratingStars === undefined ? '<span class="text-muted">-</span>' : `${escapeHtml(details.ratingStars)} / 5`}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Observacoes finais</div>
+                                            <div style="white-space: pre-wrap;">${valueOrDash(details.finalNotes)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Endereco</div>
+                                            <div>${valueOrDash(details.address)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Geo</div>
+                                            <div>${valueOrDash(geoText)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Tenant</div>
+                                            <div>${valueOrDash(details.tenantId)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Criado em</div>
+                                            <div>${formatDateTime(details.createdAtUtc)}</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="text-muted small">Atualizado em</div>
+                                            <div>${formatDateTime(details.updatedAtUtc)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-5">
+                            <div class="card mb-4">
+                                <div class="card-body">
+                                    <h6 class="card-title">Cliente e contato</h6>
+                                    <div class="row g-3">
+                                        <div class="col-12">
+                                            <div class="text-muted small">Cliente</div>
+                                            <div>${valueOrDash(details.customerName)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Telefone cliente</div>
+                                            <div>${valueOrDash(details.customerPhone)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Contato do pedido</div>
+                                            <div>${valueOrDash(details.contactName)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Telefone contato</div>
+                                            <div>${valueOrDash(details.contactPhone)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Prestador</div>
+                                            <div>${valueOrDash(details.technicianName)}</div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="text-muted small">Telefone prestador</div>
+                                            <div>${valueOrDash(details.technicianPhone)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card">
+                                <div class="card-body">
+                                    <h6 class="card-title">Historico de status</h6>
+                                    ${renderHistory(details.statusHistory)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async function loadDetails(tenantId, bookingId) {
+                loadingElement.classList.remove('d-none');
+                errorElement.classList.add('d-none');
+                contentElement.classList.add('d-none');
+                contentElement.innerHTML = '';
+
+                try {
+                    const url = `${detailsUrl}?tenant=${encodeURIComponent(tenantId)}&id=${encodeURIComponent(bookingId)}`;
+                    const response = await fetch(url, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        const payload = await response.json().catch(() => null);
+                        throw new Error(payload?.error || 'Nao foi possivel carregar os detalhes do pedido.');
+                    }
+
+                    const details = await response.json();
+                    contentElement.innerHTML = renderDetails(details);
+                    contentElement.classList.remove('d-none');
+                } catch (error) {
+                    errorElement.textContent = error?.message || 'Nao foi possivel carregar os detalhes do pedido.';
+                    errorElement.classList.remove('d-none');
+                } finally {
+                    loadingElement.classList.add('d-none');
+                }
+            }
+
+            document.querySelectorAll('.js-booking-details').forEach(button => {
+                button.addEventListener('click', () => {
+                    const tenantId = button.getAttribute('data-tenant') || '@Model.TenantId';
+                    const bookingId = button.getAttribute('data-booking-id') || '';
+                    detailsModal.show();
+                    loadDetails(tenantId, bookingId);
+                });
+            });
+        })();
+    </script>
+}

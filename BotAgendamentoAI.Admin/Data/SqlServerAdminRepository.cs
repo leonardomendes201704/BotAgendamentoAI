@@ -2372,6 +2372,346 @@ END;
             .ToList();
     }
 
+    public async Task<BookingDetailsViewModel?> GetBookingDetailsAsync(string tenantId, string bookingId)
+    {
+        var tenant = NormalizeTenant(tenantId);
+        var normalizedBookingId = (bookingId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedBookingId))
+        {
+            return null;
+        }
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        var hasLegacyBookings = await TableExistsAsync(connection, "tg_bookings");
+        var hasJobs = await TableExistsAsync(connection, "tg_Jobs");
+        var hasUsers = await TableExistsAsync(connection, "tg_Users");
+        var hasClientProfiles = await TableExistsAsync(connection, "tg_client_profiles");
+        var hasGeocodeCache = await TableExistsAsync(connection, "tg_booking_geocode_cache");
+        var hasMessagesLog = await TableExistsAsync(connection, "tg_MessagesLog");
+        var hasJobPhotos = await TableExistsAsync(connection, "tg_JobPhotos");
+        var hasRatings = await TableExistsAsync(connection, "tg_Ratings");
+        var defaultJobDurationMinutes = await GetDefaultJobDurationMinutesAsync(connection, tenant);
+
+        async Task<(string Name, string Phone)> LoadUserContactAsync(long userId, bool preferClientProfile)
+        {
+            if (!hasUsers || userId <= 0)
+            {
+                return (Name: string.Empty, Phone: string.Empty);
+            }
+
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT TOP (1)
+                  COALESCE(Name, ''),
+                  COALESCE(Phone, ''),
+                  TelegramUserId
+                FROM tg_Users
+                WHERE TenantId = @tenant_id
+                  AND Id = @user_id;
+                """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@user_id", userId);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+            {
+                return (Name: string.Empty, Phone: string.Empty);
+            }
+
+            var name = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+            var phone = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            var telegramUserId = reader.IsDBNull(2) ? 0L : reader.GetInt64(2);
+            if (string.IsNullOrWhiteSpace(phone) && telegramUserId > 0)
+            {
+                phone = $"tg:{telegramUserId}";
+            }
+
+            if (preferClientProfile && hasClientProfiles)
+            {
+                await using var profileCommand = connection.CreateCommand();
+                profileCommand.CommandText =
+                    """
+                    SELECT TOP (1)
+                      COALESCE(full_name, ''),
+                      COALESCE(phone_number, '')
+                    FROM tg_client_profiles
+                    WHERE tenant_id = @tenant_id
+                      AND user_id = @user_id;
+                    """;
+                profileCommand.Parameters.AddWithValue("@tenant_id", tenant);
+                profileCommand.Parameters.AddWithValue("@user_id", userId);
+
+                await using var profileReader = await profileCommand.ExecuteReaderAsync();
+                if (await profileReader.ReadAsync())
+                {
+                    var profileName = profileReader.IsDBNull(0) ? string.Empty : profileReader.GetString(0);
+                    var profilePhone = profileReader.IsDBNull(1) ? string.Empty : profileReader.GetString(1);
+                    if (!string.IsNullOrWhiteSpace(profileName))
+                    {
+                        name = profileName;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(profilePhone))
+                    {
+                        phone = profilePhone;
+                    }
+                }
+            }
+
+            return (name, phone);
+        }
+
+        async Task<(double? Latitude, double? Longitude)> LoadCachedCoordinatesAsync(string cacheBookingId)
+        {
+            if (!hasGeocodeCache)
+            {
+                return (Latitude: (double?)null, Longitude: (double?)null);
+            }
+
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT TOP (1)
+                  latitude,
+                  longitude
+                FROM tg_booking_geocode_cache
+                WHERE tenant_id = @tenant_id
+                  AND booking_id = @booking_id;
+                """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@booking_id", cacheBookingId);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+            {
+                return (Latitude: (double?)null, Longitude: (double?)null);
+            }
+
+            var latitude = reader.IsDBNull(0) ? (double?)null : reader.GetDouble(0);
+            var longitude = reader.IsDBNull(1) ? (double?)null : reader.GetDouble(1);
+            return (latitude, longitude);
+        }
+
+        if (TryParseJobBookingId(normalizedBookingId, out var jobId) && hasJobs)
+        {
+            var hasContactName = await ColumnExistsAsync(connection, "tg_Jobs", "ContactName");
+            var hasContactPhone = await ColumnExistsAsync(connection, "tg_Jobs", "ContactPhone");
+
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                SELECT TOP (1)
+                  j.Id,
+                  COALESCE(j.Category, ''),
+                  COALESCE(j.Description, ''),
+                  j.ScheduledAt,
+                  COALESCE(j.AddressText, ''),
+                  j.CreatedAt,
+                  j.UpdatedAt,
+                  COALESCE(j.Status, ''),
+                  j.ClientUserId,
+                  j.ProviderUserId,
+                  j.Latitude,
+                  j.Longitude,
+                  COALESCE(j.PreferenceCode, ''),
+                  j.IsUrgent,
+                  {(hasContactName ? "j.ContactName" : "CAST(NULL AS NVARCHAR(120))")},
+                  {(hasContactPhone ? "j.ContactPhone" : "CAST(NULL AS NVARCHAR(32))")},
+                  j.FinalAmount,
+                  COALESCE(j.FinalNotes, '')
+                FROM tg_Jobs j
+                WHERE j.TenantId = @tenant_id
+                  AND j.Id = @job_id;
+                """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@job_id", jobId);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                var createdAtUtc = ParseUtc(reader.IsDBNull(5) ? null : reader.GetValue(5));
+                var updatedAtUtc = ParseUtc(reader.IsDBNull(6) ? null : reader.GetValue(6));
+                var currentStatus = reader.IsDBNull(7) ? string.Empty : reader.GetString(7);
+                var clientUserId = reader.IsDBNull(8) ? 0L : reader.GetInt64(8);
+                var providerUserId = reader.IsDBNull(9) ? (long?)null : reader.GetInt64(9);
+                var latitude = reader.IsDBNull(10) ? (double?)null : reader.GetDouble(10);
+                var longitude = reader.IsDBNull(11) ? (double?)null : reader.GetDouble(11);
+                var customer = await LoadUserContactAsync(clientUserId, preferClientProfile: true);
+                var provider = providerUserId.HasValue
+                    ? await LoadUserContactAsync(providerUserId.Value, preferClientProfile: false)
+                    : (Name: string.Empty, Phone: string.Empty);
+
+                if ((!latitude.HasValue || !longitude.HasValue) && hasGeocodeCache)
+                {
+                    var cached = await LoadCachedCoordinatesAsync($"job:{jobId}");
+                    latitude ??= cached.Latitude;
+                    longitude ??= cached.Longitude;
+                }
+
+                var model = new BookingDetailsViewModel
+                {
+                    TenantId = tenant,
+                    Id = normalizedBookingId,
+                    IsLegacy = false,
+                    Status = currentStatus,
+                    StatusLabel = FormatBookingStatusLabel(currentStatus),
+                    CustomerName = customer.Name,
+                    CustomerPhone = customer.Phone,
+                    ContactName = reader.IsDBNull(14) ? string.Empty : reader.GetString(14),
+                    ContactPhone = reader.IsDBNull(15) ? string.Empty : reader.GetString(15),
+                    ServiceCategory = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    ServiceTitle = TrimPreview(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
+                    Description = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    Address = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                    Latitude = latitude,
+                    Longitude = longitude,
+                    StartLocal = ParseLocalOrUtcDateTime(ToInvariantText(reader.IsDBNull(3) ? null : reader.GetValue(3)), createdAtUtc),
+                    DurationMinutes = defaultJobDurationMinutes,
+                    IsUrgent = ReadBool(reader, 13),
+                    PreferenceCode = reader.IsDBNull(12) ? string.Empty : reader.GetString(12),
+                    TechnicianName = provider.Name,
+                    TechnicianPhone = provider.Phone,
+                    FinalAmount = reader.IsDBNull(16) ? null : Convert.ToDecimal(reader.GetValue(16), CultureInfo.InvariantCulture),
+                    FinalNotes = reader.IsDBNull(17) ? string.Empty : reader.GetString(17),
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = updatedAtUtc
+                };
+
+                if (string.IsNullOrWhiteSpace(model.ContactName))
+                {
+                    model.ContactName = model.CustomerName;
+                }
+
+                if (string.IsNullOrWhiteSpace(model.ContactPhone))
+                {
+                    model.ContactPhone = model.CustomerPhone;
+                }
+
+                model.PreferenceLabel = ResolvePreferenceLabel(model.PreferenceCode);
+
+                if (hasJobPhotos)
+                {
+                    model.PhotoCount = await QueryIntAsync(
+                        connection,
+                        """
+                        SELECT COUNT(*)
+                        FROM tg_JobPhotos
+                        WHERE JobId = @job_id;
+                        """,
+                        ("@job_id", jobId));
+                }
+
+                if (hasRatings)
+                {
+                    await using var ratingCommand = connection.CreateCommand();
+                    ratingCommand.CommandText =
+                        """
+                        SELECT TOP (1)
+                          Stars
+                        FROM tg_Ratings
+                        WHERE JobId = @job_id;
+                        """;
+                    ratingCommand.Parameters.AddWithValue("@job_id", jobId);
+                    var ratingScalar = await ratingCommand.ExecuteScalarAsync();
+                    if (ratingScalar is not null and not DBNull)
+                    {
+                        model.RatingStars = Convert.ToInt32(ratingScalar, CultureInfo.InvariantCulture);
+                    }
+                }
+
+                model.StatusHistory = hasMessagesLog
+                    ? await GetJobStatusHistoryAsync(connection, tenant, jobId, currentStatus, createdAtUtc, updatedAtUtc)
+                    : new[]
+                    {
+                        new BookingStatusHistoryItem
+                        {
+                            Status = string.IsNullOrWhiteSpace(currentStatus) ? "WaitingProvider" : currentStatus,
+                            StatusLabel = FormatBookingStatusLabel(string.IsNullOrWhiteSpace(currentStatus) ? "WaitingProvider" : currentStatus),
+                            Description = "Pedido criado.",
+                            AtUtc = createdAtUtc
+                        }
+                    };
+
+                return model;
+            }
+        }
+
+        if (!hasLegacyBookings)
+        {
+            return null;
+        }
+
+        await using var legacyCommand = connection.CreateCommand();
+        legacyCommand.CommandText =
+            """
+            SELECT TOP (1)
+              id,
+              COALESCE(customer_phone, ''),
+              COALESCE(customer_name, ''),
+              COALESCE(service_category, ''),
+              COALESCE(service_title, ''),
+              start_local,
+              duration_minutes,
+              COALESCE(address, ''),
+              COALESCE(technician_name, ''),
+              created_at_utc
+            FROM tg_bookings
+            WHERE tenant_id = @tenant_id
+              AND id = @booking_id;
+            """;
+        legacyCommand.Parameters.AddWithValue("@tenant_id", tenant);
+        legacyCommand.Parameters.AddWithValue("@booking_id", normalizedBookingId);
+
+        await using var legacyReader = await legacyCommand.ExecuteReaderAsync();
+        if (!await legacyReader.ReadAsync())
+        {
+            return null;
+        }
+
+        var legacyCreatedAtUtc = ParseUtc(legacyReader.IsDBNull(9) ? null : legacyReader.GetValue(9));
+        var legacyCoordinates = await LoadCachedCoordinatesAsync(normalizedBookingId);
+
+        return new BookingDetailsViewModel
+        {
+            TenantId = tenant,
+            Id = normalizedBookingId,
+            IsLegacy = true,
+            Status = "Legacy",
+            StatusLabel = FormatBookingStatusLabel("Legacy"),
+            CustomerName = legacyReader.IsDBNull(2) ? string.Empty : legacyReader.GetString(2),
+            CustomerPhone = legacyReader.IsDBNull(1) ? string.Empty : legacyReader.GetString(1),
+            ContactName = legacyReader.IsDBNull(2) ? string.Empty : legacyReader.GetString(2),
+            ContactPhone = legacyReader.IsDBNull(1) ? string.Empty : legacyReader.GetString(1),
+            ServiceCategory = legacyReader.IsDBNull(3) ? string.Empty : legacyReader.GetString(3),
+            ServiceTitle = legacyReader.IsDBNull(4) ? string.Empty : legacyReader.GetString(4),
+            Description = legacyReader.IsDBNull(4) ? string.Empty : legacyReader.GetString(4),
+            Address = legacyReader.IsDBNull(7) ? string.Empty : legacyReader.GetString(7),
+            Latitude = legacyCoordinates.Latitude,
+            Longitude = legacyCoordinates.Longitude,
+            StartLocal = ParseLocalDateTime(legacyReader.IsDBNull(5) ? string.Empty : legacyReader.GetString(5)),
+            DurationMinutes = legacyReader.IsDBNull(6) ? defaultJobDurationMinutes : legacyReader.GetInt32(6),
+            PreferenceCode = string.Empty,
+            PreferenceLabel = "Nao informado",
+            TechnicianName = legacyReader.IsDBNull(8) ? string.Empty : legacyReader.GetString(8),
+            TechnicianPhone = string.Empty,
+            CreatedAtUtc = legacyCreatedAtUtc,
+            UpdatedAtUtc = legacyCreatedAtUtc,
+            StatusHistory = new[]
+            {
+                new BookingStatusHistoryItem
+                {
+                    Status = "Legacy",
+                    StatusLabel = FormatBookingStatusLabel("Legacy"),
+                    Description = "Registro legado importado para visualizacao.",
+                    AtUtc = legacyCreatedAtUtc
+                }
+            }
+        };
+    }
+
     public async Task<IReadOnlyList<ClientListItem>> GetClientsAsync(string tenantId, int limit)
     {
         var output = new List<ClientListItem>();
@@ -5263,6 +5603,50 @@ END;
         return scalar is null || scalar is DBNull ? 0 : Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
     }
 
+    private static async Task<int> GetDefaultJobDurationMinutesAsync(SqlConnection connection, string tenantId)
+    {
+        if (!await TableExistsAsync(connection, "tg_tenant_google_calendar_config"))
+        {
+            return 60;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT TOP (1)
+              default_duration_minutes
+            FROM tg_tenant_google_calendar_config
+            WHERE tenant_id = @tenant_id
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenantId);
+        var scalar = await command.ExecuteScalarAsync();
+        if (scalar is null or DBNull)
+        {
+            return 60;
+        }
+
+        return Math.Clamp(
+            Convert.ToInt32(scalar, CultureInfo.InvariantCulture),
+            15,
+            720);
+    }
+
+    private static async Task<bool> ColumnExistsAsync(SqlConnection connection, string tableName, string columnName)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = @table_name
+              AND COLUMN_NAME = @column_name
+            """;
+        command.Parameters.AddWithValue("@table_name", tableName);
+        command.Parameters.AddWithValue("@column_name", columnName);
+        var scalar = await command.ExecuteScalarAsync();
+        return scalar is not null && scalar is not DBNull;
+    }
+
     private static async Task<string> GetSharedSettingAsync(SqlConnection connection, string settingKey)
     {
         await using var command = connection.CreateCommand();
@@ -5483,6 +5867,229 @@ END;
             "FAST" => "Mais rapido",
             "CHO" => "Escolher prestador",
             _ => string.IsNullOrWhiteSpace(code) ? "Melhor avaliados" : code.Trim()
+        };
+    }
+
+    private static async Task<IReadOnlyList<BookingStatusHistoryItem>> GetJobStatusHistoryAsync(
+        SqlConnection connection,
+        string tenantId,
+        long jobId,
+        string currentStatus,
+        DateTimeOffset createdAtUtc,
+        DateTimeOffset updatedAtUtc)
+    {
+        var items = new List<BookingStatusHistoryItem>();
+        var initialStatus = string.Equals(currentStatus, "Requested", StringComparison.OrdinalIgnoreCase)
+            ? "Requested"
+            : "WaitingProvider";
+
+        AddBookingStatusHistoryItem(
+            items,
+            initialStatus,
+            "Pedido criado e enviado para distribuicao.",
+            createdAtUtc);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT
+              COALESCE(Text, ''),
+              CreatedAt
+            FROM tg_MessagesLog
+            WHERE TenantId = @tenant_id
+              AND RelatedJobId = @job_id
+            ORDER BY CreatedAt ASC, Id ASC;
+            """;
+        command.Parameters.AddWithValue("@tenant_id", tenantId);
+        command.Parameters.AddWithValue("@job_id", jobId);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var content = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+            var atUtc = ParseUtc(reader.IsDBNull(1) ? null : reader.GetValue(1));
+            if (!TryMapBookingTimelineEvent(content, out var status, out var description))
+            {
+                continue;
+            }
+
+            AddBookingStatusHistoryItem(items, status, description, atUtc);
+        }
+
+        EnsureCurrentBookingStatusInHistory(items, currentStatus, updatedAtUtc);
+        return items
+            .OrderByDescending(x => x.AtUtc)
+            .ToList();
+    }
+
+    private static bool TryMapBookingTimelineEvent(string? content, out string status, out string description)
+    {
+        status = string.Empty;
+        description = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return false;
+        }
+
+        var text = content.Trim();
+        if (text.StartsWith("Novo pedido #", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Pedido criado!", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Acompanhe seu pedido", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (text.StartsWith("Voce aceitou o pedido #", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("foi aceito por", StringComparison.OrdinalIgnoreCase))
+        {
+            status = "Accepted";
+            description = text;
+            return true;
+        }
+
+        if (text.StartsWith("Status atualizado:", StringComparison.OrdinalIgnoreCase))
+        {
+            var token = text[(text.IndexOf(':') + 1)..];
+            status = NormalizeBookingStatusToken(token);
+            description = text;
+            return !string.IsNullOrWhiteSpace(status);
+        }
+
+        if (text.StartsWith("Atualizacao do pedido #", StringComparison.OrdinalIgnoreCase))
+        {
+            var colonIndex = text.LastIndexOf(':');
+            if (colonIndex >= 0 && colonIndex < text.Length - 1)
+            {
+                status = NormalizeBookingStatusToken(text[(colonIndex + 1)..]);
+                description = text;
+                return !string.IsNullOrWhiteSpace(status);
+            }
+        }
+
+        if (text.Contains("foi finalizado", StringComparison.OrdinalIgnoreCase)
+            || (text.StartsWith("Pedido #", StringComparison.OrdinalIgnoreCase)
+                && text.Contains("finalizado", StringComparison.OrdinalIgnoreCase)))
+        {
+            status = "Finished";
+            description = text;
+            return true;
+        }
+
+        if (text.Contains("cancelado com sucesso", StringComparison.OrdinalIgnoreCase))
+        {
+            status = "Cancelled";
+            description = text;
+            return true;
+        }
+
+        if (text.Contains("reagendado para", StringComparison.OrdinalIgnoreCase))
+        {
+            status = "Rescheduled";
+            description = text;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void EnsureCurrentBookingStatusInHistory(
+        List<BookingStatusHistoryItem> items,
+        string currentStatus,
+        DateTimeOffset updatedAtUtc)
+    {
+        var normalizedStatus = NormalizeBookingStatusToken(currentStatus);
+        if (string.IsNullOrWhiteSpace(normalizedStatus))
+        {
+            return;
+        }
+
+        if (items.Any(x => string.Equals(
+                NormalizeBookingStatusToken(x.Status),
+                normalizedStatus,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        AddBookingStatusHistoryItem(
+            items,
+            normalizedStatus,
+            $"Status atual: {FormatBookingStatusLabel(normalizedStatus)}.",
+            updatedAtUtc);
+    }
+
+    private static void AddBookingStatusHistoryItem(
+        List<BookingStatusHistoryItem> items,
+        string status,
+        string description,
+        DateTimeOffset atUtc)
+    {
+        var normalizedStatus = NormalizeBookingStatusToken(status);
+        if (string.IsNullOrWhiteSpace(normalizedStatus))
+        {
+            return;
+        }
+
+        if (items.Any(x =>
+                string.Equals(NormalizeBookingStatusToken(x.Status), normalizedStatus, StringComparison.OrdinalIgnoreCase)
+                && Math.Abs((x.AtUtc - atUtc).TotalSeconds) < 120))
+        {
+            return;
+        }
+
+        items.Add(new BookingStatusHistoryItem
+        {
+            Status = normalizedStatus,
+            StatusLabel = FormatBookingStatusLabel(normalizedStatus),
+            Description = string.IsNullOrWhiteSpace(description)
+                ? FormatBookingStatusLabel(normalizedStatus)
+                : description,
+            AtUtc = atUtc
+        });
+    }
+
+    private static string NormalizeBookingStatusToken(string? rawValue)
+    {
+        var token = (rawValue ?? string.Empty)
+            .Trim()
+            .TrimEnd('.', '!', '?')
+            .Replace(" ", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .ToUpperInvariant();
+
+        return token switch
+        {
+            "" => string.Empty,
+            "REQUESTED" or "SOLICITADO" => "Requested",
+            "WAITINGPROVIDER" or "AGUARDANDOPRESTADOR" => "WaitingProvider",
+            "ACCEPTED" or "ACEITO" => "Accepted",
+            "ONTHEWAY" or "ACAMINHO" => "OnTheWay",
+            "ARRIVED" or "PRESTADORCHEGOU" or "CHEGOU" => "Arrived",
+            "INPROGRESS" or "EMANDAMENTO" => "InProgress",
+            "FINISHED" or "FINALIZADO" => "Finished",
+            "CANCELLED" or "CANCELADO" => "Cancelled",
+            "RESCHEDULED" or "REAGENDADO" => "Rescheduled",
+            "LEGACY" => "Legacy",
+            _ => rawValue?.Trim() ?? string.Empty
+        };
+    }
+
+    private static string FormatBookingStatusLabel(string? status)
+    {
+        return NormalizeBookingStatusToken(status).ToUpperInvariant() switch
+        {
+            "REQUESTED" => "Solicitado",
+            "WAITINGPROVIDER" => "Aguardando prestador",
+            "ACCEPTED" => "Aceito",
+            "ONTHEWAY" => "A caminho",
+            "ARRIVED" => "Prestador chegou",
+            "INPROGRESS" => "Em andamento",
+            "FINISHED" => "Finalizado",
+            "CANCELLED" => "Cancelado",
+            "RESCHEDULED" => "Reagendado",
+            "LEGACY" => "Legacy",
+            _ => string.IsNullOrWhiteSpace(status) ? "Sem status" : status.Trim()
         };
     }
 
