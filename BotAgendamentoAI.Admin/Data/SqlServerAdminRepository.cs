@@ -17,6 +17,8 @@ public sealed class SqlServerAdminRepository : IAdminRepository
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
     private static readonly HttpClient TelegramHttpClient = BuildTelegramHttpClient();
     private static readonly ConcurrentDictionary<string, string> ReverseNeighborhoodCache = new(StringComparer.Ordinal);
+    private static readonly SemaphoreSlim NominatimThrottle = new(1, 1);
+    private static DateTimeOffset _lastNominatimRequestUtc = DateTimeOffset.MinValue;
     private const int CoverageReverseLookupBudget = 120;
 
     private const string AdminSchemaSql = """
@@ -4769,7 +4771,7 @@ END;
 
         try
         {
-            using var response = await GeocodeHttpClient.GetAsync(endpoint);
+            using var response = await SendThrottledNominatimRequestAsync(endpoint);
             if (!response.IsSuccessStatusCode)
             {
                 return GeocodeResult.Fail($"HTTP {(int)response.StatusCode}");
@@ -5306,6 +5308,27 @@ END;
         catch
         {
             return "-";
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendThrottledNominatimRequestAsync(string endpoint)
+    {
+        await NominatimThrottle.WaitAsync();
+        try
+        {
+            var wait = (_lastNominatimRequestUtc + TimeSpan.FromMilliseconds(1200)) - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait);
+            }
+
+            var response = await GeocodeHttpClient.GetAsync(endpoint);
+            _lastNominatimRequestUtc = DateTimeOffset.UtcNow;
+            return response;
+        }
+        finally
+        {
+            NominatimThrottle.Release();
         }
     }
 

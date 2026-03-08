@@ -22,6 +22,8 @@ public sealed class ClientFlowHandler
     private const string DefaultClosingText = "Atendimento encerrado. Se precisar de alguma coisa, e so mandar um Oi.";
     private static readonly HttpClient ViaCepHttpClient = BuildViaCepHttpClient();
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
+    private static readonly SemaphoreSlim NominatimThrottle = new(1, 1);
+    private static DateTimeOffset LastNominatimRequestUtc = DateTimeOffset.MinValue;
     private static readonly Regex ClientRegistrationCpfRegex = new(@"\D", RegexOptions.Compiled);
     private static readonly Regex ClientRegistrationNumberRegex = new(@"^\s*(?<number>\d+[A-Za-z]?)\s*(?:[,\/-]?\s*(?<complement>.*))?$", RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -2980,7 +2982,7 @@ public sealed class ClientFlowHandler
 
         try
         {
-            using var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            using var response = await SendThrottledNominatimRequestAsync(endpoint, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return GeocodeResult.Fail($"HTTP {(int)response.StatusCode} no geocode.");
@@ -3008,6 +3010,27 @@ public sealed class ClientFlowHandler
         catch (Exception ex)
         {
             return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendThrottledNominatimRequestAsync(string endpoint, CancellationToken cancellationToken)
+    {
+        await NominatimThrottle.WaitAsync(cancellationToken);
+        try
+        {
+            var wait = (LastNominatimRequestUtc + TimeSpan.FromMilliseconds(1200)) - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait, cancellationToken);
+            }
+
+            var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            LastNominatimRequestUtc = DateTimeOffset.UtcNow;
+            return response;
+        }
+        finally
+        {
+            NominatimThrottle.Release();
         }
     }
 
