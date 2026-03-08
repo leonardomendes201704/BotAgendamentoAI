@@ -30,13 +30,10 @@ jobs:
       - name: Setup SSH key
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
         run: |
           install -m 700 -d ~/.ssh
-          printf "%s" "$VPS_SSH_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          printf "%s" "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
 
       - name: Deploy on VPS
         env:
@@ -45,6 +42,9 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
         run: |
-          ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" \
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" \
             "APP_DIR='${VPS_APP_DIR:-/opt/bottelegram}' REPO_URL='https://github.com/leonardomendes201704/BotAgendamentoAI.git' BRANCH='main' bash -s" \
             < deploy/deploy.sh
