@@ -31,3 +31,19 @@ services:
       TelegramWorker__SessionExpiryMinutes: ${TelegramWorker__SessionExpiryMinutes:-180}
       TelegramWorker__HistoryLimitPerContext: ${TelegramWorker__HistoryLimitPerContext:-20}
       TelegramWorker__EnablePhotoValidation: ${TelegramWorker__EnablePhotoValidation:-false}
+
+  whatsapp:
+    build:
+      context: .
+      dockerfile: BotAgendamentoAI.WhatsApp/Dockerfile
+    container_name: bottelegram-whatsapp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: ${ConnectionStrings__DefaultConnection}
+      WhatsAppRuntime__DatabasePath: ${WhatsAppRuntime__DatabasePath:-Data/bot.db}
+    ports:
+      - "127.0.0.1:${WHATSAPP_PORT:-5400}:8080"

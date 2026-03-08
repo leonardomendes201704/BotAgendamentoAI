@@ -128,6 +128,84 @@
     </div>
 
     <hr />
+    <h2 class="h5">WhatsApp Cloud API</h2>
+    <p class="text-muted">Configuracao do canal WhatsApp oficial. O webhook sera validado usando o token e o App Secret cadastrados aqui.</p>
+    <p class="text-muted">Webhook fixo deste projeto: <code>/webhooks/whatsapp</code>.</p>
+
+    <div class="form-check mb-3">
+        <input asp-for="WhatsAppIsActive" class="form-check-input" />
+        <label asp-for="WhatsAppIsActive" class="form-check-label">Ativar integracao WhatsApp para este tenant</label>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-sm-6">
+            <label class="form-label">Phone Number ID</label>
+            <input asp-for="WhatsAppPhoneNumberId" class="form-control" placeholder="Ex.: 1007250472474601" />
+        </div>
+        <div class="col-sm-6">
+            <label class="form-label">WhatsApp Business Account ID</label>
+            <input asp-for="WhatsAppBusinessAccountId" class="form-control" placeholder="Ex.: 1568473064258780" />
+        </div>
+    </div>
+
+    @if (Model.HasWhatsAppAccessToken)
+    {
+        <div class="alert alert-success py-2">
+            Access Token do WhatsApp ja configurado.
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning py-2">
+            Access Token do WhatsApp ainda nao configurado.
+        </div>
+    }
+
+    <div class="mb-3">
+        <label class="form-label">Access Token</label>
+        <input asp-for="WhatsAppAccessToken" type="password" class="form-control" autocomplete="new-password" placeholder="EA..." />
+        <small class="text-muted">Se deixar em branco, o valor atual (se existir) sera mantido.</small>
+    </div>
+
+    @if (Model.HasWhatsAppAppSecret)
+    {
+        <div class="alert alert-success py-2">
+            App Secret do WhatsApp ja configurado.
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning py-2">
+            App Secret do WhatsApp ainda nao configurado.
+        </div>
+    }
+
+    <div class="mb-3">
+        <label class="form-label">App Secret</label>
+        <input asp-for="WhatsAppAppSecret" type="password" class="form-control" autocomplete="new-password" placeholder="App Secret da Meta" />
+        <small class="text-muted">Se deixar em branco, o valor atual (se existir) sera mantido.</small>
+    </div>
+
+    @if (Model.HasWhatsAppWebhookVerifyToken)
+    {
+        <div class="alert alert-success py-2">
+            Verify Token do webhook ja configurado.
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning py-2">
+            Verify Token do webhook ainda nao configurado.
+        </div>
+    }
+
+    <div class="mb-3">
+        <label class="form-label">Webhook Verify Token</label>
+        <input asp-for="WhatsAppWebhookVerifyToken" type="password" class="form-control" autocomplete="new-password" placeholder="Token de verificacao do webhook" />
+        <small class="text-muted">Se deixar em branco, o valor atual (se existir) sera mantido.</small>
+    </div>
+
+    <hr />
     <h2 class="h5">Lembrete de perfil do prestador</h2>
     <p class="text-muted">Parametros do worker que lembra prestadores com perfil incompleto (categorias, raio e CEP/local base).</p>
 

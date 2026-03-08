@@ -417,6 +417,15 @@ public sealed class BotConfigViewModel
     public bool TelegramIsActive { get; set; }
     public int TelegramPollingTimeoutSeconds { get; set; } = 30;
     public long TelegramLastUpdateId { get; set; }
+    public bool WhatsAppIsActive { get; set; }
+    public string WhatsAppPhoneNumberId { get; set; } = string.Empty;
+    public string WhatsAppBusinessAccountId { get; set; } = string.Empty;
+    public string WhatsAppAccessToken { get; set; } = string.Empty;
+    public bool HasWhatsAppAccessToken { get; set; }
+    public string WhatsAppAppSecret { get; set; } = string.Empty;
+    public bool HasWhatsAppAppSecret { get; set; }
+    public string WhatsAppWebhookVerifyToken { get; set; } = string.Empty;
+    public bool HasWhatsAppWebhookVerifyToken { get; set; }
     public bool ProviderReminderEnabled { get; set; } = true;
     public int ProviderReminderSweepIntervalMinutes { get; set; } = 5;
     public int ProviderReminderResendCooldownMinutes { get; set; } = 5;

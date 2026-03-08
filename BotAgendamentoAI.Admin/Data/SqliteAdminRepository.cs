@@ -126,6 +126,17 @@ CREATE TABLE IF NOT EXISTS tg_tenant_telegram_config (
   updated_at_utc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tg_tenant_whatsapp_config (
+  tenant_id TEXT PRIMARY KEY,
+  is_active INTEGER NOT NULL DEFAULT 0,
+  phone_number_id TEXT NOT NULL DEFAULT '',
+  business_account_id TEXT NOT NULL DEFAULT '',
+  access_token TEXT NOT NULL DEFAULT '',
+  app_secret TEXT NOT NULL DEFAULT '',
+  webhook_verify_token TEXT NOT NULL DEFAULT '',
+  updated_at_utc TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tg_tenant_google_calendar_config (
   tenant_id TEXT PRIMARY KEY,
   is_enabled INTEGER NOT NULL DEFAULT 0,
@@ -237,6 +248,12 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "max_attempts", "INTEGER NOT NULL DEFAULT 8");
         await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_base_seconds", "INTEGER NOT NULL DEFAULT 10");
         await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_max_seconds", "INTEGER NOT NULL DEFAULT 600");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "is_active", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "phone_number_id", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "business_account_id", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "access_token", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "app_secret", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "webhook_verify_token", "TEXT NOT NULL DEFAULT ''");
 
         _logger.LogInformation("Admin SQLite path: {Path}", _dbPath);
     }
@@ -3725,6 +3742,32 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         {
             command.CommandText =
             """
+            SELECT is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            FROM tg_tenant_whatsapp_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                model.WhatsAppIsActive = !reader.IsDBNull(0) && reader.GetInt32(0) == 1;
+                model.WhatsAppPhoneNumberId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                model.WhatsAppBusinessAccountId = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                model.HasWhatsAppAccessToken = !reader.IsDBNull(3) && !string.IsNullOrWhiteSpace(reader.GetString(3));
+                model.WhatsAppAccessToken = string.Empty;
+                model.HasWhatsAppAppSecret = !reader.IsDBNull(4) && !string.IsNullOrWhiteSpace(reader.GetString(4));
+                model.WhatsAppAppSecret = string.Empty;
+                model.HasWhatsAppWebhookVerifyToken = !reader.IsDBNull(5) && !string.IsNullOrWhiteSpace(reader.GetString(5));
+                model.WhatsAppWebhookVerifyToken = string.Empty;
+            }
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
             SELECT
                 is_enabled,
                 calendar_id,
@@ -3955,6 +3998,12 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         var openAiApiKeyToPersist = incomingOpenAiApiKey;
         var incomingServiceAccountJson = input.GoogleCalendarServiceAccountJson?.Trim() ?? string.Empty;
         var serviceAccountJsonToPersist = incomingServiceAccountJson;
+        var incomingWhatsAppAccessToken = input.WhatsAppAccessToken?.Trim() ?? string.Empty;
+        var whatsAppAccessTokenToPersist = incomingWhatsAppAccessToken;
+        var incomingWhatsAppAppSecret = input.WhatsAppAppSecret?.Trim() ?? string.Empty;
+        var whatsAppAppSecretToPersist = incomingWhatsAppAppSecret;
+        var incomingWhatsAppVerifyToken = input.WhatsAppWebhookVerifyToken?.Trim() ?? string.Empty;
+        var whatsAppVerifyTokenToPersist = incomingWhatsAppVerifyToken;
 
         if (string.IsNullOrWhiteSpace(tokenToPersist))
         {
@@ -3989,6 +4038,40 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             serviceAccountJsonToPersist = Convert.ToString(await existingGoogleJsonCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
         }
 
+        if (string.IsNullOrWhiteSpace(whatsAppAccessTokenToPersist)
+            || string.IsNullOrWhiteSpace(whatsAppAppSecretToPersist)
+            || string.IsNullOrWhiteSpace(whatsAppVerifyTokenToPersist))
+        {
+            await using var existingWhatsAppCommand = connection.CreateCommand();
+            existingWhatsAppCommand.CommandText =
+            """
+            SELECT access_token, app_secret, webhook_verify_token
+            FROM tg_tenant_whatsapp_config
+            WHERE tenant_id = @tenant_id
+            LIMIT 1;
+            """;
+            existingWhatsAppCommand.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var existingWhatsAppReader = await existingWhatsAppCommand.ExecuteReaderAsync();
+            if (await existingWhatsAppReader.ReadAsync())
+            {
+                if (string.IsNullOrWhiteSpace(whatsAppAccessTokenToPersist))
+                {
+                    whatsAppAccessTokenToPersist = existingWhatsAppReader.IsDBNull(0) ? string.Empty : existingWhatsAppReader.GetString(0);
+                }
+
+                if (string.IsNullOrWhiteSpace(whatsAppAppSecretToPersist))
+                {
+                    whatsAppAppSecretToPersist = existingWhatsAppReader.IsDBNull(1) ? string.Empty : existingWhatsAppReader.GetString(1);
+                }
+
+                if (string.IsNullOrWhiteSpace(whatsAppVerifyTokenToPersist))
+                {
+                    whatsAppVerifyTokenToPersist = existingWhatsAppReader.IsDBNull(2) ? string.Empty : existingWhatsAppReader.GetString(2);
+                }
+            }
+        }
+
         var telegram = new TelegramConfigStorage
         {
             BotId = input.TelegramBotId?.Trim() ?? string.Empty,
@@ -4019,6 +4102,15 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             RetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(input.GoogleCalendarRetryMaxSeconds),
             EventTitleTemplate = input.GoogleCalendarEventTitleTemplate?.Trim() ?? string.Empty,
             EventDescriptionTemplate = input.GoogleCalendarEventDescriptionTemplate?.Trim() ?? string.Empty
+        };
+        var whatsApp = new WhatsAppConfigStorage
+        {
+            IsActive = input.WhatsAppIsActive,
+            PhoneNumberId = input.WhatsAppPhoneNumberId?.Trim() ?? string.Empty,
+            BusinessAccountId = input.WhatsAppBusinessAccountId?.Trim() ?? string.Empty,
+            AccessToken = whatsAppAccessTokenToPersist,
+            AppSecret = whatsAppAppSecretToPersist,
+            WebhookVerifyToken = whatsAppVerifyTokenToPersist
         };
 
         await using (var command = connection.CreateCommand())
@@ -4063,6 +4155,52 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             command.Parameters.AddWithValue("@is_active", telegram.IsActive ? 1 : 0);
             command.Parameters.AddWithValue("@polling_timeout_seconds", telegram.PollingTimeoutSeconds);
             command.Parameters.AddWithValue("@last_update_id", telegram.LastUpdateId);
+            command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            INSERT INTO tg_tenant_whatsapp_config
+            (
+                tenant_id,
+                is_active,
+                phone_number_id,
+                business_account_id,
+                access_token,
+                app_secret,
+                webhook_verify_token,
+                updated_at_utc
+            )
+            VALUES
+            (
+                @tenant_id,
+                @is_active,
+                @phone_number_id,
+                @business_account_id,
+                @access_token,
+                @app_secret,
+                @webhook_verify_token,
+                @updated_at_utc
+            )
+            ON CONFLICT(tenant_id) DO UPDATE SET
+                is_active = excluded.is_active,
+                phone_number_id = excluded.phone_number_id,
+                business_account_id = excluded.business_account_id,
+                access_token = excluded.access_token,
+                app_secret = excluded.app_secret,
+                webhook_verify_token = excluded.webhook_verify_token,
+                updated_at_utc = excluded.updated_at_utc;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@is_active", whatsApp.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("@phone_number_id", whatsApp.PhoneNumberId);
+            command.Parameters.AddWithValue("@business_account_id", whatsApp.BusinessAccountId);
+            command.Parameters.AddWithValue("@access_token", whatsApp.AccessToken);
+            command.Parameters.AddWithValue("@app_secret", whatsApp.AppSecret);
+            command.Parameters.AddWithValue("@webhook_verify_token", whatsApp.WebhookVerifyToken);
             command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
             await command.ExecuteNonQueryAsync();
         }
@@ -4545,6 +4683,15 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             FallbackText = "Nao entendi. Escolha uma opcao do menu.",
             MessagePoolingSeconds = 15,
             TelegramPollingTimeoutSeconds = 30,
+            WhatsAppIsActive = false,
+            WhatsAppPhoneNumberId = string.Empty,
+            WhatsAppBusinessAccountId = string.Empty,
+            WhatsAppAccessToken = string.Empty,
+            HasWhatsAppAccessToken = false,
+            WhatsAppAppSecret = string.Empty,
+            HasWhatsAppAppSecret = false,
+            WhatsAppWebhookVerifyToken = string.Empty,
+            HasWhatsAppWebhookVerifyToken = false,
             ProviderReminderEnabled = true,
             ProviderReminderSweepIntervalMinutes = 5,
             ProviderReminderResendCooldownMinutes = 5,
@@ -6246,6 +6393,16 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         public bool IsActive { get; set; }
         public int PollingTimeoutSeconds { get; set; }
         public long LastUpdateId { get; set; }
+    }
+
+    private sealed class WhatsAppConfigStorage
+    {
+        public bool IsActive { get; set; }
+        public string PhoneNumberId { get; set; } = string.Empty;
+        public string BusinessAccountId { get; set; } = string.Empty;
+        public string AccessToken { get; set; } = string.Empty;
+        public string AppSecret { get; set; } = string.Empty;
+        public string WebhookVerifyToken { get; set; } = string.Empty;
     }
 
     private sealed class GoogleCalendarConfigStorage

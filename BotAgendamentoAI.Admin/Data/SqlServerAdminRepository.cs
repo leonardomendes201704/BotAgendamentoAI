@@ -177,6 +177,21 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'dbo.tg_tenant_whatsapp_config', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tg_tenant_whatsapp_config
+    (
+        tenant_id NVARCHAR(32) PRIMARY KEY,
+        is_active BIT NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_is_active DEFAULT(0),
+        phone_number_id NVARCHAR(128) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_phone_number_id DEFAULT(N''),
+        business_account_id NVARCHAR(128) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_business_account_id DEFAULT(N''),
+        access_token NVARCHAR(MAX) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_access_token DEFAULT(N''),
+        app_secret NVARCHAR(256) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_app_secret DEFAULT(N''),
+        webhook_verify_token NVARCHAR(256) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_webhook_verify_token DEFAULT(N''),
+        updated_at_utc NVARCHAR(64) NOT NULL
+    );
+END;
+
 IF OBJECT_ID(N'dbo.tg_tenant_google_calendar_config', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.tg_tenant_google_calendar_config
@@ -315,6 +330,12 @@ END;
         await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "max_attempts", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_max_attempts2 DEFAULT(8)");
         await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_base_seconds", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_retry_base_seconds2 DEFAULT(10)");
         await EnsureColumnAsync(connection, "tg_tenant_google_calendar_config", "retry_max_seconds", "INT NOT NULL CONSTRAINT DF_tg_tenant_google_calendar_config_retry_max_seconds2 DEFAULT(600)");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "is_active", "BIT NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_is_active2 DEFAULT(0)");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "phone_number_id", "NVARCHAR(128) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_phone_number_id2 DEFAULT(N'')");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "business_account_id", "NVARCHAR(128) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_business_account_id2 DEFAULT(N'')");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "access_token", "NVARCHAR(MAX) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_access_token2 DEFAULT(N'')");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "app_secret", "NVARCHAR(256) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_app_secret2 DEFAULT(N'')");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "webhook_verify_token", "NVARCHAR(256) NOT NULL CONSTRAINT DF_tg_tenant_whatsapp_config_webhook_verify_token2 DEFAULT(N'')");
 
         _logger.LogInformation("Admin SQL Server repository initialized.");
     }
@@ -3768,6 +3789,31 @@ END;
         {
             command.CommandText =
             """
+            SELECT is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            FROM tg_tenant_whatsapp_config
+            WHERE tenant_id = @tenant_id
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                model.WhatsAppIsActive = ReadBool(reader, 0);
+                model.WhatsAppPhoneNumberId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                model.WhatsAppBusinessAccountId = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                model.HasWhatsAppAccessToken = !reader.IsDBNull(3) && !string.IsNullOrWhiteSpace(reader.GetString(3));
+                model.WhatsAppAccessToken = string.Empty;
+                model.HasWhatsAppAppSecret = !reader.IsDBNull(4) && !string.IsNullOrWhiteSpace(reader.GetString(4));
+                model.WhatsAppAppSecret = string.Empty;
+                model.HasWhatsAppWebhookVerifyToken = !reader.IsDBNull(5) && !string.IsNullOrWhiteSpace(reader.GetString(5));
+                model.WhatsAppWebhookVerifyToken = string.Empty;
+            }
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
             SELECT
                 is_enabled,
                 calendar_id,
@@ -3993,6 +4039,12 @@ END;
         var openAiApiKeyToPersist = incomingOpenAiApiKey;
         var incomingServiceAccountJson = input.GoogleCalendarServiceAccountJson?.Trim() ?? string.Empty;
         var serviceAccountJsonToPersist = incomingServiceAccountJson;
+        var incomingWhatsAppAccessToken = input.WhatsAppAccessToken?.Trim() ?? string.Empty;
+        var whatsAppAccessTokenToPersist = incomingWhatsAppAccessToken;
+        var incomingWhatsAppAppSecret = input.WhatsAppAppSecret?.Trim() ?? string.Empty;
+        var whatsAppAppSecretToPersist = incomingWhatsAppAppSecret;
+        var incomingWhatsAppVerifyToken = input.WhatsAppWebhookVerifyToken?.Trim() ?? string.Empty;
+        var whatsAppVerifyTokenToPersist = incomingWhatsAppVerifyToken;
 
         if (string.IsNullOrWhiteSpace(tokenToPersist))
         {
@@ -4025,6 +4077,39 @@ END;
             serviceAccountJsonToPersist = Convert.ToString(await existingGoogleJsonCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture) ?? string.Empty;
         }
 
+        if (string.IsNullOrWhiteSpace(whatsAppAccessTokenToPersist)
+            || string.IsNullOrWhiteSpace(whatsAppAppSecretToPersist)
+            || string.IsNullOrWhiteSpace(whatsAppVerifyTokenToPersist))
+        {
+            await using var existingWhatsAppCommand = connection.CreateCommand();
+            existingWhatsAppCommand.CommandText =
+            """
+            SELECT access_token, app_secret, webhook_verify_token
+            FROM tg_tenant_whatsapp_config
+            WHERE tenant_id = @tenant_id
+            """;
+            existingWhatsAppCommand.Parameters.AddWithValue("@tenant_id", tenant);
+
+            await using var existingWhatsAppReader = await existingWhatsAppCommand.ExecuteReaderAsync();
+            if (await existingWhatsAppReader.ReadAsync())
+            {
+                if (string.IsNullOrWhiteSpace(whatsAppAccessTokenToPersist))
+                {
+                    whatsAppAccessTokenToPersist = existingWhatsAppReader.IsDBNull(0) ? string.Empty : existingWhatsAppReader.GetString(0);
+                }
+
+                if (string.IsNullOrWhiteSpace(whatsAppAppSecretToPersist))
+                {
+                    whatsAppAppSecretToPersist = existingWhatsAppReader.IsDBNull(1) ? string.Empty : existingWhatsAppReader.GetString(1);
+                }
+
+                if (string.IsNullOrWhiteSpace(whatsAppVerifyTokenToPersist))
+                {
+                    whatsAppVerifyTokenToPersist = existingWhatsAppReader.IsDBNull(2) ? string.Empty : existingWhatsAppReader.GetString(2);
+                }
+            }
+        }
+
         var telegram = new TelegramConfigStorage
         {
             BotId = input.TelegramBotId?.Trim() ?? string.Empty,
@@ -4055,6 +4140,15 @@ END;
             RetryMaxSeconds = ClampGoogleCalendarRetryMaxSeconds(input.GoogleCalendarRetryMaxSeconds),
             EventTitleTemplate = input.GoogleCalendarEventTitleTemplate?.Trim() ?? string.Empty,
             EventDescriptionTemplate = input.GoogleCalendarEventDescriptionTemplate?.Trim() ?? string.Empty
+        };
+        var whatsApp = new WhatsAppConfigStorage
+        {
+            IsActive = input.WhatsAppIsActive,
+            PhoneNumberId = input.WhatsAppPhoneNumberId?.Trim() ?? string.Empty,
+            BusinessAccountId = input.WhatsAppBusinessAccountId?.Trim() ?? string.Empty,
+            AccessToken = whatsAppAccessTokenToPersist,
+            AppSecret = whatsAppAppSecretToPersist,
+            WebhookVerifyToken = whatsAppVerifyTokenToPersist
         };
 
         await using (var command = connection.CreateCommand())
@@ -4113,6 +4207,59 @@ END;
             command.Parameters.AddWithValue("@is_active", telegram.IsActive ? 1 : 0);
             command.Parameters.AddWithValue("@polling_timeout_seconds", telegram.PollingTimeoutSeconds);
             command.Parameters.AddWithValue("@last_update_id", telegram.LastUpdateId);
+            command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+            """
+            IF EXISTS (SELECT 1 FROM tg_tenant_whatsapp_config WHERE tenant_id = @tenant_id)
+            BEGIN
+                UPDATE tg_tenant_whatsapp_config
+                SET is_active = @is_active,
+                    phone_number_id = @phone_number_id,
+                    business_account_id = @business_account_id,
+                    access_token = @access_token,
+                    app_secret = @app_secret,
+                    webhook_verify_token = @webhook_verify_token,
+                    updated_at_utc = @updated_at_utc
+                WHERE tenant_id = @tenant_id;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO tg_tenant_whatsapp_config
+                (
+                    tenant_id,
+                    is_active,
+                    phone_number_id,
+                    business_account_id,
+                    access_token,
+                    app_secret,
+                    webhook_verify_token,
+                    updated_at_utc
+                )
+                VALUES
+                (
+                    @tenant_id,
+                    @is_active,
+                    @phone_number_id,
+                    @business_account_id,
+                    @access_token,
+                    @app_secret,
+                    @webhook_verify_token,
+                    @updated_at_utc
+                );
+            END;
+            """;
+            command.Parameters.AddWithValue("@tenant_id", tenant);
+            command.Parameters.AddWithValue("@is_active", whatsApp.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("@phone_number_id", whatsApp.PhoneNumberId);
+            command.Parameters.AddWithValue("@business_account_id", whatsApp.BusinessAccountId);
+            command.Parameters.AddWithValue("@access_token", whatsApp.AccessToken);
+            command.Parameters.AddWithValue("@app_secret", whatsApp.AppSecret);
+            command.Parameters.AddWithValue("@webhook_verify_token", whatsApp.WebhookVerifyToken);
             command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
             await command.ExecuteNonQueryAsync();
         }
@@ -4599,6 +4746,15 @@ END;
             FallbackText = "Nao entendi. Escolha uma opcao do menu.",
             MessagePoolingSeconds = 15,
             TelegramPollingTimeoutSeconds = 30,
+            WhatsAppIsActive = false,
+            WhatsAppPhoneNumberId = string.Empty,
+            WhatsAppBusinessAccountId = string.Empty,
+            WhatsAppAccessToken = string.Empty,
+            HasWhatsAppAccessToken = false,
+            WhatsAppAppSecret = string.Empty,
+            HasWhatsAppAppSecret = false,
+            WhatsAppWebhookVerifyToken = string.Empty,
+            HasWhatsAppWebhookVerifyToken = false,
             ProviderReminderEnabled = true,
             ProviderReminderSweepIntervalMinutes = 5,
             ProviderReminderResendCooldownMinutes = 5,
@@ -6452,6 +6608,16 @@ END;
         public bool IsActive { get; set; }
         public int PollingTimeoutSeconds { get; set; }
         public long LastUpdateId { get; set; }
+    }
+
+    private sealed class WhatsAppConfigStorage
+    {
+        public bool IsActive { get; set; }
+        public string PhoneNumberId { get; set; } = string.Empty;
+        public string BusinessAccountId { get; set; } = string.Empty;
+        public string AccessToken { get; set; } = string.Empty;
+        public string AppSecret { get; set; } = string.Empty;
+        public string WebhookVerifyToken { get; set; } = string.Empty;
     }
 
     private sealed class GoogleCalendarConfigStorage
