@@ -872,11 +872,9 @@ END;
                 continue;
             }
 
-            var isRecentBooking = nowUtc - row.CreatedAtUtc <= TimeSpan.FromHours(24);
             if (string.Equals(row.GeocodeStatus, "failed", StringComparison.OrdinalIgnoreCase) &&
                 row.RetryAfterUtc.HasValue &&
-                row.RetryAfterUtc.Value > nowUtc &&
-                !isRecentBooking)
+                row.RetryAfterUtc.Value > nowUtc)
             {
                 continue;
             }
@@ -908,7 +906,7 @@ END;
             else
             {
                 row.GeocodeStatus = "failed";
-                row.RetryAfterUtc = nowUtc.AddMinutes(isRecentBooking ? 3 : 20);
+                row.RetryAfterUtc = nowUtc.Add(ResolveGeocodeRetryDelay(geocodeResult.ErrorMessage, row.CreatedAtUtc, nowUtc));
             }
 
             if (hasGeocodeCache)
@@ -4704,21 +4702,46 @@ END;
             return GeocodeResult.Fail("Endereco vazio.");
         }
 
-        var candidates = BuildAddressGeocodeCandidates(safeAddress).ToList();
+        var candidates = new List<string>();
+        var seenCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddCandidates(IEnumerable<string> values)
+        {
+            foreach (var value in values)
+            {
+                if (seenCandidates.Add(value))
+                {
+                    candidates.Add(value);
+                }
+            }
+        }
+
+        string? resolvedCep = null;
         if (TryNormalizeCepOnly(safeAddress, out var cep))
         {
-            var awesomeByCep = await TryGeocodeByAwesomeCepAsync(cep);
+            resolvedCep = cep;
+        }
+        else if (TryExtractCepFromText(safeAddress, out var cepFromText))
+        {
+            resolvedCep = cepFromText;
+        }
+
+        if (!string.IsNullOrWhiteSpace(resolvedCep))
+        {
+            var awesomeByCep = await TryGeocodeByAwesomeCepAsync(resolvedCep);
             if (awesomeByCep.Success)
             {
                 return awesomeByCep;
             }
 
-            var viaCepAddress = await TryResolveAddressByCepAsync(cep);
+            var viaCepAddress = await TryResolveAddressByCepAsync(resolvedCep);
             if (!string.IsNullOrWhiteSpace(viaCepAddress))
             {
-                candidates.Insert(0, viaCepAddress);
+                AddCandidates(BuildAddressGeocodeCandidates(viaCepAddress));
             }
         }
+
+        AddCandidates(BuildAddressGeocodeCandidates(safeAddress));
 
         string? lastError = null;
         foreach (var candidate in candidates)
@@ -4730,14 +4753,9 @@ END;
             }
 
             lastError = result.ErrorMessage;
-        }
-
-        if (TryExtractCepFromText(safeAddress, out var cepFromText))
-        {
-            var awesomeFallback = await TryGeocodeByAwesomeCepAsync(cepFromText);
-            if (awesomeFallback.Success)
+            if (IsGeocodeRateLimited(result.ErrorMessage))
             {
-                return awesomeFallback;
+                break;
             }
         }
 
@@ -4883,6 +4901,21 @@ END;
         }
 
         return string.Join(", ", parts);
+    }
+
+    private static bool IsGeocodeRateLimited(string? errorMessage)
+        => !string.IsNullOrWhiteSpace(errorMessage)
+           && errorMessage.Contains("429", StringComparison.OrdinalIgnoreCase);
+
+    private static TimeSpan ResolveGeocodeRetryDelay(string? errorMessage, DateTimeOffset createdAtUtc, DateTimeOffset nowUtc)
+    {
+        if (IsGeocodeRateLimited(errorMessage))
+        {
+            return TimeSpan.FromMinutes(3);
+        }
+
+        var isRecentBooking = nowUtc - createdAtUtc <= TimeSpan.FromHours(24);
+        return isRecentBooking ? TimeSpan.FromMinutes(3) : TimeSpan.FromMinutes(20);
     }
 
     private static bool TryNormalizeCepOnly(string rawAddress, out string cep)

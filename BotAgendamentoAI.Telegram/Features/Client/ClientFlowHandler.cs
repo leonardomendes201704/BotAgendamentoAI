@@ -2945,6 +2945,15 @@ public sealed class ClientFlowHandler
 
     private static async Task<GeocodeResult> TryGeocodeByAddressCandidatesAsync(string address, CancellationToken cancellationToken)
     {
+        if (TryExtractCepFromText(address, out var cepDigits))
+        {
+            var cepResult = await TryGeocodeByCepInternalAsync(cepDigits, cancellationToken);
+            if (cepResult.Success)
+            {
+                return cepResult;
+            }
+        }
+
         string? lastError = null;
         foreach (var candidate in BuildAddressGeocodeCandidates(address))
         {
@@ -2955,6 +2964,10 @@ public sealed class ClientFlowHandler
             }
 
             lastError = result.Error;
+            if (IsGeocodeRateLimited(result.Error))
+            {
+                break;
+            }
         }
 
         return GeocodeResult.Fail(lastError ?? "Nenhum resultado no geocode.");
@@ -3075,6 +3088,34 @@ public sealed class ClientFlowHandler
 
         return digits[^8..];
     }
+
+    private static bool TryExtractCepFromText(string? text, out string cepDigits)
+    {
+        cepDigits = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(text, @"\b\d{5}-?\d{3}\b");
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var digits = new string(match.Value.Where(char.IsDigit).ToArray());
+        if (digits.Length != 8)
+        {
+            return false;
+        }
+
+        cepDigits = digits;
+        return true;
+    }
+
+    private static bool IsGeocodeRateLimited(string? error)
+        => !string.IsNullOrWhiteSpace(error)
+           && error.Contains("429", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryParseSchedule(string yyyymmdd, string hhmm, TimeZoneInfo tz, out DateTimeOffset result)
     {
