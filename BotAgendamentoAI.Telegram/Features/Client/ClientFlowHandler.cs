@@ -2965,7 +2965,13 @@ public sealed class ClientFlowHandler
                 return result;
             }
 
-            lastError = result.Error;
+            var photonFallback = await TryPhotonGeocodeQueryAsync($"{candidate}, Brasil", cancellationToken);
+            if (photonFallback.Success)
+            {
+                return photonFallback;
+            }
+
+            lastError = photonFallback.Error ?? result.Error;
             if (IsGeocodeRateLimited(result.Error))
             {
                 break;
@@ -3005,6 +3011,47 @@ public sealed class ClientFlowHandler
                 return GeocodeResult.Fail("Lat/lng invalidos no geocode.");
             }
 
+            return GeocodeResult.Ok(lat, lng);
+        }
+        catch (Exception ex)
+        {
+            return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<GeocodeResult> TryPhotonGeocodeQueryAsync(string query, CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(query);
+        var endpoint = $"https://photon.komoot.io/api/?limit=1&q={encoded}";
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return GeocodeResult.Fail($"Photon HTTP {(int)response.StatusCode}.");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(payloadText);
+            if (!document.RootElement.TryGetProperty("features", out var features)
+                || features.ValueKind != JsonValueKind.Array
+                || features.GetArrayLength() == 0)
+            {
+                return GeocodeResult.Fail("Photon sem resultado.");
+            }
+
+            var first = features[0];
+            if (!first.TryGetProperty("geometry", out var geometry)
+                || !geometry.TryGetProperty("coordinates", out var coordinates)
+                || coordinates.ValueKind != JsonValueKind.Array
+                || coordinates.GetArrayLength() < 2)
+            {
+                return GeocodeResult.Fail("Photon payload invalido.");
+            }
+
+            var lng = coordinates[0].GetDouble();
+            var lat = coordinates[1].GetDouble();
             return GeocodeResult.Ok(lat, lng);
         }
         catch (Exception ex)

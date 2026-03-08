@@ -4754,7 +4754,13 @@ END;
                 return result;
             }
 
-            lastError = result.ErrorMessage;
+            var photonFallback = await TryQueryPhotonAsync(candidate);
+            if (photonFallback.Success)
+            {
+                return photonFallback;
+            }
+
+            lastError = photonFallback.ErrorMessage ?? result.ErrorMessage;
             if (IsGeocodeRateLimited(result.ErrorMessage))
             {
                 break;
@@ -5308,6 +5314,47 @@ END;
         catch
         {
             return "-";
+        }
+    }
+
+    private static async Task<GeocodeResult> TryQueryPhotonAsync(string queryAddress)
+    {
+        var query = Uri.EscapeDataString($"{queryAddress}, Brasil");
+        var endpoint = $"https://photon.komoot.io/api/?limit=1&q={query}";
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync(endpoint);
+            if (!response.IsSuccessStatusCode)
+            {
+                return GeocodeResult.Fail($"Photon HTTP {(int)response.StatusCode}");
+            }
+
+            var payload = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(payload);
+            if (!document.RootElement.TryGetProperty("features", out var features) ||
+                features.ValueKind != JsonValueKind.Array ||
+                features.GetArrayLength() == 0)
+            {
+                return GeocodeResult.Fail("Photon sem resultado.");
+            }
+
+            var first = features[0];
+            if (!first.TryGetProperty("geometry", out var geometry) ||
+                !geometry.TryGetProperty("coordinates", out var coordinates) ||
+                coordinates.ValueKind != JsonValueKind.Array ||
+                coordinates.GetArrayLength() < 2)
+            {
+                return GeocodeResult.Fail("Photon payload invalido.");
+            }
+
+            var lon = coordinates[0].GetDouble();
+            var lat = coordinates[1].GetDouble();
+            return GeocodeResult.Ok(lat, lon);
+        }
+        catch (Exception ex)
+        {
+            return GeocodeResult.Fail(ex.Message);
         }
     }
 
