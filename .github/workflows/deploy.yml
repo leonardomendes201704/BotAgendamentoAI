@@ -29,10 +29,10 @@ jobs:
 
       - name: Setup SSH key
         env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KEY_BASE64: ${{ secrets.VPS_SSH_KEY_BASE64 }}
         run: |
           install -m 700 -d ~/.ssh
-          printf "%s" "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          printf "%s" "$VPS_SSH_KEY_BASE64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Deploy on VPS
