@@ -2924,7 +2924,7 @@ public sealed class ClientFlowHandler
         if (viaCep.Ok)
         {
             var baseAddress = BuildAddressFromCep(viaCep);
-            var byAddress = await TryGeocodeByAddressAsync(baseAddress, cancellationToken);
+            var byAddress = await TryGeocodeByAddressCandidatesAsync(baseAddress, cancellationToken, allowCepFallback: false);
             if (byAddress.Success)
             {
                 return byAddress;
@@ -2942,12 +2942,12 @@ public sealed class ClientFlowHandler
             return Task.FromResult(GeocodeResult.Fail("Endereco vazio para geocode."));
         }
 
-        return TryGeocodeByAddressCandidatesAsync(safe, cancellationToken);
+        return TryGeocodeByAddressCandidatesAsync(safe, cancellationToken, allowCepFallback: true);
     }
 
-    private static async Task<GeocodeResult> TryGeocodeByAddressCandidatesAsync(string address, CancellationToken cancellationToken)
+    private static async Task<GeocodeResult> TryGeocodeByAddressCandidatesAsync(string address, CancellationToken cancellationToken, bool allowCepFallback)
     {
-        if (TryExtractCepFromText(address, out var cepDigits))
+        if (allowCepFallback && TryExtractCepFromText(address, out var cepDigits))
         {
             var cepResult = await TryGeocodeByCepInternalAsync(cepDigits, cancellationToken);
             if (cepResult.Success)
