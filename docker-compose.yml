@@ -1,0 +1,33 @@
+services:
+  admin:
+    build:
+      context: .
+      dockerfile: BotAgendamentoAI.Admin/Dockerfile
+    container_name: bottelegram-admin
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: ${ConnectionStrings__DefaultConnection}
+      Admin__DashboardRealtimePollSeconds: ${Admin__DashboardRealtimePollSeconds:-2}
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-5300}:8080"
+
+  telegram:
+    build:
+      context: .
+      dockerfile: BotAgendamentoAI.Telegram/Dockerfile
+    container_name: bottelegram-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: ${ConnectionStrings__DefaultConnection}
+      TelegramWorker__TimeZoneId: ${TelegramWorker__TimeZoneId:-America/Sao_Paulo}
+      TelegramWorker__TenantIdleDelaySeconds: ${TelegramWorker__TenantIdleDelaySeconds:-3}
+      TelegramWorker__SessionExpiryMinutes: ${TelegramWorker__SessionExpiryMinutes:-180}
+      TelegramWorker__HistoryLimitPerContext: ${TelegramWorker__HistoryLimitPerContext:-20}
+      TelegramWorker__EnablePhotoValidation: ${TelegramWorker__EnablePhotoValidation:-false}

@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+**/.tmp/
+**/TestResults/
+.git/
+.github/
+.env
+.env.*
+*.user
+*.suo
+*.db
+*.zip
