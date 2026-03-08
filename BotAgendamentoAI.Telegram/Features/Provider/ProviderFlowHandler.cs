@@ -16,6 +16,8 @@ public sealed class ProviderFlowHandler
 {
     private static readonly HttpClient ViaCepHttpClient = BuildViaCepHttpClient();
     private static readonly HttpClient GeocodeHttpClient = BuildGeocodeHttpClient();
+    private static readonly SemaphoreSlim NominatimThrottle = new(1, 1);
+    private static DateTimeOffset LastNominatimRequestUtc = DateTimeOffset.MinValue;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
@@ -1377,7 +1379,17 @@ public sealed class ProviderFlowHandler
         var geocode = await TryGeocodeQueryAsync(addressQuery, cancellationToken);
         if (!geocode.Success)
         {
+            geocode = await TryPhotonGeocodeQueryAsync(addressQuery, cancellationToken);
+        }
+
+        if (!geocode.Success)
+        {
             geocode = await TryGeocodeQueryAsync($"{FormatCep(lookup.Cep)}, Brasil", cancellationToken);
+        }
+
+        if (!geocode.Success)
+        {
+            geocode = await TryPhotonGeocodeQueryAsync($"{FormatCep(lookup.Cep)}, Brasil", cancellationToken);
         }
 
         if (!geocode.Success)
@@ -1399,6 +1411,33 @@ public sealed class ProviderFlowHandler
             return CepLookupResult.Fail("CEP invalido.");
         }
 
+        var viaCep = await TryLookupViaCepAsync(cepDigits, cancellationToken);
+        if (viaCep.Ok && !string.IsNullOrWhiteSpace(viaCep.Logradouro))
+        {
+            return viaCep;
+        }
+
+        var brasilApi = await TryLookupBrasilApiAsync(cepDigits, cancellationToken);
+        if (brasilApi.Ok && !string.IsNullOrWhiteSpace(brasilApi.Logradouro))
+        {
+            return brasilApi;
+        }
+
+        if (viaCep.Ok)
+        {
+            return viaCep;
+        }
+
+        if (brasilApi.Ok)
+        {
+            return brasilApi;
+        }
+
+        return CepLookupResult.Fail(!string.IsNullOrWhiteSpace(brasilApi.Error) ? brasilApi.Error : viaCep.Error);
+    }
+
+    private static async Task<CepLookupResult> TryLookupViaCepAsync(string cepDigits, CancellationToken cancellationToken)
+    {
         try
         {
             using var response = await ViaCepHttpClient.GetAsync($"https://viacep.com.br/ws/{cepDigits}/json/", cancellationToken);
@@ -1427,6 +1466,36 @@ public sealed class ProviderFlowHandler
         }
     }
 
+    private static async Task<CepLookupResult> TryLookupBrasilApiAsync(string cepDigits, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await ViaCepHttpClient.GetAsync($"https://brasilapi.com.br/api/cep/v2/{cepDigits}", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return CepLookupResult.Fail($"HTTP {(int)response.StatusCode} na BrasilAPI.");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync(cancellationToken);
+            var payload = JsonSerializer.Deserialize<BrasilApiCepPayload>(payloadText, JsonOptions);
+            if (payload is null)
+            {
+                return CepLookupResult.Fail("BrasilAPI retornou payload invalido.");
+            }
+
+            return CepLookupResult.Success(
+                cepDigits,
+                payload.Street,
+                payload.Neighborhood,
+                payload.City,
+                payload.State);
+        }
+        catch (Exception ex)
+        {
+            return CepLookupResult.Fail(ex.Message);
+        }
+    }
+
     private static async Task<GeocodeResult> TryGeocodeQueryAsync(string query, CancellationToken cancellationToken)
     {
         var safeQuery = (query ?? string.Empty).Trim();
@@ -1440,7 +1509,7 @@ public sealed class ProviderFlowHandler
 
         try
         {
-            using var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            using var response = await SendThrottledNominatimRequestAsync(endpoint, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return GeocodeResult.Fail($"HTTP {(int)response.StatusCode} no geocode.");
@@ -1469,6 +1538,74 @@ public sealed class ProviderFlowHandler
         catch (Exception ex)
         {
             return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<GeocodeResult> TryPhotonGeocodeQueryAsync(string query, CancellationToken cancellationToken)
+    {
+        var safeQuery = (query ?? string.Empty).Trim();
+        if (safeQuery.Length == 0)
+        {
+            return GeocodeResult.Fail("Endereco vazio para geocode.");
+        }
+
+        var encoded = Uri.EscapeDataString(safeQuery);
+        var endpoint = $"https://photon.komoot.io/api/?limit=1&q={encoded}";
+
+        try
+        {
+            using var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return GeocodeResult.Fail($"Photon HTTP {(int)response.StatusCode}.");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(payloadText);
+            if (!document.RootElement.TryGetProperty("features", out var features)
+                || features.ValueKind != JsonValueKind.Array
+                || features.GetArrayLength() == 0)
+            {
+                return GeocodeResult.Fail("Photon sem resultado.");
+            }
+
+            var first = features[0];
+            if (!first.TryGetProperty("geometry", out var geometry)
+                || !geometry.TryGetProperty("coordinates", out var coordinates)
+                || coordinates.ValueKind != JsonValueKind.Array
+                || coordinates.GetArrayLength() < 2)
+            {
+                return GeocodeResult.Fail("Photon payload invalido.");
+            }
+
+            var longitude = coordinates[0].GetDouble();
+            var latitude = coordinates[1].GetDouble();
+            return GeocodeResult.Ok(latitude, longitude);
+        }
+        catch (Exception ex)
+        {
+            return GeocodeResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendThrottledNominatimRequestAsync(string endpoint, CancellationToken cancellationToken)
+    {
+        await NominatimThrottle.WaitAsync(cancellationToken);
+        try
+        {
+            var wait = (LastNominatimRequestUtc + TimeSpan.FromMilliseconds(1200)) - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait, cancellationToken);
+            }
+
+            var response = await GeocodeHttpClient.GetAsync(endpoint, cancellationToken);
+            LastNominatimRequestUtc = DateTimeOffset.UtcNow;
+            return response;
+        }
+        finally
+        {
+            NominatimThrottle.Release();
         }
     }
 
@@ -1655,6 +1792,15 @@ public sealed class ProviderFlowHandler
         public string? Localidade { get; set; }
         public string? Uf { get; set; }
         public bool Erro { get; set; }
+    }
+
+    private sealed class BrasilApiCepPayload
+    {
+        public string? Cep { get; set; }
+        public string? Street { get; set; }
+        public string? Neighborhood { get; set; }
+        public string? City { get; set; }
+        public string? State { get; set; }
     }
 
     private sealed class CepLookupResult
