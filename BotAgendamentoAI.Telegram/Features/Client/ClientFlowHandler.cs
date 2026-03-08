@@ -2873,6 +2873,33 @@ public sealed class ClientFlowHandler
             return CepLookupResult.Fail("CEP invalido.");
         }
 
+        var viaCep = await TryLookupViaCepAsync(digits, cancellationToken);
+        if (viaCep.Ok && !string.IsNullOrWhiteSpace(viaCep.Logradouro))
+        {
+            return viaCep;
+        }
+
+        var brasilApi = await TryLookupBrasilApiAsync(digits, cancellationToken);
+        if (brasilApi.Ok && !string.IsNullOrWhiteSpace(brasilApi.Logradouro))
+        {
+            return brasilApi;
+        }
+
+        if (viaCep.Ok)
+        {
+            return viaCep;
+        }
+
+        if (brasilApi.Ok)
+        {
+            return brasilApi;
+        }
+
+        return CepLookupResult.Fail(!string.IsNullOrWhiteSpace(brasilApi.Error) ? brasilApi.Error : viaCep.Error);
+    }
+
+    private static async Task<CepLookupResult> TryLookupViaCepAsync(string digits, CancellationToken cancellationToken)
+    {
         try
         {
             using var response = await ViaCepHttpClient.GetAsync($"https://viacep.com.br/ws/{digits}/json/", cancellationToken);
@@ -2894,6 +2921,36 @@ public sealed class ClientFlowHandler
                 payload.Bairro,
                 payload.Localidade,
                 payload.Uf);
+        }
+        catch (Exception ex)
+        {
+            return CepLookupResult.Fail(ex.Message);
+        }
+    }
+
+    private static async Task<CepLookupResult> TryLookupBrasilApiAsync(string digits, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await ViaCepHttpClient.GetAsync($"https://brasilapi.com.br/api/cep/v2/{digits}", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return CepLookupResult.Fail($"HTTP {(int)response.StatusCode} na BrasilAPI.");
+            }
+
+            var payloadText = await response.Content.ReadAsStringAsync(cancellationToken);
+            var payload = JsonSerializer.Deserialize<BrasilApiCepPayload>(payloadText, JsonOptions);
+            if (payload is null)
+            {
+                return CepLookupResult.Fail("BrasilAPI retornou payload invalido.");
+            }
+
+            return CepLookupResult.Success(
+                digits,
+                payload.Street,
+                payload.Neighborhood,
+                payload.City,
+                payload.State);
         }
         catch (Exception ex)
         {
@@ -3819,6 +3876,15 @@ public sealed class ClientFlowHandler
         public string? Cep { get; set; }
         public string? Lat { get; set; }
         public string? Lng { get; set; }
+    }
+
+    private sealed class BrasilApiCepPayload
+    {
+        public string? Cep { get; set; }
+        public string? Street { get; set; }
+        public string? Neighborhood { get; set; }
+        public string? City { get; set; }
+        public string? State { get; set; }
     }
 
     private sealed class GeocodeResult
