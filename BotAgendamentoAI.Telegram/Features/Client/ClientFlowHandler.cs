@@ -2940,7 +2940,24 @@ public sealed class ClientFlowHandler
             return Task.FromResult(GeocodeResult.Fail("Endereco vazio para geocode."));
         }
 
-        return TryGeocodeQueryAsync($"{safe}, Brasil", cancellationToken);
+        return TryGeocodeByAddressCandidatesAsync(safe, cancellationToken);
+    }
+
+    private static async Task<GeocodeResult> TryGeocodeByAddressCandidatesAsync(string address, CancellationToken cancellationToken)
+    {
+        string? lastError = null;
+        foreach (var candidate in BuildAddressGeocodeCandidates(address))
+        {
+            var result = await TryGeocodeQueryAsync($"{candidate}, Brasil", cancellationToken);
+            if (result.Success)
+            {
+                return result;
+            }
+
+            lastError = result.Error;
+        }
+
+        return GeocodeResult.Fail(lastError ?? "Nenhum resultado no geocode.");
     }
 
     private static async Task<GeocodeResult> TryGeocodeQueryAsync(string query, CancellationToken cancellationToken)
@@ -3719,6 +3736,104 @@ public sealed class ClientFlowHandler
                 Error = error ?? string.Empty
             };
         }
+    }
+
+    private static IReadOnlyList<string> BuildAddressGeocodeCandidates(string rawAddress)
+    {
+        var output = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        static string NormalizeCandidate(string value)
+        {
+            var normalized = Regex.Replace(value ?? string.Empty, @"\s+", " ").Trim();
+            normalized = Regex.Replace(normalized, @"\s*,\s*", ", ");
+            normalized = Regex.Replace(normalized, @",\s*,+", ", ");
+            return normalized.Trim().Trim(',');
+        }
+
+        void Add(string value)
+        {
+            var normalized = NormalizeCandidate(value);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return;
+            }
+
+            if (seen.Add(normalized))
+            {
+                output.Add(normalized);
+            }
+        }
+
+        var withoutCep = Regex.Replace(
+            rawAddress,
+            @"(?i),?\s*CEP\s*\d{5}-?\d{3}\b",
+            string.Empty);
+        withoutCep = Regex.Replace(
+            withoutCep,
+            @"(?i),?\s*\b\d{5}-?\d{3}\b",
+            string.Empty);
+
+        Add(rawAddress);
+        Add(withoutCep);
+
+        var withoutComplement = Regex.Replace(
+            withoutCep,
+            @"(?i),?\s*(apto|apt|apartamento|bloco|casa|fundos|sala|conjunto|complemento)\b[^,]*",
+            string.Empty);
+        Add(withoutComplement);
+
+        var withoutNumber = RemoveHouseNumberSegment(withoutComplement);
+        Add(withoutNumber);
+        Add(withoutNumber.Replace(" - ", ", ", StringComparison.Ordinal));
+
+        var parts = withoutNumber
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static part => !string.IsNullOrWhiteSpace(part))
+            .ToArray();
+
+        if (parts.Length >= 3)
+        {
+            Add(string.Join(", ", parts.TakeLast(3)));
+            Add($"{parts[0]}, {parts[^2]}, {parts[^1]}");
+        }
+
+        if (parts.Length >= 2)
+        {
+            Add(string.Join(", ", parts.TakeLast(2)));
+        }
+
+        return output;
+    }
+
+    private static string RemoveHouseNumberSegment(string address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return string.Empty;
+        }
+
+        var parts = address
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static part => !string.IsNullOrWhiteSpace(part))
+            .ToList();
+
+        if (parts.Count < 2)
+        {
+            return address;
+        }
+
+        for (var i = 1; i < parts.Count; i++)
+        {
+            var part = parts[i];
+            if (Regex.IsMatch(part, @"^\d+[A-Za-z]?(?:\s+.*)?$"))
+            {
+                parts.RemoveAt(i);
+                break;
+            }
+        }
+
+        return string.Join(", ", parts);
     }
 
     private sealed class ClientMessagesConfigStorage

@@ -4809,18 +4809,25 @@ END;
             }
         }
 
+        var withoutCep = Regex.Replace(
+            rawAddress,
+            @"(?i),?\s*CEP\s*\d{5}-?\d{3}\b",
+            string.Empty);
+        withoutCep = Regex.Replace(
+            withoutCep,
+            @"(?i),?\s*\b\d{5}-?\d{3}\b",
+            string.Empty);
+
         Add(rawAddress);
+        Add(withoutCep);
 
         var withoutComplement = Regex.Replace(
-            rawAddress,
+            withoutCep,
             @"(?i),?\s*(apto|apt|apartamento|bloco|casa|fundos|sala|conjunto|complemento)\b[^,]*",
             string.Empty);
         Add(withoutComplement);
 
-        var withoutNumber = Regex.Replace(
-            withoutComplement,
-            @"(?<!\d)\d{1,6}[A-Za-z]?(?!\d)",
-            string.Empty);
+        var withoutNumber = RemoveHouseNumberSegment(withoutComplement);
         Add(withoutNumber);
 
         Add(withoutNumber.Replace(" - ", ", ", StringComparison.Ordinal));
@@ -4840,7 +4847,42 @@ END;
             Add(string.Join(", ", parts.TakeLast(2)));
         }
 
+        if (parts.Length >= 3)
+        {
+            Add($"{parts[0]}, {parts[^2]}, {parts[^1]}");
+        }
+
         return output;
+    }
+
+    private static string RemoveHouseNumberSegment(string address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return string.Empty;
+        }
+
+        var parts = address
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static part => !string.IsNullOrWhiteSpace(part))
+            .ToList();
+
+        if (parts.Count < 2)
+        {
+            return address;
+        }
+
+        for (var i = 1; i < parts.Count; i++)
+        {
+            var part = parts[i];
+            if (Regex.IsMatch(part, @"^\d+[A-Za-z]?(?:\s+.*)?$"))
+            {
+                parts.RemoveAt(i);
+                break;
+            }
+        }
+
+        return string.Join(", ", parts);
     }
 
     private static bool TryNormalizeCepOnly(string rawAddress, out string cep)
@@ -5031,25 +5073,44 @@ END;
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            IF EXISTS (SELECT 1 FROM tg_booking_geocode_cache WHERE booking_id = @booking_id)
+            UPDATE tg_booking_geocode_cache
+               SET tenant_id = @tenant_id,
+                   address = @address,
+                   latitude = @latitude,
+                   longitude = @longitude,
+                   status = @status,
+                   error_message = @error_message,
+                   geocoded_at_utc = @geocoded_at_utc,
+                   retry_after_utc = @retry_after_utc
+             WHERE booking_id = @booking_id;
+
+            IF @@ROWCOUNT = 0
             BEGIN
-                UPDATE tg_booking_geocode_cache
-                SET tenant_id = @tenant_id,
-                    address = @address,
-                    latitude = @latitude,
-                    longitude = @longitude,
-                    status = @status,
-                    error_message = @error_message,
-                    geocoded_at_utc = @geocoded_at_utc,
-                    retry_after_utc = @retry_after_utc
-                WHERE booking_id = @booking_id;
-            END
-            ELSE
-            BEGIN
-                INSERT INTO tg_booking_geocode_cache
-                (booking_id, tenant_id, address, latitude, longitude, status, error_message, geocoded_at_utc, retry_after_utc)
-                VALUES
-                (@booking_id, @tenant_id, @address, @latitude, @longitude, @status, @error_message, @geocoded_at_utc, @retry_after_utc);
+                BEGIN TRY
+                    INSERT INTO tg_booking_geocode_cache
+                    (booking_id, tenant_id, address, latitude, longitude, status, error_message, geocoded_at_utc, retry_after_utc)
+                    VALUES
+                    (@booking_id, @tenant_id, @address, @latitude, @longitude, @status, @error_message, @geocoded_at_utc, @retry_after_utc);
+                END TRY
+                BEGIN CATCH
+                    IF ERROR_NUMBER() IN (2601, 2627)
+                    BEGIN
+                        UPDATE tg_booking_geocode_cache
+                           SET tenant_id = @tenant_id,
+                               address = @address,
+                               latitude = @latitude,
+                               longitude = @longitude,
+                               status = @status,
+                               error_message = @error_message,
+                               geocoded_at_utc = @geocoded_at_utc,
+                               retry_after_utc = @retry_after_utc
+                         WHERE booking_id = @booking_id;
+                    END
+                    ELSE
+                    BEGIN
+                        THROW;
+                    END
+                END CATCH
             END;
             """;
         command.Parameters.AddWithValue("@booking_id", row.BookingId);

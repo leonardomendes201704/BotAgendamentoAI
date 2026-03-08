@@ -4755,18 +4755,25 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             }
         }
 
+        var withoutCep = Regex.Replace(
+            rawAddress,
+            @"(?i),?\s*CEP\s*\d{5}-?\d{3}\b",
+            string.Empty);
+        withoutCep = Regex.Replace(
+            withoutCep,
+            @"(?i),?\s*\b\d{5}-?\d{3}\b",
+            string.Empty);
+
         Add(rawAddress);
+        Add(withoutCep);
 
         var withoutComplement = Regex.Replace(
-            rawAddress,
+            withoutCep,
             @"(?i),?\s*(apto|apt|apartamento|bloco|casa|fundos|sala|conjunto|complemento)\b[^,]*",
             string.Empty);
         Add(withoutComplement);
 
-        var withoutNumber = Regex.Replace(
-            withoutComplement,
-            @"(?<!\d)\d{1,6}[A-Za-z]?(?!\d)",
-            string.Empty);
+        var withoutNumber = RemoveHouseNumberSegment(withoutComplement);
         Add(withoutNumber);
 
         Add(withoutNumber.Replace(" - ", ", ", StringComparison.Ordinal));
@@ -4786,7 +4793,42 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             Add(string.Join(", ", parts.TakeLast(2)));
         }
 
+        if (parts.Length >= 3)
+        {
+            Add($"{parts[0]}, {parts[^2]}, {parts[^1]}");
+        }
+
         return output;
+    }
+
+    private static string RemoveHouseNumberSegment(string address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return string.Empty;
+        }
+
+        var parts = address
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static part => !string.IsNullOrWhiteSpace(part))
+            .ToList();
+
+        if (parts.Count < 2)
+        {
+            return address;
+        }
+
+        for (var i = 1; i < parts.Count; i++)
+        {
+            var part = parts[i];
+            if (Regex.IsMatch(part, @"^\d+[A-Za-z]?(?:\s+.*)?$"))
+            {
+                parts.RemoveAt(i);
+                break;
+            }
+        }
+
+        return string.Join(", ", parts);
     }
 
     private static bool TryNormalizeCepOnly(string rawAddress, out string cep)
