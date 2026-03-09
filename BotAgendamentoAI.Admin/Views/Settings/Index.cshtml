@@ -205,6 +205,12 @@
         <small class="text-muted">Se deixar em branco, o valor atual (se existir) sera mantido.</small>
     </div>
 
+    <div class="mb-3">
+        <label class="form-label">Texto de resposta para "Oi"</label>
+        <textarea asp-for="WhatsAppHelloReplyText" class="form-control" rows="3" placeholder="Oi! Recebi sua mensagem no WhatsApp."></textarea>
+        <small class="text-muted">Texto enviado automaticamente quando o cliente mandar apenas "Oi" no WhatsApp.</small>
+    </div>
+
     <hr />
     <h2 class="h5">Lembrete de perfil do prestador</h2>
     <p class="text-muted">Parametros do worker que lembra prestadores com perfil incompleto (categorias, raio e CEP/local base).</p>

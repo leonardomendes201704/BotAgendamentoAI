@@ -12,6 +12,8 @@ namespace BotAgendamentoAI.Admin.Data;
 
 public sealed class SqliteAdminRepository : IAdminRepository
 {
+    private const string DefaultWhatsAppHelloReplyText = "Oi! Recebi sua mensagem no WhatsApp.";
+
     private readonly string _dbPath;
     private readonly string _connectionString;
     private readonly ILogger<SqliteAdminRepository> _logger;
@@ -134,6 +136,7 @@ CREATE TABLE IF NOT EXISTS tg_tenant_whatsapp_config (
   access_token TEXT NOT NULL DEFAULT '',
   app_secret TEXT NOT NULL DEFAULT '',
   webhook_verify_token TEXT NOT NULL DEFAULT '',
+  hello_reply_text TEXT NOT NULL DEFAULT 'Oi! Recebi sua mensagem no WhatsApp.',
   updated_at_utc TEXT NOT NULL
 );
 
@@ -254,6 +257,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "access_token", "TEXT NOT NULL DEFAULT ''");
         await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "app_secret", "TEXT NOT NULL DEFAULT ''");
         await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "webhook_verify_token", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "tg_tenant_whatsapp_config", "hello_reply_text", $"TEXT NOT NULL DEFAULT '{DefaultWhatsAppHelloReplyText}'");
 
         _logger.LogInformation("Admin SQLite path: {Path}", _dbPath);
     }
@@ -3742,7 +3746,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         {
             command.CommandText =
             """
-            SELECT is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            SELECT is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token, hello_reply_text
             FROM tg_tenant_whatsapp_config
             WHERE tenant_id = @tenant_id
             LIMIT 1;
@@ -3761,6 +3765,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 model.WhatsAppAppSecret = string.Empty;
                 model.HasWhatsAppWebhookVerifyToken = !reader.IsDBNull(5) && !string.IsNullOrWhiteSpace(reader.GetString(5));
                 model.WhatsAppWebhookVerifyToken = string.Empty;
+                model.WhatsAppHelloReplyText = NormalizeWhatsAppHelloReplyText(reader.IsDBNull(6) ? null : reader.GetString(6));
             }
         }
 
@@ -3830,13 +3835,13 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         await using var command = connection.CreateCommand();
         command.CommandText = activeOnly
             ? """
-            SELECT tenant_id, is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            SELECT tenant_id, is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token, hello_reply_text
             FROM tg_tenant_whatsapp_config
             WHERE is_active = 1
             ORDER BY tenant_id;
             """
             : """
-            SELECT tenant_id, is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token
+            SELECT tenant_id, is_active, phone_number_id, business_account_id, access_token, app_secret, webhook_verify_token, hello_reply_text
             FROM tg_tenant_whatsapp_config
             ORDER BY tenant_id;
             """;
@@ -3852,11 +3857,100 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 BusinessAccountId = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
                 AccessToken = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
                 AppSecret = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                WebhookVerifyToken = reader.IsDBNull(6) ? string.Empty : reader.GetString(6)
+                WebhookVerifyToken = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                HelloReplyText = NormalizeWhatsAppHelloReplyText(reader.IsDBNull(7) ? null : reader.GetString(7))
             });
         }
 
         return output;
+    }
+
+    public async Task<bool> SaveConversationMessageAsync(ConversationMessageWriteModel input)
+    {
+        var tenant = NormalizeTenant(input.TenantId);
+        var phone = input.Phone?.Trim() ?? string.Empty;
+        var direction = input.Direction?.Trim() ?? string.Empty;
+        var role = input.Role?.Trim() ?? string.Empty;
+        var content = input.Content?.Trim() ?? string.Empty;
+        var toolName = string.IsNullOrWhiteSpace(input.ToolName) ? (object)DBNull.Value : input.ToolName.Trim();
+        var toolCallId = string.IsNullOrWhiteSpace(input.ToolCallId) ? null : input.ToolCallId.Trim();
+        var metadataJson = string.IsNullOrWhiteSpace(input.MetadataJson) ? (object)DBNull.Value : input.MetadataJson.Trim();
+        var createdAtUtc = ToUtcText(input.CreatedAtUtc == default ? DateTimeOffset.UtcNow : input.CreatedAtUtc);
+
+        if (string.IsNullOrWhiteSpace(phone)
+            || string.IsNullOrWhiteSpace(direction)
+            || string.IsNullOrWhiteSpace(role)
+            || string.IsNullOrWhiteSpace(content))
+        {
+            return false;
+        }
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        if (!string.IsNullOrWhiteSpace(toolCallId))
+        {
+            await using var existsCommand = connection.CreateCommand();
+            existsCommand.CommandText =
+            """
+            SELECT 1
+            FROM tg_conversation_messages
+            WHERE tenant_id = @tenant_id
+              AND phone = @phone
+              AND tool_call_id = @tool_call_id
+            LIMIT 1;
+            """;
+            existsCommand.Parameters.AddWithValue("@tenant_id", tenant);
+            existsCommand.Parameters.AddWithValue("@phone", phone);
+            existsCommand.Parameters.AddWithValue("@tool_call_id", toolCallId);
+
+            var existing = await existsCommand.ExecuteScalarAsync();
+            if (existing is not null)
+            {
+                return false;
+            }
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+        """
+        INSERT INTO tg_conversation_messages
+        (
+            tenant_id,
+            phone,
+            direction,
+            role,
+            content,
+            tool_name,
+            tool_call_id,
+            created_at_utc,
+            metadata_json
+        )
+        VALUES
+        (
+            @tenant_id,
+            @phone,
+            @direction,
+            @role,
+            @content,
+            @tool_name,
+            @tool_call_id,
+            @created_at_utc,
+            @metadata_json
+        );
+        """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@phone", phone);
+        command.Parameters.AddWithValue("@direction", direction);
+        command.Parameters.AddWithValue("@role", role);
+        command.Parameters.AddWithValue("@content", content);
+        command.Parameters.AddWithValue("@tool_name", toolName);
+        command.Parameters.AddWithValue("@tool_call_id", string.IsNullOrWhiteSpace(toolCallId) ? (object)DBNull.Value : toolCallId);
+        command.Parameters.AddWithValue("@created_at_utc", createdAtUtc);
+        command.Parameters.AddWithValue("@metadata_json", metadataJson);
+        await command.ExecuteNonQueryAsync();
+
+        return true;
     }
 
     public async Task<IReadOnlyList<TelegramUserOption>> GetTelegramUsersAsync(string tenantId, int limit = 200)
@@ -4149,7 +4243,8 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             BusinessAccountId = input.WhatsAppBusinessAccountId?.Trim() ?? string.Empty,
             AccessToken = whatsAppAccessTokenToPersist,
             AppSecret = whatsAppAppSecretToPersist,
-            WebhookVerifyToken = whatsAppVerifyTokenToPersist
+            WebhookVerifyToken = whatsAppVerifyTokenToPersist,
+            HelloReplyText = NormalizeWhatsAppHelloReplyText(input.WhatsAppHelloReplyText)
         };
 
         await using (var command = connection.CreateCommand())
@@ -4211,6 +4306,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 access_token,
                 app_secret,
                 webhook_verify_token,
+                hello_reply_text,
                 updated_at_utc
             )
             VALUES
@@ -4222,6 +4318,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 @access_token,
                 @app_secret,
                 @webhook_verify_token,
+                @hello_reply_text,
                 @updated_at_utc
             )
             ON CONFLICT(tenant_id) DO UPDATE SET
@@ -4231,6 +4328,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                 access_token = excluded.access_token,
                 app_secret = excluded.app_secret,
                 webhook_verify_token = excluded.webhook_verify_token,
+                hello_reply_text = excluded.hello_reply_text,
                 updated_at_utc = excluded.updated_at_utc;
             """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
@@ -4240,6 +4338,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             command.Parameters.AddWithValue("@access_token", whatsApp.AccessToken);
             command.Parameters.AddWithValue("@app_secret", whatsApp.AppSecret);
             command.Parameters.AddWithValue("@webhook_verify_token", whatsApp.WebhookVerifyToken);
+            command.Parameters.AddWithValue("@hello_reply_text", whatsApp.HelloReplyText);
             command.Parameters.AddWithValue("@updated_at_utc", nowUtc);
             await command.ExecuteNonQueryAsync();
         }
@@ -4731,6 +4830,7 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             HasWhatsAppAppSecret = false,
             WhatsAppWebhookVerifyToken = string.Empty,
             HasWhatsAppWebhookVerifyToken = false,
+            WhatsAppHelloReplyText = DefaultWhatsAppHelloReplyText,
             ProviderReminderEnabled = true,
             ProviderReminderSweepIntervalMinutes = 5,
             ProviderReminderResendCooldownMinutes = 5,
@@ -6442,7 +6542,13 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         public string AccessToken { get; set; } = string.Empty;
         public string AppSecret { get; set; } = string.Empty;
         public string WebhookVerifyToken { get; set; } = string.Empty;
+        public string HelloReplyText { get; set; } = DefaultWhatsAppHelloReplyText;
     }
+
+    private static string NormalizeWhatsAppHelloReplyText(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? DefaultWhatsAppHelloReplyText
+            : value.Trim();
 
     private sealed class GoogleCalendarConfigStorage
     {

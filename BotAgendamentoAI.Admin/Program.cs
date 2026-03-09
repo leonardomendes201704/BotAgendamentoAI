@@ -1,6 +1,7 @@
 using BotAgendamentoAI.Admin.Data;
 using BotAgendamentoAI.Admin.Models;
 using BotAgendamentoAI.Admin.Realtime;
+using BotAgendamentoAI.Admin.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,6 +27,7 @@ else
 
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<IDashboardRealtimeNotifier, SignalRDashboardRealtimeNotifier>();
+builder.Services.AddHttpClient<IWhatsAppCloudApiClient, WhatsAppCloudApiClient>();
 builder.Services.AddControllersWithViews();
 
 var app = builder.Build();

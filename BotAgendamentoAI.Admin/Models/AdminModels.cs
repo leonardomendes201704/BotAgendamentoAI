@@ -426,6 +426,7 @@ public sealed class BotConfigViewModel
     public bool HasWhatsAppAppSecret { get; set; }
     public string WhatsAppWebhookVerifyToken { get; set; } = string.Empty;
     public bool HasWhatsAppWebhookVerifyToken { get; set; }
+    public string WhatsAppHelloReplyText { get; set; } = "Oi! Recebi sua mensagem no WhatsApp.";
     public bool ProviderReminderEnabled { get; set; } = true;
     public int ProviderReminderSweepIntervalMinutes { get; set; } = 5;
     public int ProviderReminderResendCooldownMinutes { get; set; } = 5;
@@ -465,6 +466,20 @@ public sealed class WhatsAppTenantConfigItem
     public string AccessToken { get; set; } = string.Empty;
     public string AppSecret { get; set; } = string.Empty;
     public string WebhookVerifyToken { get; set; } = string.Empty;
+    public string HelloReplyText { get; set; } = "Oi! Recebi sua mensagem no WhatsApp.";
+}
+
+public sealed class ConversationMessageWriteModel
+{
+    public string TenantId { get; set; } = "A";
+    public string Phone { get; set; } = string.Empty;
+    public string Direction { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public string? ToolName { get; set; }
+    public string? ToolCallId { get; set; }
+    public string? MetadataJson { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class TelegramMemoryResetResult
