@@ -1512,15 +1512,26 @@ public sealed class ClientFlowHandler
             }
 
             context.Draft.WaitingAddressNumber = false;
-            context.Draft.WaitingAddressComplementChoice = false;
+            context.Draft.WaitingAddressComplementChoice = true;
             context.Draft.WaitingAddressComplement = false;
             context.Draft.WaitingAddressConfirmation = false;
             context.Draft.AddressNumber = addressNumber;
-            context.Draft.AddressComplement = string.Empty;
+            context.Draft.AddressComplement = null;
             context.Draft.AddressText = null;
 
             UserContextService.SaveDraft(context.Session, context.Draft);
-            await FinalizeDraftAddressAsync(context, message.Chat.Id, askConfirmation: false, cancellationToken);
+            await context.Db.SaveChangesAsync(cancellationToken);
+
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                message.Chat.Id,
+                "Esse endereco possui complemento?",
+                KeyboardFactory.AddressComplementChoice("C:ADDCOMP:YES", "C:ADDCOMP:NO"),
+                context.Session.ActiveJobId,
+                cancellationToken);
             return;
         }
 
