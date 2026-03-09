@@ -37,13 +37,13 @@ public static class BotMessages
         => "2/7 - Descreva o problema em poucas linhas.";
 
     public static string AskPhotos()
-        => "3/7 - Envie fotos do problema. Quando terminar, toque em 'Concluir fotos'.";
+        => "3/7 - Deseja enviar alguma foto?";
 
     public static string AskLocation()
-        => "4/7 - Envie apenas o CEP do local de atendimento (8 digitos, com ou sem hifen).";
+        => "4/7 - Qual e o seu CEP?";
 
     public static string AskSchedule()
-        => "5/7 - Quando voce precisa do servico?";
+        => "5/7 - Escolha um dia para o atendimento:";
 
     public static string AskPreference()
         => "6/7 - Qual sua preferencia para selecionar prestador?";
@@ -58,7 +58,7 @@ public static class BotMessages
         => $"7/7 - Confirme seu pedido:\n\n{summary}";
 
     public static string WaitingProvider()
-        => "Pedido criado! Estamos buscando um prestador disponivel.";
+        => "Pedido criado! Aguarde o contato do prestador.";
 
     public static string NoProviderJobs()
         => "Nao encontrei pedidos disponiveis agora. Tente novamente em instantes.";

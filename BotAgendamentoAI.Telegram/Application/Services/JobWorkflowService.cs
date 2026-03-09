@@ -80,16 +80,16 @@ public sealed class JobWorkflowService
 
     public static string BuildConfirmationSummary(UserDraft draft)
     {
+        var formattedPhone = FormatContactPhone(draft.ContactPhone);
         var lines = new List<string>
         {
             $"Categoria: {draft.Category}",
             $"Descricao: {draft.Description}",
             draft.PhotoFileIds.Count > 0 ? $"Fotos: {draft.PhotoFileIds.Count}" : string.Empty,
             string.IsNullOrWhiteSpace(draft.ContactName) ? string.Empty : $"Contato: {draft.ContactName}",
-            string.IsNullOrWhiteSpace(draft.ContactPhone) ? string.Empty : $"Telefone contato: {draft.ContactPhone}",
+            string.IsNullOrWhiteSpace(formattedPhone) ? string.Empty : $"Telefone contato: {formattedPhone}",
             $"Endereco: {draft.AddressText}",
-            $"Quando: {(draft.IsUrgent ? "Urgente" : draft.ScheduledAt?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Hoje")}",
-            $"Preferencia: {PreferenceLabel(draft.PreferenceCode)}"
+            $"Quando: {(draft.IsUrgent ? "Urgente" : draft.ScheduledAt?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Hoje")}"
         };
 
         return string.Join("\n", lines.Where(x => !string.IsNullOrWhiteSpace(x)));
@@ -322,6 +322,27 @@ public sealed class JobWorkflowService
             "CHO" => "Escolher prestador",
             _ => "Nao informado"
         };
+    }
+
+    private static string FormatContactPhone(string? input)
+    {
+        var digits = new string((input ?? string.Empty).Where(char.IsDigit).ToArray());
+        if ((digits.Length == 12 || digits.Length == 13) && digits.StartsWith("55", StringComparison.Ordinal))
+        {
+            digits = digits[2..];
+        }
+
+        if (digits.Length == 10)
+        {
+            return $"({digits[..2]}) {digits.Substring(2, 4)}-{digits[6..]}";
+        }
+
+        if (digits.Length == 11)
+        {
+            return $"({digits[..2]}) {digits.Substring(2, 5)}-{digits[7..]}";
+        }
+
+        return (input ?? string.Empty).Trim();
     }
 
     private static bool MatchesCategory(string category, string categoriesJson)

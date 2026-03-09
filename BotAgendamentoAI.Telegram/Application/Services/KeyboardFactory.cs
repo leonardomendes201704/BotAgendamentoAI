@@ -134,6 +134,19 @@ public static class KeyboardFactory
         });
     }
 
+    public static InlineKeyboardMarkup PhotoDecisionMenu()
+    {
+        return new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("Sim", "C:PH:YES"),
+                InlineKeyboardButton.WithCallbackData("Nao", "C:PH:NO")
+            },
+            ClientNavigationRow()
+        });
+    }
+
     public static InlineKeyboardMarkup LocationRequestKeyboard()
     {
         return new InlineKeyboardMarkup(new[]
@@ -278,6 +291,10 @@ public static class KeyboardFactory
             new[]
             {
                 InlineKeyboardButton.WithCallbackData("Cancelar", "C:CONF:CANCEL")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest())
             },
             new[]
             {

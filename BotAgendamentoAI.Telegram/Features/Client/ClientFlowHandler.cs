@@ -388,6 +388,11 @@ public sealed class ClientFlowHandler
             return;
         }
 
+        if (context.Draft.WaitingPhotoDecision)
+        {
+            context.Draft.WaitingPhotoDecision = false;
+        }
+
         var fileId = message.Photo[^1].FileId;
         if (!context.Draft.PhotoFileIds.Contains(fileId, StringComparer.Ordinal))
         {
@@ -432,7 +437,7 @@ public sealed class ClientFlowHandler
             context.TenantId,
             context.User.TelegramUserId,
             message.Chat.Id,
-            "Para validar corretamente o endereco, envie somente o CEP por texto.",
+            BotMessages.AskLocation(),
             KeyboardFactory.CepRequestKeyboard(),
             context.Session.ActiveJobId,
             cancellationToken);
@@ -588,18 +593,14 @@ public sealed class ClientFlowHandler
 
         if (route.Scope == "C" && route.Action == "PH" && route.Arg1 == "DONE")
         {
-            context.Draft.AddressText = null;
-            context.Draft.Cep = null;
-            context.Draft.AddressBaseFromCep = null;
-            context.Draft.AddressNumber = null;
-            context.Draft.AddressComplement = null;
-            context.Draft.WaitingAddressNumber = false;
-            context.Draft.WaitingAddressComplementChoice = false;
-            context.Draft.WaitingAddressComplement = false;
-            context.Draft.WaitingAddressConfirmation = false;
-            context.Draft.Latitude = null;
-            context.Draft.Longitude = null;
-            UserContextService.SetState(context.Session, BotStates.C_LOCATION);
+            context.Draft.WaitingPhotoDecision = false;
+            await MoveDraftToLocationStepAsync(context, chatId, cancellationToken);
+            return true;
+        }
+
+        if (route.Scope == "C" && route.Action == "PH" && route.Arg1 == "YES")
+        {
+            context.Draft.WaitingPhotoDecision = false;
             UserContextService.SaveDraft(context.Session, context.Draft);
             await context.Db.SaveChangesAsync(cancellationToken);
 
@@ -609,11 +610,18 @@ public sealed class ClientFlowHandler
                 context.TenantId,
                 context.User.TelegramUserId,
                 chatId,
-                BotMessages.AskLocation(),
-                KeyboardFactory.CepRequestKeyboard(),
+                "Envie fotos do problema. Quando terminar, toque em 'Concluir fotos'.",
+                KeyboardFactory.PhotoCollectMenu(),
                 context.Session.ActiveJobId,
                 cancellationToken);
+            return true;
+        }
 
+        if (route.Scope == "C" && route.Action == "PH" && route.Arg1 == "NO")
+        {
+            context.Draft.WaitingPhotoDecision = false;
+            context.Draft.PhotoFileIds.Clear();
+            await MoveDraftToLocationStepAsync(context, chatId, cancellationToken);
             return true;
         }
 
@@ -698,184 +706,17 @@ public sealed class ClientFlowHandler
 
         if (route.Scope == "C" && route.Action == "SCH")
         {
-            if (route.Arg1 == "URG")
-            {
-                if (_availability is not null)
-                {
-                    var request = await BuildAvailabilityRequestAsync(
-                        context,
-                        context.User.Id,
-                        null,
-                        null,
-                        false,
-                        cancellationToken);
-                    var check = await _availability.CheckSlotAvailabilityAsync(
-                        context.Db,
-                        request,
-                        DateTimeOffset.UtcNow,
-                        cancellationToken);
-                    if (!check.IsAvailable)
-                    {
-                        await _sender.SendTextAsync(
-                            context.Db,
-                            context.Bot,
-                            context.TenantId,
-                            context.User.TelegramUserId,
-                            chatId,
-                            "Voce ja possui um agendamento no periodo atual. Escolha outro horario em 'Agendar'.",
-                            KeyboardFactory.ScheduleMode(),
-                            context.Session.ActiveJobId,
-                            cancellationToken);
-                        return true;
-                    }
-                }
-
-                context.Draft.IsUrgent = true;
-                context.Draft.ScheduledAt = DateTimeOffset.UtcNow;
-                UserContextService.SaveDraft(context.Session, context.Draft);
-                UserContextService.SetState(context.Session, BotStates.C_PREFERENCES);
-                await context.Db.SaveChangesAsync(cancellationToken);
-
-                await _sender.SendTextAsync(
-                    context.Db,
-                    context.Bot,
-                    context.TenantId,
-                    context.User.TelegramUserId,
-                    chatId,
-                    BotMessages.AskPreference(),
-                    KeyboardFactory.Preferences(),
-                    context.Session.ActiveJobId,
-                    cancellationToken);
-
-                return true;
-            }
-
-            if (route.Arg1 == "TOD")
-            {
-                if (_availability is not null)
-                {
-                    var request = await BuildAvailabilityRequestAsync(
-                        context,
-                        context.User.Id,
-                        null,
-                        null,
-                        true,
-                        cancellationToken);
-                    var nowLocal = request.NowLocal;
-                    var dayToken = nowLocal.ToString("yyyyMMdd");
-                    var slots = await _availability.GetAvailableTimeSlotsAsync(
-                        context.Db,
-                        request,
-                        dayToken,
-                        cancellationToken);
-                    if (slots.Count == 0)
-                    {
-                        await _sender.SendTextAsync(
-                            context.Db,
-                            context.Bot,
-                            context.TenantId,
-                            context.User.TelegramUserId,
-                            chatId,
-                            "Nao encontrei horarios livres para hoje. Escolha 'Agendar' para ver os proximos dias.",
-                            KeyboardFactory.ScheduleMode(),
-                            context.Session.ActiveJobId,
-                            cancellationToken);
-                        return true;
-                    }
-
-                    var firstSlot = slots[0];
-                    if (!TryParseSchedule(dayToken, firstSlot, context.Runtime.TimeZone, out var scheduleToday))
-                    {
-                        await _sender.SendTextAsync(
-                            context.Db,
-                            context.Bot,
-                            context.TenantId,
-                            context.User.TelegramUserId,
-                            chatId,
-                            "Nao consegui montar um horario disponivel para hoje. Tente Agendar.",
-                            KeyboardFactory.ScheduleMode(),
-                            context.Session.ActiveJobId,
-                            cancellationToken);
-                        return true;
-                    }
-
-                    context.Draft.IsUrgent = false;
-                    context.Draft.ScheduledAt = scheduleToday;
-                }
-                else
-                {
-                    var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
-                    context.Draft.IsUrgent = false;
-                    context.Draft.ScheduledAt = nowLocal.Date.AddHours(Math.Max(nowLocal.Hour + 1, 9));
-                }
-
-                UserContextService.SaveDraft(context.Session, context.Draft);
-                UserContextService.SetState(context.Session, BotStates.C_PREFERENCES);
-                await context.Db.SaveChangesAsync(cancellationToken);
-
-                await _sender.SendTextAsync(
-                    context.Db,
-                    context.Bot,
-                    context.TenantId,
-                    context.User.TelegramUserId,
-                    chatId,
-                    BotMessages.AskPreference(),
-                    KeyboardFactory.Preferences(),
-                    context.Session.ActiveJobId,
-                    cancellationToken);
-
-                return true;
-            }
-
-            if (route.Arg1 == "CAL")
-            {
-                var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
-                InlineKeyboardMarkup dayKeyboard;
-                if (_availability is not null)
-                {
-                    var request = await BuildAvailabilityRequestAsync(
-                        context,
-                        context.User.Id,
-                        null,
-                        null,
-                        true,
-                        cancellationToken);
-                    var days = await _availability.GetAvailableDaysAsync(context.Db, request, cancellationToken);
-                    if (days.Count == 0)
-                    {
-                        await _sender.SendTextAsync(
-                            context.Db,
-                            context.Bot,
-                            context.TenantId,
-                            context.User.TelegramUserId,
-                            chatId,
-                            "Nao ha horarios disponiveis para os proximos dias. Tente novamente mais tarde.",
-                            KeyboardFactory.ScheduleMode(),
-                            context.Session.ActiveJobId,
-                            cancellationToken);
-                        return true;
-                    }
-
-                    dayKeyboard = KeyboardFactory.DaySelection(days);
-                }
-                else
-                {
-                    dayKeyboard = KeyboardFactory.DaySelection(nowLocal);
-                }
-
-                await _sender.SendTextAsync(
-                    context.Db,
-                    context.Bot,
-                    context.TenantId,
-                    context.User.TelegramUserId,
-                    chatId,
-                    "Selecione o dia:",
-                    dayKeyboard,
-                    context.Session.ActiveJobId,
-                    cancellationToken);
-
-                return true;
-            }
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                BotMessages.AskSchedule(),
+                await BuildScheduleDayKeyboardAsync(context, cancellationToken),
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return true;
         }
 
         if (route.Scope == "C" && route.Action == "DAY")
@@ -891,7 +732,7 @@ public sealed class ClientFlowHandler
                         context.User.TelegramUserId,
                         chatId,
                         "Dia invalido. Selecione novamente.",
-                        KeyboardFactory.ScheduleMode(),
+                        await BuildScheduleDayKeyboardAsync(context, cancellationToken),
                         context.Session.ActiveJobId,
                         cancellationToken);
                     return true;
@@ -918,7 +759,7 @@ public sealed class ClientFlowHandler
                         context.User.TelegramUserId,
                         chatId,
                         "Esse dia ficou sem horarios livres. Escolha outro dia.",
-                        KeyboardFactory.ScheduleMode(),
+                        await BuildScheduleDayKeyboardAsync(context, cancellationToken),
                         context.Session.ActiveJobId,
                         cancellationToken);
                     return true;
@@ -981,7 +822,7 @@ public sealed class ClientFlowHandler
                         cancellationToken);
                     var keyboard = slots.Count > 0
                         ? KeyboardFactory.TimeSelection(route.Arg1, slots)
-                        : KeyboardFactory.ScheduleMode();
+                        : await BuildScheduleDayKeyboardAsync(context, cancellationToken);
                     await _sender.SendTextAsync(
                         context.Db,
                         context.Bot,
@@ -998,51 +839,25 @@ public sealed class ClientFlowHandler
 
             context.Draft.IsUrgent = false;
             context.Draft.ScheduledAt = scheduledAt;
+            context.Draft.PreferenceCode = "RAT";
+            await ApplyContactDefaultsFromProfileAsync(context, cancellationToken);
             UserContextService.SaveDraft(context.Session, context.Draft);
-            UserContextService.SetState(context.Session, BotStates.C_PREFERENCES);
+            UserContextService.SetState(context.Session, BotStates.C_CONFIRM);
             await context.Db.SaveChangesAsync(cancellationToken);
 
-            await _sender.SendTextAsync(
-                context.Db,
-                context.Bot,
-                context.TenantId,
-                context.User.TelegramUserId,
-                chatId,
-                BotMessages.AskPreference(),
-                KeyboardFactory.Preferences(),
-                context.Session.ActiveJobId,
-                cancellationToken);
-
+            await SendConfirmationAsync(context, chatId, cancellationToken);
             return true;
         }
 
         if (route.Scope == "C" && route.Action == "PRF")
         {
             context.Draft.PreferenceCode = route.Arg1;
-            context.Draft.ContactName = string.IsNullOrWhiteSpace(context.Draft.ContactName)
-                ? (context.User.Name ?? string.Empty).Trim()
-                : context.Draft.ContactName?.Trim();
-            context.Draft.ContactPhone = string.IsNullOrWhiteSpace(context.Draft.ContactPhone)
-                ? NormalizePhoneIfPossible(context.User.Phone)
-                : context.Draft.ContactPhone?.Trim();
+            await ApplyContactDefaultsFromProfileAsync(context, cancellationToken);
             UserContextService.SaveDraft(context.Session, context.Draft);
-            UserContextService.SetState(context.Session, BotStates.C_CONTACT_NAME);
+            UserContextService.SetState(context.Session, BotStates.C_CONFIRM);
             await context.Db.SaveChangesAsync(cancellationToken);
 
-            var suggestedName = string.IsNullOrWhiteSpace(context.Draft.ContactName)
-                ? string.Empty
-                : $" (sugestao: {context.Draft.ContactName})";
-            await _sender.SendTextAsync(
-                context.Db,
-                context.Bot,
-                context.TenantId,
-                context.User.TelegramUserId,
-                chatId,
-                $"{BotMessages.AskContactName()}{suggestedName}",
-                null,
-                context.Session.ActiveJobId,
-                cancellationToken);
-
+            await SendConfirmationAsync(context, chatId, cancellationToken);
             return true;
         }
 
@@ -1062,6 +877,15 @@ public sealed class ClientFlowHandler
 
             if (route.Arg1 == "OK")
             {
+                if (string.IsNullOrWhiteSpace(context.Draft.PreferenceCode))
+                {
+                    context.Draft.PreferenceCode = "RAT";
+                }
+
+                await ApplyContactDefaultsFromProfileAsync(context, cancellationToken);
+                UserContextService.SaveDraft(context.Session, context.Draft);
+                await context.Db.SaveChangesAsync(cancellationToken);
+
                 if (_availability is not null && context.Draft.ScheduledAt.HasValue)
                 {
                     var request = await BuildAvailabilityRequestAsync(
@@ -1088,7 +912,7 @@ public sealed class ClientFlowHandler
                             context.User.TelegramUserId,
                             chatId,
                             "Esse horario acabou de ficar indisponivel. Escolha outro horario.",
-                            KeyboardFactory.ScheduleMode(),
+                            await BuildScheduleDayKeyboardAsync(context, cancellationToken),
                             context.Session.ActiveJobId,
                             cancellationToken);
                         return true;
@@ -1135,7 +959,7 @@ public sealed class ClientFlowHandler
                         context.User.TelegramUserId,
                         chatId,
                         ex.Message,
-                        KeyboardFactory.ScheduleMode(),
+                        await BuildScheduleDayKeyboardAsync(context, cancellationToken),
                         context.Session.ActiveJobId,
                         cancellationToken);
                     UserContextService.SetState(context.Session, BotStates.C_SCHEDULE);
@@ -1148,17 +972,6 @@ public sealed class ClientFlowHandler
                 context.Session.DraftJson = "{}";
                 context.Session.UpdatedAt = DateTimeOffset.UtcNow;
                 await context.Db.SaveChangesAsync(cancellationToken);
-
-                await _sender.SendTextAsync(
-                    context.Db,
-                    context.Bot,
-                    context.TenantId,
-                    context.User.TelegramUserId,
-                    chatId,
-                    "Acompanhe seu pedido no menu 'Meus agendamentos'.",
-                    KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
-                    job.Id,
-                    cancellationToken);
 
                 return true;
             }
@@ -1455,9 +1268,10 @@ public sealed class ClientFlowHandler
         context.Draft.Longitude = null;
         context.Draft.IsUrgent = false;
         context.Draft.ScheduledAt = null;
-        context.Draft.PreferenceCode = null;
+        context.Draft.PreferenceCode = "RAT";
         context.Draft.ContactName = null;
         context.Draft.ContactPhone = null;
+        context.Draft.WaitingPhotoDecision = false;
         context.Draft.PhotoFileIds.Clear();
 
         UserContextService.SaveDraft(context.Session, context.Draft);
@@ -1488,6 +1302,7 @@ public sealed class ClientFlowHandler
         }
 
         context.Draft.Description = text;
+        context.Draft.WaitingPhotoDecision = true;
         UserContextService.SaveDraft(context.Session, context.Draft);
         UserContextService.SetState(context.Session, BotStates.C_COLLECT_PHOTOS);
         await context.Db.SaveChangesAsync(cancellationToken);
@@ -1499,27 +1314,39 @@ public sealed class ClientFlowHandler
             context.User.TelegramUserId,
             chatId,
             BotMessages.AskPhotos(),
-            KeyboardFactory.PhotoCollectMenu(),
+            KeyboardFactory.PhotoDecisionMenu(),
             context.Session.ActiveJobId,
             cancellationToken);
     }
 
     private async Task HandlePhotoCollectionTextAsync(BotExecutionContext context, Message message, string text, CancellationToken cancellationToken)
     {
-        if (string.Equals(text, MenuTexts.FinishPhotos, StringComparison.OrdinalIgnoreCase))
+        if (context.Draft.WaitingPhotoDecision)
         {
-            context.Draft.AddressText = null;
-            context.Draft.Cep = null;
-            context.Draft.AddressBaseFromCep = null;
-            context.Draft.AddressNumber = null;
-            context.Draft.AddressComplement = null;
-            context.Draft.WaitingAddressNumber = false;
-            context.Draft.WaitingAddressComplementChoice = false;
-            context.Draft.WaitingAddressComplement = false;
-            context.Draft.WaitingAddressConfirmation = false;
-            context.Draft.Latitude = null;
-            context.Draft.Longitude = null;
-            UserContextService.SetState(context.Session, BotStates.C_LOCATION);
+            if (!TryParseYesNo(text, out var shouldSendPhotos))
+            {
+                await _sender.SendTextAsync(
+                    context.Db,
+                    context.Bot,
+                    context.TenantId,
+                    context.User.TelegramUserId,
+                    message.Chat.Id,
+                    "Deseja enviar alguma foto?",
+                    KeyboardFactory.PhotoDecisionMenu(),
+                    context.Session.ActiveJobId,
+                    cancellationToken);
+                return;
+            }
+
+            if (!shouldSendPhotos)
+            {
+                context.Draft.WaitingPhotoDecision = false;
+                context.Draft.PhotoFileIds.Clear();
+                await MoveDraftToLocationStepAsync(context, message.Chat.Id, cancellationToken);
+                return;
+            }
+
+            context.Draft.WaitingPhotoDecision = false;
             UserContextService.SaveDraft(context.Session, context.Draft);
             await context.Db.SaveChangesAsync(cancellationToken);
 
@@ -1529,10 +1356,16 @@ public sealed class ClientFlowHandler
                 context.TenantId,
                 context.User.TelegramUserId,
                 message.Chat.Id,
-                BotMessages.AskLocation(),
-                KeyboardFactory.CepRequestKeyboard(),
+                "Envie fotos do problema. Quando terminar, toque em 'Concluir fotos'.",
+                KeyboardFactory.PhotoCollectMenu(),
                 context.Session.ActiveJobId,
                 cancellationToken);
+            return;
+        }
+
+        if (string.Equals(text, MenuTexts.FinishPhotos, StringComparison.OrdinalIgnoreCase))
+        {
+            await MoveDraftToLocationStepAsync(context, message.Chat.Id, cancellationToken);
             return;
         }
 
@@ -1626,7 +1459,7 @@ public sealed class ClientFlowHandler
             }
 
             context.Draft.AddressComplement = complement;
-            await FinalizeDraftAddressAsync(context, message.Chat.Id, cancellationToken);
+            await FinalizeDraftAddressAsync(context, message.Chat.Id, askConfirmation: false, cancellationToken);
             return;
         }
 
@@ -1679,26 +1512,15 @@ public sealed class ClientFlowHandler
             }
 
             context.Draft.WaitingAddressNumber = false;
-            context.Draft.WaitingAddressComplementChoice = true;
+            context.Draft.WaitingAddressComplementChoice = false;
             context.Draft.WaitingAddressComplement = false;
             context.Draft.WaitingAddressConfirmation = false;
             context.Draft.AddressNumber = addressNumber;
-            context.Draft.AddressComplement = null;
+            context.Draft.AddressComplement = string.Empty;
             context.Draft.AddressText = null;
 
             UserContextService.SaveDraft(context.Session, context.Draft);
-            await context.Db.SaveChangesAsync(cancellationToken);
-
-            await _sender.SendTextAsync(
-                context.Db,
-                context.Bot,
-                context.TenantId,
-                context.User.TelegramUserId,
-                message.Chat.Id,
-                "Esse endereco possui complemento?",
-                KeyboardFactory.AddressComplementChoice("C:ADDCOMP:YES", "C:ADDCOMP:NO"),
-                context.Session.ActiveJobId,
-                cancellationToken);
+            await FinalizeDraftAddressAsync(context, message.Chat.Id, askConfirmation: false, cancellationToken);
             return;
         }
 
@@ -1771,7 +1593,7 @@ public sealed class ClientFlowHandler
             context.TenantId,
             context.User.TelegramUserId,
             message.Chat.Id,
-            $"Endereco resolvido pelo CEP:\n{baseAddress}\n\nInforme o numero do endereco.",
+            "Qual numero do endereco?",
             KeyboardFactory.CepRequestKeyboard(),
             context.Session.ActiveJobId,
             cancellationToken);
@@ -1852,7 +1674,7 @@ public sealed class ClientFlowHandler
         if (normalizedAction == "NO" || normalizedAction == "NAO" || normalizedAction == "NÃO")
         {
             context.Draft.AddressComplement = string.Empty;
-            await FinalizeDraftAddressAsync(context, chatId, cancellationToken);
+            await FinalizeDraftAddressAsync(context, chatId, askConfirmation: false, cancellationToken);
             return;
         }
 
@@ -1871,6 +1693,7 @@ public sealed class ClientFlowHandler
     private async Task FinalizeDraftAddressAsync(
         BotExecutionContext context,
         ChatId chatId,
+        bool askConfirmation,
         CancellationToken cancellationToken)
     {
         context.Draft.AddressText = MergeAddressWithParts(
@@ -1898,21 +1721,27 @@ public sealed class ClientFlowHandler
         context.Draft.WaitingAddressNumber = false;
         context.Draft.WaitingAddressComplementChoice = false;
         context.Draft.WaitingAddressComplement = false;
-        context.Draft.WaitingAddressConfirmation = true;
+        context.Draft.WaitingAddressConfirmation = askConfirmation;
 
         UserContextService.SaveDraft(context.Session, context.Draft);
         await context.Db.SaveChangesAsync(cancellationToken);
 
-        await _sender.SendTextAsync(
-            context.Db,
-            context.Bot,
-            context.TenantId,
-            context.User.TelegramUserId,
-            chatId,
-            $"Endereco completo:\n{context.Draft.AddressText}\n\nEste endereco esta correto?",
-            KeyboardFactory.AddressConfirmation(),
-            context.Session.ActiveJobId,
-            cancellationToken);
+        if (askConfirmation)
+        {
+            await _sender.SendTextAsync(
+                context.Db,
+                context.Bot,
+                context.TenantId,
+                context.User.TelegramUserId,
+                chatId,
+                $"Endereco completo:\n{context.Draft.AddressText}\n\nEste endereco esta correto?",
+                KeyboardFactory.AddressConfirmation(),
+                context.Session.ActiveJobId,
+                cancellationToken);
+            return;
+        }
+
+        await AdvanceToScheduleAsync(context, chatId, cancellationToken);
     }
 
     private async Task HandleContactPhoneAsync(
@@ -2824,9 +2653,65 @@ public sealed class ClientFlowHandler
             context.User.TelegramUserId,
             chatId,
             BotMessages.AskSchedule(),
-            KeyboardFactory.ScheduleMode(),
+            await BuildScheduleDayKeyboardAsync(context, cancellationToken),
             context.Session.ActiveJobId,
             cancellationToken);
+    }
+
+    private async Task MoveDraftToLocationStepAsync(
+        BotExecutionContext context,
+        ChatId chatId,
+        CancellationToken cancellationToken)
+    {
+        context.Draft.AddressText = null;
+        context.Draft.Cep = null;
+        context.Draft.AddressBaseFromCep = null;
+        context.Draft.AddressNumber = null;
+        context.Draft.AddressComplement = null;
+        context.Draft.WaitingAddressNumber = false;
+        context.Draft.WaitingAddressComplementChoice = false;
+        context.Draft.WaitingAddressComplement = false;
+        context.Draft.WaitingAddressConfirmation = false;
+        context.Draft.Latitude = null;
+        context.Draft.Longitude = null;
+        UserContextService.SetState(context.Session, BotStates.C_LOCATION);
+        UserContextService.SaveDraft(context.Session, context.Draft);
+        await context.Db.SaveChangesAsync(cancellationToken);
+
+        await _sender.SendTextAsync(
+            context.Db,
+            context.Bot,
+            context.TenantId,
+            context.User.TelegramUserId,
+            chatId,
+            BotMessages.AskLocation(),
+            KeyboardFactory.CepRequestKeyboard(),
+            context.Session.ActiveJobId,
+            cancellationToken);
+    }
+
+    private async Task<InlineKeyboardMarkup> BuildScheduleDayKeyboardAsync(
+        BotExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_availability is not null)
+        {
+            var request = await BuildAvailabilityRequestAsync(
+                context,
+                context.User.Id,
+                null,
+                null,
+                true,
+                cancellationToken);
+            var days = await _availability.GetAvailableDaysAsync(context.Db, request, cancellationToken);
+            if (days.Count > 0)
+            {
+                return KeyboardFactory.DaySelection(days);
+            }
+        }
+
+        var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone);
+        return KeyboardFactory.DaySelection(nowLocal);
     }
 
     private async Task<AvailabilityRequest> BuildAvailabilityRequestAsync(
@@ -2852,6 +2737,28 @@ public sealed class ClientFlowHandler
             NowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, context.Runtime.TimeZone),
             RequireFutureSlotsOnly = requireFutureSlotsOnly
         };
+    }
+
+    private async Task ApplyContactDefaultsFromProfileAsync(
+        BotExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(context.Draft.ContactName) || string.IsNullOrWhiteSpace(context.Draft.ContactPhone))
+        {
+            var profile = await GetOrCreateClientProfileAsync(context, cancellationToken);
+            if (string.IsNullOrWhiteSpace(context.Draft.ContactName))
+            {
+                context.Draft.ContactName = string.IsNullOrWhiteSpace(profile.FullName)
+                    ? (context.User.Name ?? string.Empty).Trim()
+                    : profile.FullName.Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(context.Draft.ContactPhone))
+            {
+                context.Draft.ContactPhone = NormalizePhoneIfPossible(profile.PhoneNumber)
+                    ?? NormalizePhoneIfPossible(context.User.Phone);
+            }
+        }
     }
 
     private static bool IsCepOnlyInput(string text)

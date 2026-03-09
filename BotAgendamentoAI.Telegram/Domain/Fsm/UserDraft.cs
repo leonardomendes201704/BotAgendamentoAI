@@ -4,6 +4,7 @@ public sealed class UserDraft
 {
     public string? Category { get; set; }
     public string? Description { get; set; }
+    public bool WaitingPhotoDecision { get; set; }
     public List<string> PhotoFileIds { get; set; } = new();
     public string? AddressText { get; set; }
     public string? Cep { get; set; }
