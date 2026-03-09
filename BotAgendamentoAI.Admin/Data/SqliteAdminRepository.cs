@@ -39,6 +39,22 @@ CREATE TABLE IF NOT EXISTS tg_conversation_messages (
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_tenant_phone_created
 ON tg_conversation_messages(tenant_id, phone, created_at_utc);
 
+CREATE TABLE IF NOT EXISTS tg_whatsapp_message_status_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error_code TEXT NULL,
+  error_title TEXT NULL,
+  error_message TEXT NULL,
+  raw_json TEXT NULL,
+  created_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_status_tenant_phone_message_created
+ON tg_whatsapp_message_status_events(tenant_id, phone, message_id, created_at_utc);
+
 CREATE TABLE IF NOT EXISTS tg_conversation_state (
   tenant_id TEXT NOT NULL,
   phone TEXT NOT NULL,
@@ -1145,7 +1161,10 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     Content = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
                     ToolName = null,
                     ToolCallId = null,
-                    CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(4))
+                    CreatedAtUtc = ParseUtc(reader.IsDBNull(4) ? DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) : reader.GetString(4)),
+                    DeliveryStatus = null,
+                    DeliveryError = null,
+                    DeliveryStatusAtUtc = null
                 });
             }
         }
@@ -1156,11 +1175,45 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
             await using var command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, direction, role, content, tool_name, tool_call_id, created_at_utc
-                FROM tg_conversation_messages
-                WHERE tenant_id = @tenant_id
-                  AND phone = @phone
-                ORDER BY created_at_utc DESC, id DESC
+                SELECT
+                    m.id,
+                    m.direction,
+                    m.role,
+                    m.content,
+                    m.tool_name,
+                    m.tool_call_id,
+                    m.created_at_utc,
+                    (
+                        SELECT s.status
+                        FROM tg_whatsapp_message_status_events AS s
+                        WHERE s.tenant_id = m.tenant_id
+                          AND s.phone = m.phone
+                          AND s.message_id = m.tool_call_id
+                        ORDER BY s.created_at_utc DESC, s.id DESC
+                        LIMIT 1
+                    ) AS delivery_status,
+                    (
+                        SELECT s.error_message
+                        FROM tg_whatsapp_message_status_events AS s
+                        WHERE s.tenant_id = m.tenant_id
+                          AND s.phone = m.phone
+                          AND s.message_id = m.tool_call_id
+                        ORDER BY s.created_at_utc DESC, s.id DESC
+                        LIMIT 1
+                    ) AS delivery_error,
+                    (
+                        SELECT s.created_at_utc
+                        FROM tg_whatsapp_message_status_events AS s
+                        WHERE s.tenant_id = m.tenant_id
+                          AND s.phone = m.phone
+                          AND s.message_id = m.tool_call_id
+                        ORDER BY s.created_at_utc DESC, s.id DESC
+                        LIMIT 1
+                    ) AS delivery_status_at_utc
+                FROM tg_conversation_messages AS m
+                WHERE m.tenant_id = @tenant_id
+                  AND m.phone = @phone
+                ORDER BY m.created_at_utc DESC, m.id DESC
                 LIMIT @limit;
                 """;
             command.Parameters.AddWithValue("@tenant_id", tenant);
@@ -1178,7 +1231,10 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
                     Content = reader.GetString(3),
                     ToolName = reader.IsDBNull(4) ? null : reader.GetString(4),
                     ToolCallId = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    CreatedAtUtc = ParseUtc(reader.GetString(6))
+                    CreatedAtUtc = ParseUtc(reader.GetString(6)),
+                    DeliveryStatus = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    DeliveryError = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    DeliveryStatusAtUtc = reader.IsDBNull(9) ? null : ParseUtc(reader.GetString(9))
                 });
             }
         }
@@ -3948,6 +4004,94 @@ CREATE TABLE IF NOT EXISTS tg_shared_settings (
         command.Parameters.AddWithValue("@tool_call_id", string.IsNullOrWhiteSpace(toolCallId) ? (object)DBNull.Value : toolCallId);
         command.Parameters.AddWithValue("@created_at_utc", createdAtUtc);
         command.Parameters.AddWithValue("@metadata_json", metadataJson);
+        await command.ExecuteNonQueryAsync();
+
+        return true;
+    }
+
+    public async Task<bool> SaveWhatsAppMessageStatusEventAsync(WhatsAppMessageStatusEventWriteModel input)
+    {
+        var tenant = NormalizeTenant(input.TenantId);
+        var phone = input.Phone?.Trim() ?? string.Empty;
+        var messageId = input.MessageId?.Trim() ?? string.Empty;
+        var status = input.Status?.Trim() ?? string.Empty;
+        var errorCode = string.IsNullOrWhiteSpace(input.ErrorCode) ? (object)DBNull.Value : input.ErrorCode.Trim();
+        var errorTitle = string.IsNullOrWhiteSpace(input.ErrorTitle) ? (object)DBNull.Value : input.ErrorTitle.Trim();
+        var errorMessage = string.IsNullOrWhiteSpace(input.ErrorMessage) ? (object)DBNull.Value : input.ErrorMessage.Trim();
+        var rawJson = string.IsNullOrWhiteSpace(input.RawJson) ? (object)DBNull.Value : input.RawJson.Trim();
+        var createdAtUtc = ToUtcText(input.CreatedAtUtc == default ? DateTimeOffset.UtcNow : input.CreatedAtUtc);
+
+        if (string.IsNullOrWhiteSpace(phone)
+            || string.IsNullOrWhiteSpace(messageId)
+            || string.IsNullOrWhiteSpace(status))
+        {
+            return false;
+        }
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await using var existsCommand = connection.CreateCommand();
+        existsCommand.CommandText =
+        """
+        SELECT 1
+        FROM tg_whatsapp_message_status_events
+        WHERE tenant_id = @tenant_id
+          AND phone = @phone
+          AND message_id = @message_id
+          AND status = @status
+          AND created_at_utc = @created_at_utc
+        LIMIT 1;
+        """;
+        existsCommand.Parameters.AddWithValue("@tenant_id", tenant);
+        existsCommand.Parameters.AddWithValue("@phone", phone);
+        existsCommand.Parameters.AddWithValue("@message_id", messageId);
+        existsCommand.Parameters.AddWithValue("@status", status);
+        existsCommand.Parameters.AddWithValue("@created_at_utc", createdAtUtc);
+
+        var existing = await existsCommand.ExecuteScalarAsync();
+        if (existing is not null)
+        {
+            return false;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+        """
+        INSERT INTO tg_whatsapp_message_status_events
+        (
+            tenant_id,
+            phone,
+            message_id,
+            status,
+            error_code,
+            error_title,
+            error_message,
+            raw_json,
+            created_at_utc
+        )
+        VALUES
+        (
+            @tenant_id,
+            @phone,
+            @message_id,
+            @status,
+            @error_code,
+            @error_title,
+            @error_message,
+            @raw_json,
+            @created_at_utc
+        );
+        """;
+        command.Parameters.AddWithValue("@tenant_id", tenant);
+        command.Parameters.AddWithValue("@phone", phone);
+        command.Parameters.AddWithValue("@message_id", messageId);
+        command.Parameters.AddWithValue("@status", status);
+        command.Parameters.AddWithValue("@error_code", errorCode);
+        command.Parameters.AddWithValue("@error_title", errorTitle);
+        command.Parameters.AddWithValue("@error_message", errorMessage);
+        command.Parameters.AddWithValue("@raw_json", rawJson);
+        command.Parameters.AddWithValue("@created_at_utc", createdAtUtc);
         await command.ExecuteNonQueryAsync();
 
         return true;

@@ -34,6 +34,7 @@ public interface IAdminRepository
     Task<BotConfigViewModel> GetBotConfigAsync(string tenantId);
     Task<IReadOnlyList<WhatsAppTenantConfigItem>> GetWhatsAppTenantConfigsAsync(bool activeOnly);
     Task<bool> SaveConversationMessageAsync(ConversationMessageWriteModel input);
+    Task<bool> SaveWhatsAppMessageStatusEventAsync(WhatsAppMessageStatusEventWriteModel input);
     Task<IReadOnlyList<TelegramUserOption>> GetTelegramUsersAsync(string tenantId, int limit = 200);
     Task SaveBotConfigAsync(BotConfigViewModel input);
     Task<TelegramMemoryResetResult> ResetTelegramMemoryAsync(string tenantId, long telegramUserId, bool clearHistory);

@@ -13,6 +13,34 @@
     };
 }
 
+@functions {
+    private static string DeliveryStatusLabel(string? status)
+    {
+        return (status ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "accepted" => "Aceita",
+            "sent" => "Enviada",
+            "delivered" => "Entregue",
+            "read" => "Lida",
+            "failed" => "Falhou",
+            _ => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim()
+        };
+    }
+
+    private static string DeliveryStatusBadgeClass(string? status)
+    {
+        return (status ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "accepted" => "text-bg-info",
+            "sent" => "text-bg-secondary",
+            "delivered" => "text-bg-success",
+            "read" => "text-bg-primary",
+            "failed" => "text-bg-danger",
+            _ => "text-bg-secondary"
+        };
+    }
+}
+
 <style>
     .conversation-chat-card {
         border: 1px solid #dce5eb;
@@ -80,6 +108,24 @@
         word-break: break-word;
         font-size: 0.92rem;
         color: #1f2a33;
+    }
+
+    .chat-delivery {
+        margin-top: 0.45rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+        font-size: 0.75rem;
+        color: #556170;
+    }
+
+    .chat-delivery-error {
+        margin-top: 0.35rem;
+        font-size: 0.8rem;
+        color: #a61e2f;
+        white-space: pre-wrap;
+        word-break: break-word;
     }
 
     .chat-empty {
@@ -210,6 +256,20 @@
                                 <span>@message.CreatedAtUtc.ToLocalTime().ToString("dd/MM HH:mm:ss")</span>
                             </div>
                             <p class="chat-content">@message.Content</p>
+                            @if (!isInbound && !string.IsNullOrWhiteSpace(message.DeliveryStatus))
+                            {
+                                <div class="chat-delivery">
+                                    <span class="badge @DeliveryStatusBadgeClass(message.DeliveryStatus)">@DeliveryStatusLabel(message.DeliveryStatus)</span>
+                                    @if (message.DeliveryStatusAtUtc.HasValue)
+                                    {
+                                        <span>@message.DeliveryStatusAtUtc.Value.ToLocalTime().ToString("dd/MM HH:mm:ss")</span>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(message.DeliveryError))
+                                {
+                                    <div class="chat-delivery-error">@message.DeliveryError</div>
+                                }
+                            }
                         </div>
                     </div>
                 }
@@ -402,7 +462,10 @@
                     direction = message.Direction,
                     role = message.Role,
                     content = message.Content,
-                    createdAtUtc = message.CreatedAtUtc.ToString("O")
+                    createdAtUtc = message.CreatedAtUtc.ToString("O"),
+                    deliveryStatus = message.DeliveryStatus,
+                    deliveryError = message.DeliveryError,
+                    deliveryStatusAtUtc = message.DeliveryStatusAtUtc?.ToString("O")
                 })));
             const initialHandoff = @Html.Raw(JsonSerializer.Serialize(new
             {
@@ -547,9 +610,46 @@
                         direction: raw.direction ?? raw.Direction ?? '',
                         role: raw.role ?? raw.Role ?? '',
                         content: raw.content ?? raw.Content ?? '',
-                        createdAtUtc: raw.createdAtUtc ?? raw.CreatedAtUtc ?? ''
+                        createdAtUtc: raw.createdAtUtc ?? raw.CreatedAtUtc ?? '',
+                        deliveryStatus: raw.deliveryStatus ?? raw.DeliveryStatus ?? '',
+                        deliveryError: raw.deliveryError ?? raw.DeliveryError ?? '',
+                        deliveryStatusAtUtc: raw.deliveryStatusAtUtc ?? raw.DeliveryStatusAtUtc ?? ''
                     }))
                     .filter(item => (item.role ?? '').toString().trim().toLowerCase() !== 'tool');
+            }
+
+            function deliveryStatusLabel(status) {
+                switch (String(status ?? '').trim().toLowerCase()) {
+                    case 'accepted':
+                        return 'Aceita';
+                    case 'sent':
+                        return 'Enviada';
+                    case 'delivered':
+                        return 'Entregue';
+                    case 'read':
+                        return 'Lida';
+                    case 'failed':
+                        return 'Falhou';
+                    default:
+                        return String(status ?? '').trim();
+                }
+            }
+
+            function deliveryStatusBadgeClass(status) {
+                switch (String(status ?? '').trim().toLowerCase()) {
+                    case 'accepted':
+                        return 'text-bg-info';
+                    case 'sent':
+                        return 'text-bg-secondary';
+                    case 'delivered':
+                        return 'text-bg-success';
+                    case 'read':
+                        return 'text-bg-primary';
+                    case 'failed':
+                        return 'text-bg-danger';
+                    default:
+                        return 'text-bg-secondary';
+                }
             }
 
             function normalizeHandoff(raw) {
@@ -575,8 +675,9 @@
                     return '0';
                 }
 
-                const last = messages[messages.length - 1];
-                return `${messages.length}|${last.id}|${last.createdAtUtc}|${(last.content ?? '').length}|${last.role}`;
+                return messages
+                    .map(message => `${message.id}|${message.createdAtUtc}|${(message.content ?? '').length}|${message.role}|${message.deliveryStatus ?? ''}|${message.deliveryError ?? ''}|${message.deliveryStatusAtUtc ?? ''}`)
+                    .join('||');
             }
 
             function buildHandoffSignature(handoff) {
@@ -1311,6 +1412,16 @@
                         : roleLower === 'human'
                             ? 'Atendente'
                             : 'Bot';
+                    const hasDeliveryStatus = !inbound && String(message.deliveryStatus ?? '').trim().length > 0;
+                    const deliveryHtml = hasDeliveryStatus
+                        ? `
+                            <div class="chat-delivery">
+                                <span class="badge ${deliveryStatusBadgeClass(message.deliveryStatus)}">${escapeHtml(deliveryStatusLabel(message.deliveryStatus))}</span>
+                                ${message.deliveryStatusAtUtc ? `<span>${escapeHtml(formatDateTime(message.deliveryStatusAtUtc))}</span>` : ''}
+                            </div>
+                            ${message.deliveryError ? `<div class="chat-delivery-error">${escapeHtml(message.deliveryError)}</div>` : ''}
+                        `
+                        : '';
 
                     return `
                         <div class="chat-row ${rowClass}">
@@ -1321,6 +1432,7 @@
                                     <span>${escapeHtml(formatDateTime(message.createdAtUtc))}</span>
                                 </div>
                                 <p class="chat-content">${escapeHtml(message.content)}</p>
+                                ${deliveryHtml}
                             </div>
                         </div>
                     `;

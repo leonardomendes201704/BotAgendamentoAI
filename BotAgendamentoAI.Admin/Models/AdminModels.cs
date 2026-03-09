@@ -62,6 +62,9 @@ public sealed class ConversationMessageItem
     public string? ToolName { get; set; }
     public string? ToolCallId { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
+    public string? DeliveryStatus { get; set; }
+    public string? DeliveryError { get; set; }
+    public DateTimeOffset? DeliveryStatusAtUtc { get; set; }
 }
 
 public sealed class ConversationDetailsViewModel
@@ -479,6 +482,19 @@ public sealed class ConversationMessageWriteModel
     public string? ToolName { get; set; }
     public string? ToolCallId { get; set; }
     public string? MetadataJson { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class WhatsAppMessageStatusEventWriteModel
+{
+    public string TenantId { get; set; } = "A";
+    public string Phone { get; set; } = string.Empty;
+    public string MessageId { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? ErrorCode { get; set; }
+    public string? ErrorTitle { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? RawJson { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 

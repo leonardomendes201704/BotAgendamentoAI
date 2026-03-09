@@ -139,7 +139,10 @@ public sealed class ConversationsController : Controller
                 direction = message.Direction,
                 role = message.Role,
                 content = message.Content,
-                createdAtUtc = message.CreatedAtUtc.ToString("O", CultureInfo.InvariantCulture)
+                createdAtUtc = message.CreatedAtUtc.ToString("O", CultureInfo.InvariantCulture),
+                deliveryStatus = message.DeliveryStatus,
+                deliveryError = message.DeliveryError,
+                deliveryStatusAtUtc = message.DeliveryStatusAtUtc?.ToString("O", CultureInfo.InvariantCulture)
             })
             .ToList();
 

@@ -80,9 +80,11 @@ public sealed class WhatsAppWebhookController : ControllerBase
         }
 
         var inboundMessages = ParseInboundMessages(body);
+        var statusEvents = ParseStatusEvents(body);
         var changedTenants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var processedCount = 0;
         var repliedCount = 0;
+        var statusEventCount = 0;
 
         foreach (var inboundMessage in inboundMessages)
         {
@@ -157,6 +159,50 @@ public sealed class WhatsAppWebhookController : ControllerBase
                 repliedCount++;
                 changedTenants.Add(config.TenantId);
             }
+
+            var acceptedSaved = await _repository.SaveWhatsAppMessageStatusEventAsync(new WhatsAppMessageStatusEventWriteModel
+            {
+                TenantId = config.TenantId,
+                Phone = $"wa:{inboundMessage.From}",
+                MessageId = sendResult.MessageId ?? string.Empty,
+                Status = "accepted",
+                RawJson = sendResult.RawResponse,
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            });
+
+            if (acceptedSaved)
+            {
+                statusEventCount++;
+                changedTenants.Add(config.TenantId);
+            }
+        }
+
+        foreach (var statusEvent in statusEvents)
+        {
+            var config = ResolveConfig(candidateConfigs, statusEvent.PhoneNumberId);
+            if (config is null)
+            {
+                continue;
+            }
+
+            var saved = await _repository.SaveWhatsAppMessageStatusEventAsync(new WhatsAppMessageStatusEventWriteModel
+            {
+                TenantId = config.TenantId,
+                Phone = $"wa:{statusEvent.RecipientId}",
+                MessageId = statusEvent.MessageId,
+                Status = statusEvent.Status,
+                ErrorCode = statusEvent.ErrorCode,
+                ErrorTitle = statusEvent.ErrorTitle,
+                ErrorMessage = BuildStatusErrorText(statusEvent.ErrorCode, statusEvent.ErrorTitle, statusEvent.ErrorMessage),
+                RawJson = statusEvent.RawJson,
+                CreatedAtUtc = statusEvent.CreatedAtUtc
+            });
+
+            if (saved)
+            {
+                statusEventCount++;
+                changedTenants.Add(config.TenantId);
+            }
         }
 
         foreach (var tenantId in changedTenants)
@@ -165,9 +211,10 @@ public sealed class WhatsAppWebhookController : ControllerBase
         }
 
         _logger.LogInformation(
-            "WhatsApp webhook processed. PhoneNumberId: {PhoneNumberId}. InboundMessages: {InboundMessages}. StoredMessages: {StoredMessages}. AutoReplies: {AutoReplies}.",
+            "WhatsApp webhook processed. PhoneNumberId: {PhoneNumberId}. InboundMessages: {InboundMessages}. StatusEvents: {StatusEvents}. StoredMessages: {StoredMessages}. AutoReplies: {AutoReplies}.",
             string.IsNullOrWhiteSpace(phoneNumberId) ? "(unknown)" : phoneNumberId,
             inboundMessages.Count,
+            statusEventCount,
             processedCount,
             repliedCount);
 
@@ -379,6 +426,85 @@ public sealed class WhatsAppWebhookController : ControllerBase
         return output;
     }
 
+    private static List<WhatsAppStatusEvent> ParseStatusEvents(string payload)
+    {
+        var output = new List<WhatsAppStatusEvent>();
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return output;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (!document.RootElement.TryGetProperty("entry", out var entries) || entries.ValueKind != JsonValueKind.Array)
+            {
+                return output;
+            }
+
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("changes", out var changes) || changes.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var change in changes.EnumerateArray())
+                {
+                    if (!change.TryGetProperty("value", out var value))
+                    {
+                        continue;
+                    }
+
+                    var phoneNumberId = ExtractPhoneNumberId(value);
+                    if (!value.TryGetProperty("statuses", out var statuses) || statuses.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    foreach (var status in statuses.EnumerateArray())
+                    {
+                        var recipientId = status.TryGetProperty("recipient_id", out var recipientElement)
+                            ? NormalizeDigits(recipientElement.GetString())
+                            : string.Empty;
+                        var messageId = status.TryGetProperty("id", out var idElement)
+                            ? idElement.GetString()?.Trim() ?? string.Empty
+                            : string.Empty;
+                        var statusText = status.TryGetProperty("status", out var statusElement)
+                            ? statusElement.GetString()?.Trim() ?? string.Empty
+                            : string.Empty;
+
+                        if (string.IsNullOrWhiteSpace(recipientId)
+                            || string.IsNullOrWhiteSpace(messageId)
+                            || string.IsNullOrWhiteSpace(statusText))
+                        {
+                            continue;
+                        }
+
+                        output.Add(new WhatsAppStatusEvent
+                        {
+                            PhoneNumberId = phoneNumberId,
+                            RecipientId = recipientId,
+                            MessageId = messageId,
+                            Status = statusText,
+                            ErrorCode = ExtractErrorField(status, "code"),
+                            ErrorTitle = ExtractErrorField(status, "title"),
+                            ErrorMessage = ExtractErrorField(status, "message"),
+                            RawJson = status.GetRawText(),
+                            CreatedAtUtc = ExtractCreatedAtUtc(status)
+                        });
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return output;
+        }
+
+        return output;
+    }
+
     private static string? ExtractPhoneNumberId(JsonElement value)
     {
         if (!value.TryGetProperty("metadata", out var metadata))
@@ -494,6 +620,45 @@ public sealed class WhatsAppWebhookController : ControllerBase
             ? string.Empty
             : new string(value.Where(char.IsDigit).ToArray());
 
+    private static string? ExtractErrorField(JsonElement status, string fieldName)
+    {
+        if (!status.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var error in errors.EnumerateArray())
+        {
+            if (!error.TryGetProperty(fieldName, out var field))
+            {
+                continue;
+            }
+
+            return field.ValueKind switch
+            {
+                JsonValueKind.Number => field.GetRawText(),
+                JsonValueKind.String => field.GetString()?.Trim(),
+                _ => field.GetRawText()
+            };
+        }
+
+        return null;
+    }
+
+    private static string? BuildStatusErrorText(string? errorCode, string? errorTitle, string? errorMessage)
+    {
+        var parts = new[]
+            {
+                string.IsNullOrWhiteSpace(errorTitle) ? null : errorTitle.Trim(),
+                string.IsNullOrWhiteSpace(errorMessage) ? null : errorMessage.Trim(),
+                string.IsNullOrWhiteSpace(errorCode) ? null : $"Codigo: {errorCode.Trim()}"
+            }
+            .Where(static item => !string.IsNullOrWhiteSpace(item))
+            .ToArray();
+
+        return parts.Length == 0 ? null : string.Join(" | ", parts);
+    }
+
     private sealed class InboundWhatsAppMessage
     {
         public string? PhoneNumberId { get; set; }
@@ -501,6 +666,19 @@ public sealed class WhatsAppWebhookController : ControllerBase
         public string From { get; set; } = string.Empty;
         public string Type { get; set; } = string.Empty;
         public string Content { get; set; } = string.Empty;
+        public string RawJson { get; set; } = string.Empty;
+        public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    }
+
+    private sealed class WhatsAppStatusEvent
+    {
+        public string? PhoneNumberId { get; set; }
+        public string RecipientId { get; set; } = string.Empty;
+        public string MessageId { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string? ErrorCode { get; set; }
+        public string? ErrorTitle { get; set; }
+        public string? ErrorMessage { get; set; }
         public string RawJson { get; set; } = string.Empty;
         public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     }
