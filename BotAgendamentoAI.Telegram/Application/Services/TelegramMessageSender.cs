@@ -28,11 +28,13 @@ public sealed class TelegramMessageSender
         long? relatedJobId,
         CancellationToken cancellationToken)
     {
+        var effectiveReplyMarkup = replyMarkup ?? new ReplyKeyboardRemove();
+
         var sent = await bot.SendMessage(
             chatId: chatId,
             text: text,
             parseMode: ParseMode.Default,
-            replyMarkup: replyMarkup,
+            replyMarkup: effectiveReplyMarkup,
             cancellationToken: cancellationToken);
 
         await _history.LogOutboundAsync(

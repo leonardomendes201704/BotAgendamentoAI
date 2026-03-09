@@ -156,6 +156,10 @@ public static class TelegramReplyMarkupSerializer
                 is_persistent = reply.IsPersistent,
                 one_time_keyboard = reply.OneTimeKeyboard
             },
+            ReplyKeyboardRemove remove => new
+            {
+                remove_keyboard = remove.RemoveKeyboard
+            },
             _ => null
         };
     }

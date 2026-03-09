@@ -189,6 +189,61 @@ public sealed class ProviderFlowHandler
             return true;
         }
 
+        if (route.Scope == "P" && route.Action == "HOME")
+        {
+            switch (route.Arg1)
+            {
+                case "FEED":
+                    await SendFeedAsync(context, chatId, 0, cancellationToken);
+                    return true;
+                case "AGEN":
+                    await SendAgendaAsync(context, chatId, 0, cancellationToken);
+                    return true;
+                case "PROF":
+                    await SendProfileAsync(context, chatId, cancellationToken);
+                    return true;
+                case "PORT":
+                    await _sender.SendTextAsync(
+                        context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                        "Gerencie seu portfolio:", KeyboardFactory.PortfolioMenu(), null, cancellationToken);
+                    return true;
+                case "SET":
+                    await ToggleAvailabilityAsync(context, chatId, cancellationToken);
+                    return true;
+                case "SWC":
+                {
+                    var allowSwitchToClient = context.User.Role == UserRole.Both;
+                    if (!allowSwitchToClient)
+                    {
+                        await _sender.SendTextAsync(
+                            context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                            "Para trocar para modo Cliente, selecione o perfil 'Cliente + Prestador' no comando /start.",
+                            KeyboardFactory.ProviderMenu(false),
+                            context.Session.ActiveJobId,
+                            cancellationToken);
+                        return true;
+                    }
+
+                    context.Session.State = BotStates.C_HOME;
+                    context.Session.DraftJson = "{}";
+                    context.Session.ActiveJobId = null;
+                    context.Session.ChatJobId = null;
+                    context.Session.ChatPeerUserId = null;
+                    context.Session.IsChatActive = false;
+                    context.Session.UpdatedAt = DateTimeOffset.UtcNow;
+                    await context.Db.SaveChangesAsync(cancellationToken);
+
+                    await _sender.SendTextAsync(
+                        context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
+                        BotMessages.ClientHomeMenu(context.User.Role == UserRole.Both),
+                        KeyboardFactory.ClientHomeActions(context.User.Role == UserRole.Both),
+                        null,
+                        cancellationToken);
+                    return true;
+                }
+            }
+        }
+
         if (route.Scope == "P" && route.Action == "REM")
         {
             var profile = await EnsureProfileAsync(context, cancellationToken);
@@ -285,7 +340,7 @@ public sealed class ProviderFlowHandler
 
                 await _sender.SendTextAsync(
                     context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                    "Envie sua localizacao para definir o ponto base do atendimento.",
+                    "Envie sua localizacao para definir o ponto base do atendimento. Use o anexo de localizacao do Telegram.",
                     KeyboardFactory.LocationRequestKeyboard(),
                     null,
                     cancellationToken);
@@ -825,7 +880,7 @@ public sealed class ProviderFlowHandler
         {
             await _sender.SendTextAsync(
                 context.Db, context.Bot, context.TenantId, context.User.TelegramUserId, chatId,
-                "Para definir local base, envie uma localizacao pelo Telegram.",
+                "Para definir local base, envie uma localizacao pelo Telegram. Use o anexo de localizacao.",
                 KeyboardFactory.LocationRequestKeyboard(),
                 null,
                 cancellationToken);

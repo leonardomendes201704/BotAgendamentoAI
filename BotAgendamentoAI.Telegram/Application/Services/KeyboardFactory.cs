@@ -23,20 +23,9 @@ public static class KeyboardFactory
         });
     }
 
-    public static ReplyKeyboardMarkup ClientMenu()
+    public static InlineKeyboardMarkup ClientMenu()
     {
-        return new ReplyKeyboardMarkup(new[]
-        {
-            new KeyboardButton[] { MenuTexts.ClientRequestService, MenuTexts.ClientMyBookings },
-            new KeyboardButton[] { MenuTexts.ClientFavorites, MenuTexts.ClientHelp },
-            new KeyboardButton[] { MenuTexts.HumanHandoff },
-            new KeyboardButton[] { MenuTexts.EndAttendance },
-            new KeyboardButton[] { MenuTexts.ClientSwitchToProvider }
-        })
-        {
-            ResizeKeyboard = true,
-            IsPersistent = true
-        };
+        return ClientHomeActions(allowSwitchToProvider: true);
     }
 
     public static InlineKeyboardMarkup ClientHomeActions(bool allowSwitchToProvider)
@@ -80,29 +69,45 @@ public static class KeyboardFactory
         return new InlineKeyboardMarkup(rows);
     }
 
-    public static ReplyKeyboardMarkup ProviderMenu(bool allowSwitchToClient)
+    public static InlineKeyboardMarkup ProviderMenu(bool allowSwitchToClient)
     {
-        var rows = new List<KeyboardButton[]>
+        var rows = new List<InlineKeyboardButton[]>
         {
-            new KeyboardButton[] { MenuTexts.ProviderAvailableJobs, MenuTexts.ProviderAgenda },
-            new KeyboardButton[] { MenuTexts.ProviderProfile, MenuTexts.ProviderPortfolio },
-            new KeyboardButton[] { MenuTexts.HumanHandoff }
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("1 - Pedidos disponiveis", "P:HOME:FEED")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("2 - Minha agenda", "P:HOME:AGEN")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("3 - Meu perfil", "P:HOME:PROF")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("4 - Portfolio", "P:HOME:PORT")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("5 - Configuracoes", "P:HOME:SET")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(MenuTexts.HumanHandoff, CallbackDataRouter.HumanHandoffRequest())
+            }
         };
 
         if (allowSwitchToClient)
         {
-            rows.Add(new KeyboardButton[] { MenuTexts.ProviderSettings, MenuTexts.ProviderSwitchToClient });
-        }
-        else
-        {
-            rows.Add(new KeyboardButton[] { MenuTexts.ProviderSettings });
+            rows.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("6 - Trocar para Cliente", "P:HOME:SWC")
+            });
         }
 
-        return new ReplyKeyboardMarkup(rows)
-        {
-            ResizeKeyboard = true,
-            IsPersistent = true
-        };
+        return new InlineKeyboardMarkup(rows);
     }
 
     public static InlineKeyboardMarkup Categories(IReadOnlyList<ServiceCategoryEntity> categories)
@@ -129,54 +134,20 @@ public static class KeyboardFactory
         });
     }
 
-    public static ReplyKeyboardMarkup LocationRequestKeyboard()
+    public static InlineKeyboardMarkup LocationRequestKeyboard()
     {
-        return new ReplyKeyboardMarkup(new[]
+        return new InlineKeyboardMarkup(new[]
         {
-            new KeyboardButton[]
-            {
-                KeyboardButton.WithRequestLocation("Enviar localizacao")
-            },
-            new KeyboardButton[]
-            {
-                new KeyboardButton(MenuTexts.Back),
-                new KeyboardButton(MenuTexts.Cancel)
-            },
-            new KeyboardButton[]
-            {
-                new KeyboardButton(MenuTexts.HumanHandoff)
-            }
-        })
-        {
-            ResizeKeyboard = true,
-            IsPersistent = true,
-            OneTimeKeyboard = false
-        };
+            NavigationRow()
+        });
     }
 
-    public static ReplyKeyboardMarkup CepRequestKeyboard()
+    public static InlineKeyboardMarkup CepRequestKeyboard()
     {
-        return new ReplyKeyboardMarkup(new[]
+        return new InlineKeyboardMarkup(new[]
         {
-            new KeyboardButton[]
-            {
-                new KeyboardButton(MenuTexts.Back),
-                new KeyboardButton(MenuTexts.Cancel)
-            },
-            new KeyboardButton[]
-            {
-                new KeyboardButton(MenuTexts.HumanHandoff)
-            },
-            new KeyboardButton[]
-            {
-                new KeyboardButton(MenuTexts.EndAttendance)
-            }
-        })
-        {
-            ResizeKeyboard = true,
-            IsPersistent = true,
-            OneTimeKeyboard = false
-        };
+            ClientNavigationRow()
+        });
     }
 
     public static InlineKeyboardMarkup AddressConfirmation()
